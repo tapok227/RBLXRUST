@@ -81,6 +81,49 @@ local Recipes: { [string]: RecipeConfig } = {
 			{ Id = "metal_ore", Count = 30 },
 		},
 	},
+	craft_hunting_bow = {
+		Id = "craft_hunting_bow",
+		ResultId = "hunting_bow",
+		ResultCount = 1,
+		CraftTime = 5,
+		Station = "workbench_1",
+		Ingredients = {
+			{ Id = "wood", Count = 60 },
+			{ Id = "cloth", Count = 15 },
+		},
+	},
+	craft_arrow = {
+		Id = "craft_arrow",
+		ResultId = "arrow",
+		ResultCount = 4,
+		CraftTime = 2,
+		Station = nil,
+		Ingredients = {
+			{ Id = "wood", Count = 10 },
+			{ Id = "stone", Count = 5 },
+		},
+	},
+	craft_pipe_pistol = {
+		Id = "craft_pipe_pistol",
+		ResultId = "pipe_pistol",
+		ResultCount = 1,
+		CraftTime = 6,
+		Station = "workbench_1",
+		Ingredients = {
+			{ Id = "metal_ore", Count = 40 },
+			{ Id = "wood", Count = 30 },
+		},
+	},
+	craft_pistol_ammo = {
+		Id = "craft_pistol_ammo",
+		ResultId = "pistol_ammo",
+		ResultCount = 6,
+		CraftTime = 3,
+		Station = "workbench_1",
+		Ingredients = {
+			{ Id = "metal_ore", Count = 10 },
+		},
+	},
 }
 
 return table.freeze(Recipes)

@@ -33,6 +33,8 @@
 - `Ingredient = { Id: string, Count: number }`
 - `RecipeConfig = { Id: string, ResultId: string, ResultCount: number, CraftTime: number, Station: string?, Ingredients: { Ingredient } }`
 - `CraftingState = { RecipeId: string, StartTime: number, EndTime: number }`
+- `WeaponCategory = "Melee" | "Ranged"`
+- `WeaponConfig = { Category: WeaponCategory, Damage: number, HeadshotMultiplier: number, Range: number, Cooldown: number, AmmoId: string? }`
 
 Константы:
 - `INVENTORY_SIZE = 30`, `HOTBAR_SIZE = 6`
@@ -42,6 +44,7 @@
 - `MAX_HEALTH = 100`, `MAX_HUNGER = 100`, `MAX_THIRST = 100`
 - `RESPAWN_HEALTH = 100`, `RESPAWN_HUNGER = 80`, `RESPAWN_THIRST = 80`
 - `SURVIVAL_TICK_INTERVAL = 2.0`, `MAX_LOOT_DISTANCE = 14`, `LOOT_CONTAINER_LIFETIME = 300`
+- `MAX_ATTACK_ORIGIN_OFFSET = 8`
 
 ### `Signal` (`src/shared/Signal.luau`)
 - `Signal.new<T...>(): Signal<T...>`
@@ -72,15 +75,18 @@
   - `OpenContainer` (Server -> Client): `(containerId: string, title: string, slots: { [string]: Types.Slot })`
   - `CloseContainer` (Client <-> Server): `(containerId: string?)`
   - `LootTakeSlot` (Client -> Server): `(containerId: string, containerSlot: number, targetPlayerSlot: number?)`
+  - `AttackRequest` (Client -> Server): `(origin: Vector3, direction: Vector3, targetModel: Model?, isHeadshotHint: boolean?)`
+  - `AttackEffect` (Server -> Client): `(attacker: Player, weaponId: string, startPos: Vector3, endPos: Vector3, didHit: boolean, isHeadshot: boolean)`
 - `Net.InitServer()` — создаёт папку `Remotes` и все события.
 - `Net.GetEvent(eventName: string): RemoteEvent` — на сервере находит/создаёт `RemoteEvent`, на клиенте ожидает через `WaitForChild`.
 
 ### Конфиги (`src/shared/configs/`)
-- `Items` (`Items.luau`): словарь `itemId -> Types.ItemConfig` (`wood`, `stone`, `metal_ore`, `cloth`, `hatchet`, `pickaxe`, `bandage`, `cooked_meat`, `water_bottle`, `workbench_1`, `spear`, `metal_hatchet`).
+- `Items` (`Items.luau`): словарь `itemId -> Types.ItemConfig` (`wood`, `stone`, `metal_ore`, `cloth`, `hatchet`, `pickaxe`, `bandage`, `cooked_meat`, `water_bottle`, `workbench_1`, `spear`, `metal_hatchet`, `wooden_spear`, `hunting_bow`, `arrow`, `pipe_pistol`, `pistol_ammo`).
 - `Consumables` (`Consumables.luau`): словарь `itemId -> Types.ConsumableConfig` (`bandage`, `cooked_meat`, `water_bottle`).
 - `Tools` (`Tools.luau`): словарь `itemId -> Types.ToolConfig` (`hatchet`, `pickaxe`, `metal_hatchet`).
 - `Nodes` (`Nodes.luau`): словарь `nodeType -> Types.NodeConfig` (`tree`, `stone_node`, `metal_node`).
-- `Recipes` (`Recipes.luau`): словарь `recipeId -> Types.RecipeConfig` (`craft_bandage`, `craft_water_bottle`, `craft_hatchet`, `craft_pickaxe`, `craft_workbench_1`, `craft_spear`, `craft_metal_hatchet`).
+- `Recipes` (`Recipes.luau`): словарь `recipeId -> Types.RecipeConfig` (`craft_bandage`, `craft_water_bottle`, `craft_hatchet`, `craft_pickaxe`, `craft_workbench_1`, `craft_spear`, `craft_metal_hatchet`, `craft_hunting_bow`, `craft_arrow`, `craft_pipe_pistol`, `craft_pistol_ammo`).
+- `Weapons` (`Weapons.luau`): словарь `itemId -> Types.WeaponConfig` (`wooden_spear`, `spear`, `hatchet`, `metal_hatchet`, `pickaxe`, `hunting_bow`, `pipe_pistol`, а также константа `FISTS`).
 
 ---
 
@@ -107,7 +113,7 @@
 - `InventoryService.RemoveItems(player: Player, items: { Types.ItemBatchEntry }): boolean` — транзакционное списание набора предметов (с откатом по снимку при сбое) + одна отправка `InventorySync`.
 - `InventoryService.ConsumeSlot(player: Player, slotIndex: number, count: number): boolean` — списывает `count` единиц из конкретного слота `1..30`, удаляет слот при `<= 0` и отправляет `InventorySync`.
 - `InventoryService.ClearInventory(player: Player): Types.Inventory` — очищает все 30 слотов игрока, отправляет `InventorySync` и возвращает копию изъятых предметов.
-- `InventoryService.Init()` — инициализирует `Net`, слушает `InventoryMove` (`1..30`), `HotbarSelect` (`1..6`) и выдаёт стартовый набор в Studio (включая `water_bottle`).
+- `InventoryService.Init()` — инициализирует `Net`, слушает `InventoryMove` (`1..30`), `HotbarSelect` (`1..6`) и выдаёт стартовый набор в Studio (включая `water_bottle`, `hunting_bow`, `arrow`).
 
 ### `ResourceService` (`src/server/Services/ResourceService.luau`)
 - `ResourceService.Init()` — сканирует `Workspace.ResourceNodes`, обрабатывает `HitNode` (валидация дистанции `<= 14`, кулдаун по инструменту, множители, `BonusOnDestroy`, истощение/респавн) и рассылает `NodeUpdated`.
@@ -120,6 +126,10 @@
 - `SurvivalService.GetStats(player: Player): Types.SurvivalStats?` — возвращает копию текущих статов выживания игрока.
 - `SurvivalService.GetContainerState(containerId: string): Types.LootContainerState?` — возвращает копию состояния контейнера лута или `nil`.
 - `SurvivalService.Init()` — запускает цикл выживания раз в `2.0` сек (`-0.35` голода, `-0.5` жажды, пассивный реген `+1.5 HP` при `> 70`, урон `1.5 HP` при `<= 0`), реплицирует `Hunger` / `Thirst` / `Starving` / `Dehydrated` через атрибуты `Player`, обрабатывает `UseConsumable`, спавнит Greybox-рюкзак в `Workspace.LootContainers` при смерти (`Humanoid.Died`) на `300` сек с `ProximityPrompt` (`"Loot Body"`), сбрасывает статы после респавна (`100 / 80 / 80`) и валидирует `LootTakeSlot` (`<= 14` studs) и `CloseContainer`.
+
+### `CombatService` (`src/server/Services/CombatService.luau`)
+- `CombatService.GetEquippedWeapon(player: Player): (string, Types.WeaponConfig)` — возвращает `weaponId` и конфиг активного оружия игрока (или `"fists", Weapons.FISTS`).
+- `CombatService.Init()` — инициализирует `Net`, подписывается на `AttackRequest` (валидация `Vector3` на `NaN`/бесконечность/длину, проверка жизни атакующего и дистанции `origin` от `HumanoidRootPart` `<= 8` studs, серверный кулдаун `Cooldown`, списание `AmmoId`, авторитетный серверный `Workspace:Raycast` с учётом препятствий и игнорированием не-коллизионных декораций, множитель хэдшота по `Head`, запись атрибута `LastAttackerUserId` на модель цели, рассылка `AttackEffect` всем клиентам) и обновляет `HpLabel` манекенов в `Workspace.TestDummies`.
 
 ---
 
@@ -154,6 +164,7 @@
 
 ### `GatheringController` (`src/client/Controllers/GatheringController.luau`)
 - `GatheringController.GetNodeState(nodeId: string): NodeClientState?`
+- `GatheringController.IsCursorOnActiveNode(): boolean` — проверяет, наведён ли курсор на неистощённую ноду ресурсов в радиусе добычи (`MAX_GATHER_DISTANCE_CLIENT`).
 - `GatheringController.Init()` — строит `GatherHudGui`, выполняет raycast от курсора (блокируется при открытом `InventoryUIController`, `CraftingController`, `LootController` или экипированном расходнике из `Consumables`), отправляет `HitNode`, слушает `NodeUpdated` и проигрывает визуальный отклик.
 
 ### `SurvivalHudController` (`src/client/Controllers/SurvivalHudController.luau`)
@@ -168,3 +179,6 @@
 - `LootController.GetActiveContainerId(): string?`
 - `LootController.Close()`
 - `LootController.Init()` — строит `LootGui` (30-слотовая сетка контейнера и кнопка закрытия), открывается/обновляется по `OpenContainer`, закрывается по `CloseContainer` или кнопке `X`, по клику на слот отправляет `LootTakeSlot`.
+
+### `CombatController` (`src/client/Controllers/CombatController.luau`)
+- `CombatController.Init()` — строит минималистичный прицел `CrosshairGui` по центру экрана (крестик + вспышка хитмаркера на `0.15s`, красная при хэдшоте), по ЛКМ (если закрыты UI-окна, нет фокуса в `TextBox`, в руках не предмет из `Consumables` и `GatheringController.IsCursorOnActiveNode() == false`) вычисляет `origin` от головы/`HumanoidRootPart` и `direction` в точку прицеливания курсора, проверяет локальный кулдаун и боеприпасы и отправляет `AttackRequest`, а по `AttackEffect` отрисовывает трассер для дальнобойного оружия (`0.12s`).

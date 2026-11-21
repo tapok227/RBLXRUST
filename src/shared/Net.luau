@@ -17,6 +17,8 @@ local Events = table.freeze({
 	OpenContainer = "OpenContainer",
 	CloseContainer = "CloseContainer",
 	LootTakeSlot = "LootTakeSlot",
+	AttackRequest = "AttackRequest",
+	AttackEffect = "AttackEffect",
 })
 
 local Net = {

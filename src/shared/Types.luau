@@ -93,6 +93,17 @@ export type CraftingState = {
 	EndTime: number,
 }
 
+export type WeaponCategory = "Melee" | "Ranged"
+
+export type WeaponConfig = {
+	Category: WeaponCategory,
+	Damage: number,
+	HeadshotMultiplier: number,
+	Range: number,
+	Cooldown: number,
+	AmmoId: string?,
+}
+
 local Types = {
 	INVENTORY_SIZE = 30,
 	HOTBAR_SIZE = 6,
@@ -111,6 +122,7 @@ local Types = {
 	SURVIVAL_TICK_INTERVAL = 2.0,
 	MAX_LOOT_DISTANCE = 14,
 	LOOT_CONTAINER_LIFETIME = 300,
+	MAX_ATTACK_ORIGIN_OFFSET = 8,
 }
 
 return Types

@@ -337,6 +337,16 @@ function GatheringController.GetNodeState(nodeId: string): NodeClientState?
 	return nodeStates[nodeId]
 end
 
+function GatheringController.IsCursorOnActiveNode(): boolean
+	local model, nodeId, nodeType = raycastNodeFromCursor(Types.MAX_GATHER_DISTANCE_CLIENT)
+	if not model or not nodeId or not nodeType then
+		return false
+	end
+	local state = nodeStates[nodeId]
+	local isDepleted = if state then state.Depleted else (model:GetAttribute("Depleted") == true)
+	return not isDepleted
+end
+
 function GatheringController.Init()
 	if isInitialized then
 		return

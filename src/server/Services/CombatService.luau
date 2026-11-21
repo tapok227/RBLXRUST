@@ -1,0 +1,256 @@
+--!strict
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+local Workspace = game:GetService("Workspace")
+
+local Types = require(ReplicatedStorage.Shared.Types)
+local Weapons = require(ReplicatedStorage.Shared.configs.Weapons)
+local Net = require(ReplicatedStorage.Shared.Net)
+local DataService = require(ServerScriptService.Server.Services.DataService)
+local InventoryService = require(ServerScriptService.Server.Services.InventoryService)
+
+type WeaponConfig = Types.WeaponConfig
+
+local MAX_RAY_FILTER_PASSES = 8
+
+local lastAttackTime: { [Player]: number } = {}
+local boundDummies: { [Model]: boolean } = {}
+local isInitialized = false
+
+local CombatService = {}
+
+local function isFiniteNumber(val: number): boolean
+	return val == val and math.abs(val) ~= math.huge
+end
+
+local function isFiniteVector3(v: any): boolean
+	if typeof(v) ~= "Vector3" then
+		return false
+	end
+	local vec = v :: Vector3
+	return isFiniteNumber(vec.X) and isFiniteNumber(vec.Y) and isFiniteNumber(vec.Z)
+end
+
+local function getWeaponForPlayer(player: Player): (string, WeaponConfig)
+	local equipped = InventoryService.GetEquippedItem(player)
+	if equipped ~= nil and equipped.Id ~= "FISTS" then
+		local cfg = Weapons[equipped.Id]
+		if cfg ~= nil then
+			return equipped.Id, cfg
+		end
+	end
+	return "fists", Weapons.FISTS
+end
+
+local function findTargetCharacter(inst: Instance): (Model?, Humanoid?)
+	local current: Instance? = inst
+	while current ~= nil and current ~= Workspace do
+		if current:IsA("Model") then
+			local humanoid = current:FindFirstChildOfClass("Humanoid")
+			if humanoid ~= nil then
+				return current, humanoid
+			end
+		end
+		current = current.Parent
+	end
+	return nil, nil
+end
+
+local function performServerRaycast(
+	origin: Vector3,
+	unitDir: Vector3,
+	range: number,
+	attackerCharacter: Model
+): RaycastResult?
+	local excludeList: { Instance } = { attackerCharacter }
+	local lootFolder = Workspace:FindFirstChild("LootContainers")
+	if lootFolder ~= nil then
+		table.insert(excludeList, lootFolder)
+	end
+
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.IgnoreWater = true
+	params.FilterDescendantsInstances = excludeList
+
+	for _ = 1, MAX_RAY_FILTER_PASSES do
+		local result = Workspace:Raycast(origin, unitDir * range, params)
+		if result == nil then
+			return nil
+		end
+
+		local targetModel = findTargetCharacter(result.Instance)
+		if targetModel ~= nil then
+			return result
+		end
+
+		if result.Instance.CanCollide == false then
+			table.insert(excludeList, result.Instance)
+			params.FilterDescendantsInstances = excludeList
+		else
+			return result
+		end
+	end
+
+	return nil
+end
+
+local function bindDummyHpDisplay(model: Model)
+	if boundDummies[model] then
+		return
+	end
+
+	local humanoid = model:FindFirstChildOfClass("Humanoid")
+	if not humanoid then
+		return
+	end
+
+	boundDummies[model] = true
+
+	local function updateLabel()
+		local head = model:FindFirstChild("Head")
+		local billboard = if head then head:FindFirstChild("HpBillboard") else nil
+		local label = if billboard then billboard:FindFirstChild("HpLabel", true) else nil
+		if label and label:IsA("TextLabel") then
+			local currentHp = math.max(0, math.ceil(humanoid.Health))
+			local maxHp = math.ceil(humanoid.MaxHealth)
+			label.Text = string.format("%s: %d / %d", model.Name, currentHp, maxHp)
+		end
+	end
+
+	local healthConn = humanoid.HealthChanged:Connect(function()
+		updateLabel()
+	end)
+
+	local ancestryConn: RBXScriptConnection
+	ancestryConn = model.AncestryChanged:Connect(function(_, parent)
+		if parent == nil then
+			boundDummies[model] = nil
+			healthConn:Disconnect()
+			ancestryConn:Disconnect()
+		end
+	end)
+
+	updateLabel()
+end
+
+local function bindDummiesFolder(folder: Instance)
+	for _, child in folder:GetChildren() do
+		if child:IsA("Model") then
+			bindDummyHpDisplay(child)
+		end
+	end
+
+	folder.ChildAdded:Connect(function(child: Instance)
+		if child:IsA("Model") then
+			task.defer(bindDummyHpDisplay, child)
+		end
+	end)
+end
+
+local function onAttackRequest(
+	player: Player,
+	originAny: any,
+	directionAny: any,
+	_targetModelAny: any,
+	_isHeadshotHintAny: any
+)
+	if not isFiniteVector3(originAny) or not isFiniteVector3(directionAny) then
+		return
+	end
+
+	local origin = originAny :: Vector3
+	local direction = directionAny :: Vector3
+	if direction.Magnitude <= 0.01 then
+		return
+	end
+
+	if DataService.GetData(player) == nil then
+		return
+	end
+
+	local character = player.Character
+	if not character then
+		return
+	end
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if not hrp or not hrp:IsA("BasePart") or not humanoid or humanoid.Health <= 0 then
+		return
+	end
+
+	if (origin - hrp.Position).Magnitude > Types.MAX_ATTACK_ORIGIN_OFFSET then
+		return
+	end
+
+	local weaponId, weapon = getWeaponForPlayer(player)
+
+	local now = os.clock()
+	local prevAttack = lastAttackTime[player]
+	if prevAttack ~= nil and (now - prevAttack) < weapon.Cooldown then
+		return
+	end
+
+	if weapon.AmmoId ~= nil then
+		if not InventoryService.RemoveItem(player, weapon.AmmoId, 1) then
+			return
+		end
+	end
+
+	lastAttackTime[player] = now
+
+	local unitDir = direction.Unit
+	local hitResult = performServerRaycast(origin, unitDir, weapon.Range, character)
+
+	local didHit = false
+	local isHeadshot = false
+	local endPos = origin + unitDir * weapon.Range
+
+	if hitResult ~= nil then
+		endPos = hitResult.Position
+		local targetModel, targetHumanoid = findTargetCharacter(hitResult.Instance)
+		if targetModel ~= nil and targetHumanoid ~= nil and targetModel ~= character and targetHumanoid.Health > 0 then
+			didHit = true
+			isHeadshot = hitResult.Instance.Name == "Head"
+			local multiplier = if isHeadshot then weapon.HeadshotMultiplier else 1.0
+			local finalDamage = weapon.Damage * multiplier
+			targetModel:SetAttribute("LastAttackerUserId", player.UserId)
+			targetHumanoid:TakeDamage(finalDamage)
+		end
+	end
+
+	Net.GetEvent(Net.Events.AttackEffect):FireAllClients(player, weaponId, origin, endPos, didHit, isHeadshot)
+end
+
+function CombatService.GetEquippedWeapon(player: Player): (string, WeaponConfig)
+	return getWeaponForPlayer(player)
+end
+
+function CombatService.Init()
+	if isInitialized then
+		return
+	end
+	isInitialized = true
+
+	Net.InitServer()
+
+	Net.GetEvent(Net.Events.AttackRequest).OnServerEvent:Connect(onAttackRequest)
+
+	Players.PlayerRemoving:Connect(function(player: Player)
+		lastAttackTime[player] = nil
+	end)
+
+	local dummiesFolder = Workspace:FindFirstChild("TestDummies")
+	if dummiesFolder then
+		bindDummiesFolder(dummiesFolder)
+	else
+		Workspace.ChildAdded:Connect(function(child: Instance)
+			if child.Name == "TestDummies" then
+				bindDummiesFolder(child)
+			end
+		end)
+	end
+end
+
+return CombatService

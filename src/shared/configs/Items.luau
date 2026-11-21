@@ -65,6 +65,31 @@ local Items: { [string]: ItemConfig } = {
 		Type = "Tool",
 		MaxStack = 1,
 	},
+	wooden_spear = {
+		Name = "Wooden Spear",
+		Type = "Tool",
+		MaxStack = 1,
+	},
+	hunting_bow = {
+		Name = "Hunting Bow",
+		Type = "Tool",
+		MaxStack = 1,
+	},
+	arrow = {
+		Name = "Wooden Arrow",
+		Type = "Resource",
+		MaxStack = 64,
+	},
+	pipe_pistol = {
+		Name = "Pipe Pistol",
+		Type = "Tool",
+		MaxStack = 1,
+	},
+	pistol_ammo = {
+		Name = "Pistol Ammo",
+		Type = "Resource",
+		MaxStack = 64,
+	},
 }
 
 return table.freeze(Items)
