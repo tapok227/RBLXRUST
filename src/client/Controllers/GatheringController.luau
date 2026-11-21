@@ -14,6 +14,7 @@ local Net = require(ReplicatedStorage.Shared.Net)
 local HotbarController = require(script.Parent.HotbarController)
 local InventoryController = require(script.Parent.InventoryController)
 local InventoryUIController = require(script.Parent.InventoryUIController)
+local CraftingController = require(script.Parent.CraftingController)
 
 type NodeClientState = Types.NodeClientState
 
@@ -262,7 +263,7 @@ local function updateHoverHud()
 		return
 	end
 
-	if InventoryUIController.IsOpen() then
+	if InventoryUIController.IsOpen() or CraftingController.IsOpen() then
 		hudFrame.Visible = false
 		return
 	end
@@ -297,7 +298,7 @@ local function updateHoverHud()
 end
 
 local function tryGather()
-	if InventoryUIController.IsOpen() then
+	if InventoryUIController.IsOpen() or CraftingController.IsOpen() then
 		return
 	end
 

@@ -21,12 +21,27 @@ local PlayerStore = ProfileStore.New(PROFILE_STORE_NAME, DATA_TEMPLATE)
 
 local Profiles: { [Player]: any } = {}
 local RuntimeData: { [Player]: PlayerData } = {}
+local unloadedByPlayer: { [Player]: boolean } = {}
+local beforeUnloadCallbacks: { (player: Player, data: PlayerData) -> () } = {}
 local dataLoadedSignal: Signal.Signal<Player, PlayerData> = Signal.new()
 local isInitialized = false
 
 local DataService = {
 	DataLoaded = dataLoadedSignal,
 }
+
+local function runBeforeUnload(player: Player, data: PlayerData)
+	if unloadedByPlayer[player] then
+		return
+	end
+	unloadedByPlayer[player] = true
+	for _, callback in beforeUnloadCallbacks do
+		local ok, err = pcall(callback, player, data)
+		if not ok then
+			warn(string.format("[DataService] OnBeforeUnload callback error: %s", tostring(err)))
+		end
+	end
+end
 
 local function deserializeInventory(rawInv: { [any]: any }): Types.Inventory
 	local inv: Types.Inventory = {}
@@ -89,15 +104,23 @@ local function loadPlayerProfile(player: Player)
 			profile.Data.Inventory = serializeInventory(runtimePlayerData.Inventory)
 		end)
 
+		profile.OnLastSave:Connect(function()
+			runBeforeUnload(player, runtimePlayerData)
+			profile.Data.Version = runtimePlayerData.Version
+			profile.Data.Inventory = serializeInventory(runtimePlayerData.Inventory)
+		end)
+
 		profile.OnSessionEnd:Connect(function()
 			Profiles[player] = nil
 			RuntimeData[player] = nil
+			unloadedByPlayer[player] = nil
 			if player.Parent == Players then
 				player:Kick("Profile session ended - please rejoin.")
 			end
 		end)
 
 		if player.Parent == Players then
+			unloadedByPlayer[player] = false
 			Profiles[player] = profile
 			RuntimeData[player] = runtimePlayerData
 			dataLoadedSignal:Fire(player, runtimePlayerData)
@@ -116,12 +139,14 @@ local function onPlayerRemoving(player: Player)
 	if profile ~= nil then
 		local runtimePlayerData = RuntimeData[player]
 		if runtimePlayerData ~= nil then
+			runBeforeUnload(player, runtimePlayerData)
 			profile.Data.Version = runtimePlayerData.Version
 			profile.Data.Inventory = serializeInventory(runtimePlayerData.Inventory)
 		end
 		profile:EndSession()
 		Profiles[player] = nil
 		RuntimeData[player] = nil
+		unloadedByPlayer[player] = nil
 	end
 end
 
@@ -144,6 +169,10 @@ function DataService.OnDataLoaded(callback: (player: Player, data: PlayerData) -
 		end
 	end
 	return conn
+end
+
+function DataService.OnBeforeUnload(callback: (player: Player, data: PlayerData) -> ())
+	table.insert(beforeUnloadCallbacks, callback)
 end
 
 function DataService.Init()

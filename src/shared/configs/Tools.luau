@@ -17,6 +17,12 @@ local Tools: { [string]: ToolConfig } = {
 		PreferredNodeType = "Rock",
 		BonusMultiplier = 2.0,
 	},
+	metal_hatchet = {
+		Power = 35,
+		Cooldown = 0.55,
+		PreferredNodeType = "Tree",
+		BonusMultiplier = 2.0,
+	},
 }
 
 return table.freeze(Tools)

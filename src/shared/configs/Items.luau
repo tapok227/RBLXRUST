@@ -45,6 +45,21 @@ local Items: { [string]: ItemConfig } = {
 		Type = "Consumable",
 		MaxStack = 10,
 	},
+	workbench_1 = {
+		Name = "Workbench Lv.1",
+		Type = "Consumable",
+		MaxStack = 1,
+	},
+	spear = {
+		Name = "Wooden Spear",
+		Type = "Tool",
+		MaxStack = 1,
+	},
+	metal_hatchet = {
+		Name = "Metal Hatchet",
+		Type = "Tool",
+		MaxStack = 1,
+	},
 }
 
 return table.freeze(Items)

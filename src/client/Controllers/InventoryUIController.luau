@@ -5,6 +5,7 @@ local StarterGui = game:GetService("StarterGui")
 local UserInputService = game:GetService("UserInputService")
 
 local Types = require(ReplicatedStorage.Shared.Types)
+local Signal = require(ReplicatedStorage.Shared.Signal)
 local Items = require(ReplicatedStorage.Shared.configs.Items)
 local InventoryController = require(script.Parent.InventoryController)
 
@@ -28,8 +29,11 @@ local slotUIs: { [number]: SlotButtonUI } = {}
 local selectedSourceSlot: number? = nil
 local isOpen = false
 local isInitialized = false
+local openChangedSignal: Signal.Signal<boolean> = Signal.new()
 
-local InventoryUIController = {}
+local InventoryUIController = {
+	OpenChanged = openChangedSignal,
+}
 
 local function updateSlotSelectionHighlight()
 	for i = 1, Types.INVENTORY_SIZE do
@@ -169,7 +173,7 @@ local function createInventoryGui()
 	local frame = Instance.new("Frame")
 	frame.Name = "MainFrame"
 	frame.AnchorPoint = Vector2.new(0.5, 0.5)
-	frame.Position = UDim2.fromScale(0.5, 0.48)
+	frame.Position = UDim2.new(0.5, -166, 0.48, 0)
 	frame.Size = UDim2.fromOffset(480, 486)
 	frame.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
 	frame.BackgroundTransparency = 0.08
@@ -293,6 +297,7 @@ function InventoryUIController.SetOpen(open: boolean)
 	if mainFrame then
 		mainFrame.Visible = open
 	end
+	openChangedSignal:Fire(open)
 end
 
 function InventoryUIController.Toggle()

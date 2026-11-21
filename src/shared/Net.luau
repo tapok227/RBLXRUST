@@ -10,6 +10,9 @@ local Events = table.freeze({
 	HotbarSelect = "HotbarSelect",
 	HitNode = "HitNode",
 	NodeUpdated = "NodeUpdated",
+	CraftRequest = "CraftRequest",
+	CraftCancel = "CraftCancel",
+	CraftStateSync = "CraftStateSync",
 })
 
 local Net = {

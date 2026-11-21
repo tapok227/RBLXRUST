@@ -12,6 +12,7 @@ local DataService = require(ServerScriptService.Server.Services.DataService)
 type Inventory = Types.Inventory
 type Slot = Types.Slot
 type ItemBatchEntry = Types.ItemBatchEntry
+type Ingredient = Types.Ingredient
 
 local equippedSlots: { [Player]: number } = {}
 local isInitialized = false
@@ -30,6 +31,20 @@ local function isInventoryEmpty(inv: Inventory): boolean
 		end
 	end
 	return true
+end
+
+local function cloneInventory(inv: Inventory): Inventory
+	local copy: Inventory = {}
+	for i = 1, Types.INVENTORY_SIZE do
+		local slot = inv[i]
+		if slot ~= nil then
+			copy[i] = {
+				Id = slot.Id,
+				Count = slot.Count,
+			}
+		end
+	end
+	return copy
 end
 
 local function sendInventorySync(player: Player)
@@ -91,6 +106,49 @@ local function addItemInternal(inv: Inventory, id: string, count: number): (numb
 	return remaining, changed
 end
 
+local function getCountInInventory(inv: Inventory, id: string): number
+	local total = 0
+	for i = 1, Types.INVENTORY_SIZE do
+		local slot = inv[i]
+		if slot ~= nil and slot.Id == id then
+			total += slot.Count
+		end
+	end
+	return total
+end
+
+local function removeItemInternal(inv: Inventory, id: string, count: number): boolean
+	if typeof(id) ~= "string" or not isValidInteger(count) or count <= 0 then
+		return false
+	end
+
+	if not Items[id] then
+		return false
+	end
+
+	if getCountInInventory(inv, id) < count then
+		return false
+	end
+
+	local remainingToRemove = count
+	for i = Types.INVENTORY_SIZE, 1, -1 do
+		if remainingToRemove <= 0 then
+			break
+		end
+		local slot = inv[i]
+		if slot ~= nil and slot.Id == id then
+			local take = math.min(slot.Count, remainingToRemove)
+			slot.Count -= take
+			remainingToRemove -= take
+			if slot.Count <= 0 then
+				inv[i] = nil
+			end
+		end
+	end
+
+	return true
+end
+
 function InventoryService.GetEquippedSlot(player: Player): number
 	return equippedSlots[player] or 1
 end
@@ -102,6 +160,71 @@ function InventoryService.GetEquippedItem(player: Player): Slot?
 	end
 	local slotIndex = equippedSlots[player] or 1
 	return data.Inventory[slotIndex]
+end
+
+function InventoryService.GetItemCount(player: Player, id: string): number
+	if typeof(id) ~= "string" then
+		return 0
+	end
+	local data = DataService.GetData(player)
+	if not data then
+		return 0
+	end
+	return getCountInInventory(data.Inventory, id)
+end
+
+function InventoryService.HasItems(player: Player, items: { ItemBatchEntry }): boolean
+	local data = DataService.GetData(player)
+	if not data then
+		return false
+	end
+
+	local totalsRequired: { [string]: number } = {}
+	for _, entry in items do
+		if
+			typeof(entry.Id) ~= "string"
+			or not isValidInteger(entry.Count)
+			or entry.Count <= 0
+			or not Items[entry.Id]
+		then
+			return false
+		end
+		totalsRequired[entry.Id] = (totalsRequired[entry.Id] or 0) + entry.Count
+	end
+
+	for itemId, requiredCount in totalsRequired do
+		if getCountInInventory(data.Inventory, itemId) < requiredCount then
+			return false
+		end
+	end
+
+	return true
+end
+
+function InventoryService.CanCraftTransaction(
+	player: Player,
+	ingredients: { Ingredient },
+	resultId: string,
+	resultCount: number
+): boolean
+	if typeof(resultId) ~= "string" or not Items[resultId] or not isValidInteger(resultCount) or resultCount <= 0 then
+		return false
+	end
+
+	local data = DataService.GetData(player)
+	if not data then
+		return false
+	end
+
+	local simulated = cloneInventory(data.Inventory)
+	for _, ing in ingredients do
+		if not removeItemInternal(simulated, ing.Id, ing.Count) then
+			return false
+		end
+	end
+
+	local remainder = addItemInternal(simulated, resultId, resultCount)
+	return remainder == 0
 end
 
 function InventoryService.AddItem(player: Player, id: string, count: number): number
@@ -153,11 +276,21 @@ function InventoryService.AddItems(player: Player, items: { ItemBatchEntry }): {
 end
 
 function InventoryService.RemoveItem(player: Player, id: string, count: number): boolean
-	if typeof(id) ~= "string" or not isValidInteger(count) or count <= 0 then
+	local data = DataService.GetData(player)
+	if not data then
 		return false
 	end
 
-	if not Items[id] then
+	if not removeItemInternal(data.Inventory, id, count) then
+		return false
+	end
+
+	sendInventorySync(player)
+	return true
+end
+
+function InventoryService.RemoveItems(player: Player, items: { ItemBatchEntry }): boolean
+	if not InventoryService.HasItems(player, items) then
 		return false
 	end
 
@@ -166,33 +299,11 @@ function InventoryService.RemoveItem(player: Player, id: string, count: number):
 		return false
 	end
 
-	local inv = data.Inventory
-	local totalAvailable = 0
-
-	for i = 1, Types.INVENTORY_SIZE do
-		local slot = inv[i]
-		if slot ~= nil and slot.Id == id then
-			totalAvailable += slot.Count
-		end
-	end
-
-	if totalAvailable < count then
-		return false
-	end
-
-	local remainingToRemove = count
-	for i = Types.INVENTORY_SIZE, 1, -1 do
-		if remainingToRemove <= 0 then
-			break
-		end
-		local slot = inv[i]
-		if slot ~= nil and slot.Id == id then
-			local take = math.min(slot.Count, remainingToRemove)
-			slot.Count -= take
-			remainingToRemove -= take
-			if slot.Count <= 0 then
-				inv[i] = nil
-			end
+	local snapshot = cloneInventory(data.Inventory)
+	for _, entry in items do
+		if not removeItemInternal(data.Inventory, entry.Id, entry.Count) then
+			data.Inventory = snapshot
+			return false
 		end
 	end
 
@@ -274,18 +385,25 @@ local function onPlayerDataLoaded(player: Player, data: Types.PlayerData)
 		equippedSlots[player] = 1
 	end
 
-	if RunService:IsStudio() and isInventoryEmpty(data.Inventory) then
-		InventoryService.AddItems(player, {
-			{ Id = "hatchet", Count = 1 },
-			{ Id = "pickaxe", Count = 1 },
-			{ Id = "wood", Count = 250 },
-			{ Id = "stone", Count = 150 },
-			{ Id = "bandage", Count = 5 },
-			{ Id = "cooked_meat", Count = 3 },
-		})
-	else
-		sendInventorySync(player)
+	if RunService:IsStudio() then
+		if isInventoryEmpty(data.Inventory) then
+			InventoryService.AddItems(player, {
+				{ Id = "hatchet", Count = 1 },
+				{ Id = "pickaxe", Count = 1 },
+				{ Id = "wood", Count = 250 },
+				{ Id = "stone", Count = 150 },
+				{ Id = "bandage", Count = 5 },
+				{ Id = "cooked_meat", Count = 3 },
+				{ Id = "cloth", Count = 20 },
+			})
+			return
+		elseif InventoryService.GetItemCount(player, "cloth") == 0 then
+			InventoryService.AddItem(player, "cloth", 20)
+			return
+		end
 	end
+
+	sendInventorySync(player)
 end
 
 function InventoryService.Init()

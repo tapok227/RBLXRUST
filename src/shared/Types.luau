@@ -52,6 +52,26 @@ export type NodeClientState = {
 	Depleted: boolean,
 }
 
+export type Ingredient = {
+	Id: string,
+	Count: number,
+}
+
+export type RecipeConfig = {
+	Id: string,
+	ResultId: string,
+	ResultCount: number,
+	CraftTime: number,
+	Station: string?,
+	Ingredients: { Ingredient },
+}
+
+export type CraftingState = {
+	RecipeId: string,
+	StartTime: number,
+	EndTime: number,
+}
+
 local Types = {
 	INVENTORY_SIZE = 30,
 	HOTBAR_SIZE = 6,
@@ -60,6 +80,7 @@ local Types = {
 	BASE_TOOL_MULTIPLIER = 1.0,
 	MAX_GATHER_DISTANCE_SERVER = 14,
 	MAX_GATHER_DISTANCE_CLIENT = 12,
+	MAX_STATION_DISTANCE = 14,
 }
 
 return Types
