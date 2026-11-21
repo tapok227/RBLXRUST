@@ -1,0 +1,312 @@
+--!strict
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local ServerScriptService = game:GetService("ServerScriptService")
+
+local Types = require(ReplicatedStorage.Shared.Types)
+local Items = require(ReplicatedStorage.Shared.configs.Items)
+local Net = require(ReplicatedStorage.Shared.Net)
+local DataService = require(ServerScriptService.Server.Services.DataService)
+
+type Inventory = Types.Inventory
+type Slot = Types.Slot
+type ItemBatchEntry = Types.ItemBatchEntry
+
+local equippedSlots: { [Player]: number } = {}
+local isInitialized = false
+
+local InventoryService = {}
+
+local function isValidInteger(val: any): boolean
+	return typeof(val) == "number" and val == val and val % 1 == 0 and math.abs(val) ~= math.huge
+end
+
+local function isInventoryEmpty(inv: Inventory): boolean
+	for i = 1, Types.INVENTORY_SIZE do
+		local slot = inv[i]
+		if slot ~= nil and slot.Count > 0 then
+			return false
+		end
+	end
+	return true
+end
+
+local function sendInventorySync(player: Player)
+	local data = DataService.GetData(player)
+	if not data then
+		return
+	end
+	local syncEvent = Net.GetEvent(Net.Events.InventorySync)
+	syncEvent:FireClient(player, data.Inventory)
+end
+
+local function addItemInternal(inv: Inventory, id: string, count: number): (number, boolean)
+	if typeof(id) ~= "string" or not isValidInteger(count) or count <= 0 then
+		return (if typeof(count) == "number" and count > 0 then count else 0), false
+	end
+
+	local itemConfig = Items[id]
+	if not itemConfig then
+		return count, false
+	end
+
+	local remaining = count
+	local maxStack = itemConfig.MaxStack
+	local changed = false
+
+	-- 1. Fill existing stacks of the same item
+	for i = 1, Types.INVENTORY_SIZE do
+		if remaining <= 0 then
+			break
+		end
+		local slot = inv[i]
+		if slot ~= nil and slot.Id == id and slot.Count < maxStack then
+			local canAdd = math.min(remaining, maxStack - slot.Count)
+			if canAdd > 0 then
+				slot.Count += canAdd
+				remaining -= canAdd
+				changed = true
+			end
+		end
+	end
+
+	-- 2. Fill empty slots
+	for i = 1, Types.INVENTORY_SIZE do
+		if remaining <= 0 then
+			break
+		end
+		local slot = inv[i]
+		if slot == nil then
+			local toAdd = math.min(remaining, maxStack)
+			inv[i] = {
+				Id = id,
+				Count = toAdd,
+			}
+			remaining -= toAdd
+			changed = true
+		end
+	end
+
+	return remaining, changed
+end
+
+function InventoryService.GetEquippedSlot(player: Player): number
+	return equippedSlots[player] or 1
+end
+
+function InventoryService.GetEquippedItem(player: Player): Slot?
+	local data = DataService.GetData(player)
+	if not data then
+		return nil
+	end
+	local slotIndex = equippedSlots[player] or 1
+	return data.Inventory[slotIndex]
+end
+
+function InventoryService.AddItem(player: Player, id: string, count: number): number
+	if typeof(id) ~= "string" or not isValidInteger(count) or count <= 0 then
+		return if typeof(count) == "number" and count > 0 then count else 0
+	end
+
+	if not Items[id] then
+		return count
+	end
+
+	local data = DataService.GetData(player)
+	if not data then
+		return count
+	end
+
+	local remaining, changed = addItemInternal(data.Inventory, id, count)
+	if changed then
+		sendInventorySync(player)
+	end
+
+	return remaining
+end
+
+function InventoryService.AddItems(player: Player, items: { ItemBatchEntry }): { number }
+	local remainders: { number } = {}
+	local data = DataService.GetData(player)
+	if not data then
+		for i, entry in items do
+			remainders[i] = entry.Count
+		end
+		return remainders
+	end
+
+	local anyChanged = false
+	for i, entry in items do
+		local rem, changed = addItemInternal(data.Inventory, entry.Id, entry.Count)
+		remainders[i] = rem
+		if changed then
+			anyChanged = true
+		end
+	end
+
+	if anyChanged then
+		sendInventorySync(player)
+	end
+
+	return remainders
+end
+
+function InventoryService.RemoveItem(player: Player, id: string, count: number): boolean
+	if typeof(id) ~= "string" or not isValidInteger(count) or count <= 0 then
+		return false
+	end
+
+	if not Items[id] then
+		return false
+	end
+
+	local data = DataService.GetData(player)
+	if not data then
+		return false
+	end
+
+	local inv = data.Inventory
+	local totalAvailable = 0
+
+	for i = 1, Types.INVENTORY_SIZE do
+		local slot = inv[i]
+		if slot ~= nil and slot.Id == id then
+			totalAvailable += slot.Count
+		end
+	end
+
+	if totalAvailable < count then
+		return false
+	end
+
+	local remainingToRemove = count
+	for i = Types.INVENTORY_SIZE, 1, -1 do
+		if remainingToRemove <= 0 then
+			break
+		end
+		local slot = inv[i]
+		if slot ~= nil and slot.Id == id then
+			local take = math.min(slot.Count, remainingToRemove)
+			slot.Count -= take
+			remainingToRemove -= take
+			if slot.Count <= 0 then
+				inv[i] = nil
+			end
+		end
+	end
+
+	sendInventorySync(player)
+	return true
+end
+
+local function onInventoryMove(player: Player, fromSlotAny: any, toSlotAny: any)
+	if not isValidInteger(fromSlotAny) or not isValidInteger(toSlotAny) then
+		return
+	end
+
+	local fromSlot = fromSlotAny :: number
+	local toSlot = toSlotAny :: number
+
+	if fromSlot < 1 or fromSlot > Types.INVENTORY_SIZE or toSlot < 1 or toSlot > Types.INVENTORY_SIZE then
+		return
+	end
+
+	if fromSlot == toSlot then
+		return
+	end
+
+	local data = DataService.GetData(player)
+	if not data then
+		return
+	end
+
+	local inv = data.Inventory
+	local source = inv[fromSlot]
+	if source == nil or source.Count <= 0 then
+		return
+	end
+
+	local target = inv[toSlot]
+	if target == nil then
+		inv[toSlot] = source
+		inv[fromSlot] = nil
+		sendInventorySync(player)
+		return
+	end
+
+	if source.Id == target.Id then
+		local itemConfig = Items[source.Id]
+		local maxStack = if itemConfig then itemConfig.MaxStack else 1
+		if target.Count < maxStack then
+			local transfer = math.min(source.Count, maxStack - target.Count)
+			if transfer > 0 then
+				target.Count += transfer
+				source.Count -= transfer
+				if source.Count <= 0 then
+					inv[fromSlot] = nil
+				end
+				sendInventorySync(player)
+			end
+		end
+	else
+		inv[toSlot] = source
+		inv[fromSlot] = target
+		sendInventorySync(player)
+	end
+end
+
+local function onHotbarSelect(player: Player, slotAny: any)
+	if not isValidInteger(slotAny) then
+		return
+	end
+
+	local slot = slotAny :: number
+	if slot < 1 or slot > Types.HOTBAR_SIZE then
+		return
+	end
+
+	equippedSlots[player] = slot
+end
+
+local function onPlayerDataLoaded(player: Player, data: Types.PlayerData)
+	if equippedSlots[player] == nil then
+		equippedSlots[player] = 1
+	end
+
+	if RunService:IsStudio() and isInventoryEmpty(data.Inventory) then
+		InventoryService.AddItems(player, {
+			{ Id = "hatchet", Count = 1 },
+			{ Id = "pickaxe", Count = 1 },
+			{ Id = "wood", Count = 250 },
+			{ Id = "stone", Count = 150 },
+			{ Id = "bandage", Count = 5 },
+			{ Id = "cooked_meat", Count = 3 },
+		})
+	else
+		sendInventorySync(player)
+	end
+end
+
+function InventoryService.Init()
+	if isInitialized then
+		return
+	end
+	isInitialized = true
+
+	Net.InitServer()
+
+	local moveEvent = Net.GetEvent(Net.Events.InventoryMove)
+	moveEvent.OnServerEvent:Connect(onInventoryMove)
+
+	local hotbarSelectEvent = Net.GetEvent(Net.Events.HotbarSelect)
+	hotbarSelectEvent.OnServerEvent:Connect(onHotbarSelect)
+
+	Players.PlayerRemoving:Connect(function(player: Player)
+		equippedSlots[player] = nil
+	end)
+
+	DataService.OnDataLoaded(onPlayerDataLoaded)
+end
+
+return InventoryService
