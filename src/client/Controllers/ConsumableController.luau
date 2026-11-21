@@ -10,6 +10,7 @@ local InventoryController = require(script.Parent.InventoryController)
 local InventoryUIController = require(script.Parent.InventoryUIController)
 local CraftingController = require(script.Parent.CraftingController)
 local LootController = require(script.Parent.LootController)
+local BuildingController = require(script.Parent.BuildingController)
 
 local nextUseTime = 0
 local isInitialized = false
@@ -17,7 +18,12 @@ local isInitialized = false
 local ConsumableController = {}
 
 local function tryUseEquippedConsumable()
-	if InventoryUIController.IsOpen() or CraftingController.IsOpen() or LootController.IsOpen() then
+	if
+		BuildingController.IsBuildMode()
+		or InventoryUIController.IsOpen()
+		or CraftingController.IsOpen()
+		or LootController.IsOpen()
+	then
 		return
 	end
 

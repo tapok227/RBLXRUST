@@ -5,11 +5,16 @@ local ServerScriptService = game:GetService("ServerScriptService")
 
 local Types = require(ReplicatedStorage.Shared.Types)
 local Signal = require(ReplicatedStorage.Shared.Signal)
+local BuildingConfig = require(ReplicatedStorage.Shared.configs.BuildingConfig)
 local ProfileStore = require(ServerScriptService.Server.Vendor.ProfileStore)
 
 type PlayerData = Types.PlayerData
 type Slot = Types.Slot
 type SurvivalStats = Types.SurvivalStats
+type BuildPieceType = Types.BuildPieceType
+type BuildTier = Types.BuildTier
+type SavedBuildPiece = Types.SavedBuildPiece
+type BaseData = Types.BaseData
 
 local PROFILE_STORE_NAME = "PlayerData_v1"
 local TELEPORT_RELEASE_TIMEOUT = 5
@@ -21,6 +26,9 @@ local DATA_TEMPLATE = {
 		Health = Types.MAX_HEALTH,
 		Hunger = Types.MAX_HUNGER,
 		Thirst = Types.MAX_THIRST,
+	},
+	Base = {
+		Pieces = {},
 	},
 }
 
@@ -118,6 +126,201 @@ local function serializeStats(stats: SurvivalStats): SurvivalStats
 	}
 end
 
+local function isValidFiniteInteger(val: any): boolean
+	return type(val) == "number" and val == val and val % 1 == 0 and math.abs(val) ~= math.huge
+end
+
+local function deserializeStorage(rawStorage: any, maxSlots: number): { [string]: Slot }
+	local storage: { [string]: Slot } = {}
+	if type(rawStorage) ~= "table" then
+		return storage
+	end
+
+	for k, v in rawStorage do
+		local slotIndex = tonumber(k)
+		if
+			slotIndex ~= nil
+			and slotIndex >= 1
+			and slotIndex <= maxSlots
+			and slotIndex % 1 == 0
+			and type(v) == "table"
+			and type(v.Id) == "string"
+			and #v.Id > 0
+			and type(v.Count) == "number"
+			and v.Count == v.Count
+			and math.abs(v.Count) ~= math.huge
+			and v.Count > 0
+		then
+			storage[tostring(slotIndex)] = {
+				Id = v.Id,
+				Count = math.floor(v.Count),
+			}
+		end
+	end
+
+	return storage
+end
+
+local function serializeStorage(storage: { [string]: Slot }?, maxSlots: number): { [string]: Slot }
+	local raw: { [string]: Slot } = {}
+	if type(storage) ~= "table" then
+		return raw
+	end
+
+	for k, v in storage do
+		local slotIndex = tonumber(k)
+		if
+			slotIndex ~= nil
+			and slotIndex >= 1
+			and slotIndex <= maxSlots
+			and slotIndex % 1 == 0
+			and type(v) == "table"
+			and type(v.Id) == "string"
+			and #v.Id > 0
+			and type(v.Count) == "number"
+			and v.Count > 0
+		then
+			raw[tostring(slotIndex)] = {
+				Id = v.Id,
+				Count = math.floor(v.Count),
+			}
+		end
+	end
+
+	return raw
+end
+
+local function deserializeBase(rawBase: any): BaseData
+	local pieces: { SavedBuildPiece } = {}
+	if type(rawBase) ~= "table" or type(rawBase.Pieces) ~= "table" then
+		return { Pieces = pieces }
+	end
+
+	local seenUids: { [string]: boolean } = {}
+	for _, rawPiece in rawBase.Pieces do
+		if #pieces >= BuildingConfig.MaxPiecesPerBase then
+			break
+		end
+		if type(rawPiece) ~= "table" then
+			continue
+		end
+
+		local uid = rawPiece.Uid
+		local pieceType = rawPiece.PieceType
+		if type(uid) ~= "string" or #uid == 0 or #uid > 64 or seenUids[uid] then
+			continue
+		end
+		if type(pieceType) ~= "string" then
+			continue
+		end
+
+		local pieceConfig = BuildingConfig.Pieces[pieceType :: BuildPieceType]
+		if pieceConfig == nil then
+			continue
+		end
+
+		local rawTier = rawPiece.Tier
+		local tier: BuildTier = if type(rawTier) == "string"
+				and BuildingConfig.Tiers[rawTier :: BuildTier] ~= nil
+			then rawTier :: BuildTier
+			else "wood"
+		if not pieceConfig.Upgradeable then
+			tier = "wood"
+		end
+
+		local tierConfig = BuildingConfig.Tiers[tier]
+		local gridX = rawPiece.GridX
+		local gridY = rawPiece.GridY
+		local gridZ = rawPiece.GridZ
+		local rotY = rawPiece.RotY
+		if
+			not isValidFiniteInteger(gridX)
+			or gridX < BuildingConfig.GridMinXZ
+			or gridX > BuildingConfig.GridMaxXZ
+			or not isValidFiniteInteger(gridY)
+			or gridY < BuildingConfig.GridMinY
+			or gridY > BuildingConfig.GridMaxY
+			or not isValidFiniteInteger(gridZ)
+			or gridZ < BuildingConfig.GridMinXZ
+			or gridZ > BuildingConfig.GridMaxXZ
+			or not isValidFiniteInteger(rotY)
+			or BuildingConfig.ValidRotations[rotY] ~= true
+		then
+			continue
+		end
+
+		local maxHp = math.floor(pieceConfig.BaseHp * tierConfig.HpMultiplier + 0.5)
+		local rawHp = rawPiece.Hp
+		local hp = if type(rawHp) == "number"
+				and rawHp == rawHp
+				and math.abs(rawHp) ~= math.huge
+			then math.clamp(math.floor(rawHp + 0.5), 1, maxHp)
+			else maxHp
+
+		local storage: { [string]: Slot }? = nil
+		if pieceConfig.StorageSlots ~= nil then
+			storage = deserializeStorage(rawPiece.Storage, pieceConfig.StorageSlots)
+		end
+
+		seenUids[uid] = true
+		table.insert(pieces, {
+			Uid = uid,
+			PieceType = pieceType :: BuildPieceType,
+			Tier = tier,
+			GridX = gridX,
+			GridY = gridY,
+			GridZ = gridZ,
+			RotY = rotY,
+			Hp = hp,
+			Storage = storage,
+		})
+	end
+
+	return {
+		Pieces = pieces,
+	}
+end
+
+local function serializeBase(baseData: BaseData): BaseData
+	local pieces: { SavedBuildPiece } = {}
+	if type(baseData) ~= "table" or type(baseData.Pieces) ~= "table" then
+		return { Pieces = pieces }
+	end
+
+	for _, piece in baseData.Pieces do
+		local pieceConfig = BuildingConfig.Pieces[piece.PieceType]
+		if pieceConfig == nil then
+			continue
+		end
+
+		local serializedPiece: SavedBuildPiece = {
+			Uid = piece.Uid,
+			PieceType = piece.PieceType,
+			Tier = piece.Tier,
+			GridX = piece.GridX,
+			GridY = piece.GridY,
+			GridZ = piece.GridZ,
+			RotY = piece.RotY,
+			Hp = piece.Hp,
+			Storage = if pieceConfig.StorageSlots ~= nil
+				then serializeStorage(piece.Storage, pieceConfig.StorageSlots)
+				else nil,
+		}
+		table.insert(pieces, serializedPiece)
+	end
+
+	return {
+		Pieces = pieces,
+	}
+end
+
+local function syncRuntimeToProfile(profile: any, runtimePlayerData: PlayerData)
+	profile.Data.Version = runtimePlayerData.Version
+	profile.Data.Inventory = serializeInventory(runtimePlayerData.Inventory)
+	profile.Data.Stats = serializeStats(runtimePlayerData.Stats)
+	profile.Data.Base = serializeBase(runtimePlayerData.Base)
+end
+
 local function loadPlayerProfile(player: Player)
 	local profileKey = string.format("Player_%d", player.UserId)
 	local profile = PlayerStore:StartSessionAsync(profileKey, {
@@ -136,19 +339,16 @@ local function loadPlayerProfile(player: Player)
 				if type(profile.Data.Inventory) == "table" then profile.Data.Inventory else {}
 			),
 			Stats = deserializeStats(profile.Data.Stats),
+			Base = deserializeBase(profile.Data.Base),
 		}
 
 		profile.OnSave:Connect(function()
-			profile.Data.Version = runtimePlayerData.Version
-			profile.Data.Inventory = serializeInventory(runtimePlayerData.Inventory)
-			profile.Data.Stats = serializeStats(runtimePlayerData.Stats)
+			syncRuntimeToProfile(profile, runtimePlayerData)
 		end)
 
 		profile.OnLastSave:Connect(function()
 			runBeforeUnload(player, runtimePlayerData)
-			profile.Data.Version = runtimePlayerData.Version
-			profile.Data.Inventory = serializeInventory(runtimePlayerData.Inventory)
-			profile.Data.Stats = serializeStats(runtimePlayerData.Stats)
+			syncRuntimeToProfile(profile, runtimePlayerData)
 		end)
 
 		profile.OnSessionEnd:Connect(function()
@@ -181,9 +381,7 @@ local function onPlayerRemoving(player: Player)
 		local runtimePlayerData = RuntimeData[player]
 		if runtimePlayerData ~= nil then
 			runBeforeUnload(player, runtimePlayerData)
-			profile.Data.Version = runtimePlayerData.Version
-			profile.Data.Inventory = serializeInventory(runtimePlayerData.Inventory)
-			profile.Data.Stats = serializeStats(runtimePlayerData.Stats)
+			syncRuntimeToProfile(profile, runtimePlayerData)
 		end
 		profile:EndSession()
 		Profiles[player] = nil
@@ -208,9 +406,7 @@ function DataService.ReleaseForTeleport(player: Player): boolean
 	local runtimePlayerData = RuntimeData[player]
 	if runtimePlayerData ~= nil then
 		runBeforeUnload(player, runtimePlayerData)
-		profile.Data.Version = runtimePlayerData.Version
-		profile.Data.Inventory = serializeInventory(runtimePlayerData.Inventory)
-		profile.Data.Stats = serializeStats(runtimePlayerData.Stats)
+		syncRuntimeToProfile(profile, runtimePlayerData)
 	end
 
 	local saveCompleted = false

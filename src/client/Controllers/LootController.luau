@@ -18,9 +18,13 @@ type LootSlotUI = {
 
 local mainFrame: Frame? = nil
 local titleLabel: TextLabel? = nil
+local gridFrameRef: Frame? = nil
+local hintLabel: TextLabel? = nil
 local slotUIs: { [number]: LootSlotUI } = {}
 local currentSlots: Inventory = {}
 local activeContainerId: string? = nil
+local activeMaxSlots = Types.INVENTORY_SIZE
+local allowDeposit = false
 local isOpen = false
 local isInitialized = false
 local openChangedSignal: Signal.Signal<boolean> = Signal.new()
@@ -60,7 +64,8 @@ local function refreshSlotsUI()
 	for i = 1, Types.INVENTORY_SIZE do
 		local ui = slotUIs[i]
 		if ui then
-			local slotData = currentSlots[i]
+			ui.Button.Visible = (i <= activeMaxSlots)
+			local slotData = if i <= activeMaxSlots then currentSlots[i] else nil
 			if slotData and slotData.Count > 0 then
 				local itemConfig = Items[slotData.Id]
 				ui.NameLabel.Text = if itemConfig then itemConfig.Name else slotData.Id
@@ -73,14 +78,36 @@ local function refreshSlotsUI()
 	end
 end
 
+local function updateContainerLayout()
+	if not mainFrame or not gridFrameRef then
+		return
+	end
+
+	local rows = math.max(1, math.ceil(activeMaxSlots / 6))
+	local gridHeight = rows * 68 + math.max(0, rows - 1) * 8
+	local bottomPad = if allowDeposit then 38 else 16
+	local frameHeight = 46 + gridHeight + bottomPad
+
+	gridFrameRef.Size = UDim2.fromOffset(448, gridHeight)
+	mainFrame.Size = UDim2.fromOffset(480, frameHeight)
+	mainFrame.Position = if allowDeposit then UDim2.new(0.5, 248, 0.48, 0) else UDim2.fromScale(0.5, 0.48)
+
+	if hintLabel then
+		hintLabel.Visible = allowDeposit
+	end
+end
+
 local function setClosedState(notifyServer: boolean)
 	local prevId = activeContainerId
 	local wasOpen = isOpen
 
 	activeContainerId = nil
+	activeMaxSlots = Types.INVENTORY_SIZE
+	allowDeposit = false
 	table.clear(currentSlots)
 	isOpen = false
 	refreshSlotsUI()
+	updateContainerLayout()
 
 	if mainFrame then
 		mainFrame.Visible = false
@@ -259,8 +286,24 @@ local function createLootGui()
 		createSlotButton(gridFrame, i)
 	end
 
+	local hint = Instance.new("TextLabel")
+	hint.Name = "DepositHintLabel"
+	hint.AnchorPoint = Vector2.new(0, 1)
+	hint.Position = UDim2.new(0, 16, 1, -10)
+	hint.Size = UDim2.new(1, -32, 0, 18)
+	hint.BackgroundTransparency = 1
+	hint.Font = Enum.Font.GothamMedium
+	hint.TextSize = 12
+	hint.TextColor3 = Color3.fromRGB(165, 220, 175)
+	hint.TextXAlignment = Enum.TextXAlignment.Left
+	hint.Text = "Click your inventory items to deposit"
+	hint.Visible = false
+	hint.Parent = frame
+
 	mainFrame = frame
 	titleLabel = header
+	gridFrameRef = gridFrame
+	hintLabel = hint
 	screenGui.Parent = playerGui
 end
 
@@ -270,6 +313,26 @@ end
 
 function LootController.GetActiveContainerId(): string?
 	return activeContainerId
+end
+
+function LootController.CanDeposit(): boolean
+	return isOpen and allowDeposit and activeContainerId ~= nil
+end
+
+function LootController.RequestDeposit(playerSlot: number)
+	if not LootController.CanDeposit() or activeContainerId == nil then
+		return
+	end
+	if
+		typeof(playerSlot) ~= "number"
+		or playerSlot ~= playerSlot
+		or playerSlot % 1 ~= 0
+		or playerSlot < 1
+		or playerSlot > Types.INVENTORY_SIZE
+	then
+		return
+	end
+	Net.GetEvent(Net.Events.ContainerDepositSlot):FireServer(activeContainerId, playerSlot)
 end
 
 function LootController.Close()
@@ -285,29 +348,45 @@ function LootController.Init()
 	createLootGui()
 
 	local openEvent = Net.GetEvent(Net.Events.OpenContainer)
-	openEvent.OnClientEvent:Connect(function(containerId: any, title: any, slotsPayload: any)
-		if typeof(containerId) ~= "string" or #containerId == 0 then
-			return
-		end
+	openEvent.OnClientEvent:Connect(
+		function(containerId: any, title: any, slotsPayload: any, maxSlotsAny: any, allowDepositAny: any)
+			if typeof(containerId) ~= "string" or #containerId == 0 then
+				return
+			end
 
-		local wasOpen = isOpen
-		activeContainerId = containerId
-		currentSlots = parseContainerSlots(slotsPayload)
-		refreshSlotsUI()
+			local wasOpen = isOpen
+			activeContainerId = containerId
+			if
+				typeof(maxSlotsAny) == "number"
+				and maxSlotsAny == maxSlotsAny
+				and maxSlotsAny % 1 == 0
+				and maxSlotsAny >= 1
+				and maxSlotsAny <= Types.INVENTORY_SIZE
+			then
+				activeMaxSlots = maxSlotsAny
+			else
+				activeMaxSlots = Types.INVENTORY_SIZE
+			end
+			allowDeposit = (allowDepositAny == true)
 
-		if titleLabel then
-			titleLabel.Text = if typeof(title) == "string" and #title > 0 then title else "Loot Container"
-		end
+			currentSlots = parseContainerSlots(slotsPayload)
+			refreshSlotsUI()
+			updateContainerLayout()
 
-		isOpen = true
-		if mainFrame then
-			mainFrame.Visible = true
-		end
+			if titleLabel then
+				titleLabel.Text = if typeof(title) == "string" and #title > 0 then title else "Loot Container"
+			end
 
-		if not wasOpen then
-			openChangedSignal:Fire(true)
+			isOpen = true
+			if mainFrame then
+				mainFrame.Visible = true
+			end
+
+			if not wasOpen then
+				openChangedSignal:Fire(true)
+			end
 		end
-	end)
+	)
 
 	local closeEvent = Net.GetEvent(Net.Events.CloseContainer)
 	closeEvent.OnClientEvent:Connect(function(containerId: any)

@@ -35,10 +35,45 @@ export type LootContainerState = {
 	ExpiresAt: number,
 }
 
+export type BuildPieceType = "foundation" | "wall" | "doorway" | "roof" | "storage_box" | "workbench_1"
+
+export type BuildTier = "wood" | "stone" | "metal"
+
+export type SavedBuildPiece = {
+	Uid: string,
+	PieceType: BuildPieceType,
+	Tier: BuildTier,
+	GridX: number,
+	GridY: number,
+	GridZ: number,
+	RotY: number,
+	Hp: number,
+	Storage: { [string]: Slot }?,
+}
+
+export type BaseData = {
+	Pieces: { SavedBuildPiece },
+}
+
+export type BuildPieceConfig = {
+	Name: string,
+	Cost: { [string]: number },
+	BaseHp: number,
+	Upgradeable: boolean,
+	StorageSlots: number?,
+}
+
+export type BuildTierConfig = {
+	Name: string,
+	HpMultiplier: number,
+	UpgradeCost: { [string]: number }?,
+}
+
 export type PlayerData = {
 	Version: number,
 	Inventory: Inventory,
 	Stats: SurvivalStats,
+	Base: BaseData,
 }
 
 export type ItemBatchEntry = {

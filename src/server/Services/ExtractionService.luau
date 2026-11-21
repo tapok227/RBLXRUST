@@ -388,20 +388,6 @@ local function onTeleportInitFailed(
 	handleTeleportFailure(player, string.format("Teleport failed: %s", errorMessage), true)
 end
 
-local function onRequestReturnToMap(player: Player)
-	if game.PlaceId ~= Config.Places.PlayerBase then
-		return
-	end
-	if teleportInProgress[player] or DataService.GetData(player) == nil then
-		return
-	end
-	task.spawn(teleportPlayerToPlace, player, Config.Places.MainMap, "Return to Raid", 0, {
-		FromPlaceId = game.PlaceId,
-		OwnerUserId = player.UserId,
-		Mode = "Raid",
-	}, "MainMap")
-end
-
 local function stepExtractionLoop()
 	local now = os.clock()
 	for _, player in Players:GetPlayers() do
@@ -493,7 +479,6 @@ function ExtractionService.Init()
 	end
 
 	TeleportService.TeleportInitFailed:Connect(onTeleportInitFailed)
-	Net.GetEvent(Net.Events.RequestReturnToMap).OnServerEvent:Connect(onRequestReturnToMap)
 
 	Players.PlayerAdded:Connect(bindPlayer)
 	for _, player in Players:GetPlayers() do

@@ -27,6 +27,7 @@ type ActiveCraft = {
 }
 
 local stations: { StationEntry } = {}
+local dynamicStations: { [string]: StationEntry } = {}
 local activeCrafts: { [Player]: ActiveCraft } = {}
 local nextToken = 0
 local isInitialized = false
@@ -70,6 +71,14 @@ local function hasNearbyStation(player: Player, stationType: string): boolean
 	end
 
 	for _, entry in stations do
+		if entry.StationType == stationType then
+			if (hrp.Position - entry.Position).Magnitude <= Types.MAX_STATION_DISTANCE then
+				return true
+			end
+		end
+	end
+
+	for _, entry in dynamicStations do
 		if entry.StationType == stationType then
 			if (hrp.Position - entry.Position).Magnitude <= Types.MAX_STATION_DISTANCE then
 				return true
@@ -169,6 +178,20 @@ end
 
 local function onCraftCancel(player: Player)
 	cancelCraft(player, true)
+end
+
+function CraftingService.RegisterStation(stationId: string, stationType: string, position: Vector3)
+	if typeof(stationId) ~= "string" or #stationId == 0 or typeof(stationType) ~= "string" or #stationType == 0 then
+		return
+	end
+	dynamicStations[stationId] = {
+		StationType = stationType,
+		Position = position,
+	}
+end
+
+function CraftingService.UnregisterStation(stationId: string)
+	dynamicStations[stationId] = nil
 end
 
 function CraftingService.GetActiveCraft(player: Player): CraftingState?

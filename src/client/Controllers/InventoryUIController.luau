@@ -8,6 +8,7 @@ local Types = require(ReplicatedStorage.Shared.Types)
 local Signal = require(ReplicatedStorage.Shared.Signal)
 local Items = require(ReplicatedStorage.Shared.configs.Items)
 local InventoryController = require(script.Parent.InventoryController)
+local LootController = require(script.Parent.LootController)
 
 type Inventory = Types.Inventory
 
@@ -65,6 +66,15 @@ local function refreshInventoryUI(inv: Inventory)
 end
 
 local function onSlotClicked(slotIndex: number)
+	if LootController.CanDeposit() then
+		selectedSourceSlot = nil
+		updateSlotSelectionHighlight()
+		if InventoryController.GetSlot(slotIndex) ~= nil then
+			LootController.RequestDeposit(slotIndex)
+		end
+		return
+	end
+
 	if selectedSourceSlot == nil then
 		if InventoryController.GetSlot(slotIndex) ~= nil then
 			selectedSourceSlot = slotIndex
@@ -316,6 +326,12 @@ function InventoryUIController.Init()
 
 	InventoryController.OnChanged(function(inv: Inventory)
 		refreshInventoryUI(inv)
+	end)
+
+	LootController.OpenChanged:Connect(function(open: boolean)
+		if open and LootController.CanDeposit() then
+			InventoryUIController.SetOpen(true)
+		end
 	end)
 
 	UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessedEvent: boolean)

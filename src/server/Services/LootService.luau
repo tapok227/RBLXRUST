@@ -24,7 +24,7 @@ type PartSnapshot = {
 	OriginalCanQuery: boolean,
 }
 
-type ContainerKind = "POI" | "Temporary"
+type ContainerKind = "POI" | "Temporary" | "Storage"
 
 type ServerContainer = {
 	ContainerId: string,
@@ -35,6 +35,10 @@ type ServerContainer = {
 	RespawnTime: number,
 	ExpiresAt: number,
 	Depleted: boolean,
+	MaxSlots: number,
+	AllowDeposit: boolean,
+	OwnerUserId: number?,
+	OnChanged: ((slots: Inventory) -> ())?,
 	Model: Model,
 	PrimaryPart: BasePart,
 	Prompt: ProximityPrompt?,
@@ -50,6 +54,7 @@ local VIEWER_CHECK_INTERVAL = 1.0
 local containers: { [string]: ServerContainer } = {}
 local openContainerByPlayer: { [Player]: string } = {}
 local nextTempId = 0
+local nextStorageId = 0
 local nextPoiFallbackId = 0
 local rng = Random.new()
 local isInitialized = false
@@ -64,8 +69,9 @@ local function isValidPositiveNumber(val: any): boolean
 	return typeof(val) == "number" and val == val and val > 0 and val < math.huge
 end
 
-local function hasAnySlots(inv: Inventory): boolean
-	for i = 1, Types.INVENTORY_SIZE do
+local function hasAnySlots(inv: Inventory, maxSlots: number?): boolean
+	local limit = maxSlots or Types.INVENTORY_SIZE
+	for i = 1, limit do
 		local slot = inv[i]
 		if slot ~= nil and slot.Count > 0 then
 			return true
@@ -74,9 +80,10 @@ local function hasAnySlots(inv: Inventory): boolean
 	return false
 end
 
-local function cloneInventory(inv: Inventory): Inventory
+local function cloneInventory(inv: Inventory, maxSlots: number?): Inventory
+	local limit = maxSlots or Types.INVENTORY_SIZE
 	local copy: Inventory = {}
-	for i = 1, Types.INVENTORY_SIZE do
+	for i = 1, limit do
 		local slot = inv[i]
 		if slot ~= nil and slot.Count > 0 then
 			copy[i] = {
@@ -88,9 +95,10 @@ local function cloneInventory(inv: Inventory): Inventory
 	return copy
 end
 
-local function serializeSlotsForNet(slots: Inventory): { [string]: Slot }
+local function serializeSlotsForNet(slots: Inventory, maxSlots: number?): { [string]: Slot }
+	local limit = maxSlots or Types.INVENTORY_SIZE
 	local raw: { [string]: Slot } = {}
-	for i = 1, Types.INVENTORY_SIZE do
+	for i = 1, limit do
 		local slot = slots[i]
 		if slot ~= nil and slot.Count > 0 then
 			raw[tostring(i)] = {
@@ -102,16 +110,16 @@ local function serializeSlotsForNet(slots: Inventory): { [string]: Slot }
 	return raw
 end
 
-local function addLootToSlots(slots: Inventory, itemId: string, count: number)
+local function addItemToSlots(slots: Inventory, maxSlots: number, itemId: string, count: number): number
 	local itemConfig = Items[itemId]
 	if not itemConfig or count <= 0 then
-		return
+		return count
 	end
 
 	local maxStack = itemConfig.MaxStack
 	local remaining = count
 
-	for i = 1, Types.INVENTORY_SIZE do
+	for i = 1, maxSlots do
 		if remaining <= 0 then
 			break
 		end
@@ -125,7 +133,7 @@ local function addLootToSlots(slots: Inventory, itemId: string, count: number)
 		end
 	end
 
-	for i = 1, Types.INVENTORY_SIZE do
+	for i = 1, maxSlots do
 		if remaining <= 0 then
 			break
 		end
@@ -138,6 +146,41 @@ local function addLootToSlots(slots: Inventory, itemId: string, count: number)
 			remaining -= toAdd
 		end
 	end
+
+	return remaining
+end
+
+local function addLootToSlots(slots: Inventory, itemId: string, count: number)
+	addItemToSlots(slots, Types.INVENTORY_SIZE, itemId, count)
+end
+
+local function computeAvailableCapacity(
+	slots: Inventory,
+	maxSlots: number,
+	itemId: string,
+	maxStack: number,
+	targetSlot: number?
+): number
+	if targetSlot ~= nil then
+		local existing = slots[targetSlot]
+		if existing == nil then
+			return maxStack
+		elseif existing.Id == itemId and existing.Count < maxStack then
+			return maxStack - existing.Count
+		end
+		return 0
+	end
+
+	local capacity = 0
+	for i = 1, maxSlots do
+		local slot = slots[i]
+		if slot == nil then
+			capacity += maxStack
+		elseif slot.Id == itemId and slot.Count < maxStack then
+			capacity += (maxStack - slot.Count)
+		end
+	end
+	return capacity
 end
 
 local function getAliveCharacterRoot(player: Player): BasePart?
@@ -172,13 +215,20 @@ local function closeAllViewers(container: ServerContainer)
 end
 
 local function notifyContainerViewers(container: ServerContainer)
-	local payload = serializeSlotsForNet(container.Slots)
+	local payload = serializeSlotsForNet(container.Slots, container.MaxSlots)
 	local openEvent = Net.GetEvent(Net.Events.OpenContainer)
 
 	local staleViewers: { Player } = {}
 	for viewer in container.Viewers do
 		if viewer.Parent == Players then
-			openEvent:FireClient(viewer, container.ContainerId, container.Title, payload)
+			openEvent:FireClient(
+				viewer,
+				container.ContainerId,
+				container.Title,
+				payload,
+				container.MaxSlots,
+				container.AllowDeposit
+			)
 		else
 			table.insert(staleViewers, viewer)
 		end
@@ -204,8 +254,14 @@ local function openContainerInternal(player: Player, container: ServerContainer)
 	openContainerByPlayer[player] = container.ContainerId
 	container.Viewers[player] = true
 
-	Net.GetEvent(Net.Events.OpenContainer)
-		:FireClient(player, container.ContainerId, container.Title, serializeSlotsForNet(container.Slots))
+	Net.GetEvent(Net.Events.OpenContainer):FireClient(
+		player,
+		container.ContainerId,
+		container.Title,
+		serializeSlotsForNet(container.Slots, container.MaxSlots),
+		container.MaxSlots,
+		container.AllowDeposit
+	)
 end
 
 local function collectPartSnapshots(model: Model): { PartSnapshot }
@@ -357,6 +413,10 @@ local function registerPoiCrate(model: Instance)
 		RespawnTime = tableConfig.RespawnTime,
 		ExpiresAt = 0,
 		Depleted = false,
+		MaxSlots = Types.INVENTORY_SIZE,
+		AllowDeposit = false,
+		OwnerUserId = nil,
+		OnChanged = nil,
 		Model = model,
 		PrimaryPart = primaryPart,
 		Prompt = prompt,
@@ -391,6 +451,13 @@ end
 
 local function onCloseContainer(player: Player, _containerIdAny: any)
 	LootService.CloseContainerForPlayer(player, false)
+end
+
+local function canPlayerAccessContainer(player: Player, container: ServerContainer): boolean
+	if container.OwnerUserId ~= nil and player.UserId ~= container.OwnerUserId then
+		return false
+	end
+	return true
 end
 
 local function onLootTakeSlot(player: Player, containerIdAny: any, containerSlotAny: any, targetPlayerSlotAny: any)
@@ -431,6 +498,14 @@ local function onLootTakeSlot(player: Player, containerIdAny: any, containerSlot
 		return
 	end
 
+	if not canPlayerAccessContainer(player, container) then
+		return
+	end
+
+	if containerSlot > container.MaxSlots then
+		return
+	end
+
 	if (hrp.Position - container.PrimaryPart.Position).Magnitude > Types.MAX_LOOT_DISTANCE then
 		return
 	end
@@ -457,8 +532,14 @@ local function onLootTakeSlot(player: Player, containerIdAny: any, containerSlot
 		slot.Count = remainder
 	end
 
-	if not hasAnySlots(container.Slots) then
-		if container.Kind == "POI" and container.RespawnTime > 0 and container.TableId ~= nil then
+	if container.OnChanged then
+		container.OnChanged(container.Slots)
+	end
+
+	if not hasAnySlots(container.Slots, container.MaxSlots) then
+		if container.Kind == "Storage" then
+			notifyContainerViewers(container)
+		elseif container.Kind == "POI" and container.RespawnTime > 0 and container.TableId ~= nil then
 			depletePoiContainer(container)
 		else
 			LootService.DestroyContainer(container.ContainerId)
@@ -466,6 +547,101 @@ local function onLootTakeSlot(player: Player, containerIdAny: any, containerSlot
 	else
 		notifyContainerViewers(container)
 	end
+end
+
+local function onContainerDepositSlot(
+	player: Player,
+	containerIdAny: any,
+	playerSlotAny: any,
+	targetContainerSlotAny: any
+)
+	if typeof(containerIdAny) ~= "string" or #containerIdAny == 0 or #containerIdAny > 64 then
+		return
+	end
+	if not isValidInteger(playerSlotAny) then
+		return
+	end
+	local playerSlotIndex = playerSlotAny :: number
+	if playerSlotIndex < 1 or playerSlotIndex > Types.INVENTORY_SIZE then
+		return
+	end
+
+	if DataService.GetData(player) == nil then
+		return
+	end
+
+	local hrp = getAliveCharacterRoot(player)
+	if not hrp then
+		return
+	end
+
+	local container = containers[containerIdAny]
+	if container == nil or container.Depleted or not container.PrimaryPart.Parent or not container.AllowDeposit then
+		return
+	end
+
+	if not canPlayerAccessContainer(player, container) then
+		return
+	end
+
+	local targetContainerSlot: number? = nil
+	if targetContainerSlotAny ~= nil then
+		if not isValidInteger(targetContainerSlotAny) then
+			return
+		end
+		local candidate = targetContainerSlotAny :: number
+		if candidate < 1 or candidate > container.MaxSlots then
+			return
+		end
+		targetContainerSlot = candidate
+	end
+
+	if (hrp.Position - container.PrimaryPart.Position).Magnitude > Types.MAX_LOOT_DISTANCE then
+		return
+	end
+
+	local playerSlot = InventoryService.GetSlot(player, playerSlotIndex)
+	if playerSlot == nil or playerSlot.Count <= 0 then
+		return
+	end
+
+	local itemId = playerSlot.Id
+	local itemCount = playerSlot.Count
+	local itemConfig = Items[itemId]
+	if not itemConfig then
+		return
+	end
+
+	local availableCapacity =
+		computeAvailableCapacity(container.Slots, container.MaxSlots, itemId, itemConfig.MaxStack, targetContainerSlot)
+	local toDeposit = math.min(itemCount, availableCapacity)
+	if toDeposit <= 0 then
+		return
+	end
+
+	if not InventoryService.ConsumeSlot(player, playerSlotIndex, toDeposit) then
+		return
+	end
+
+	if targetContainerSlot ~= nil then
+		local existing = container.Slots[targetContainerSlot]
+		if existing == nil then
+			container.Slots[targetContainerSlot] = {
+				Id = itemId,
+				Count = toDeposit,
+			}
+		else
+			existing.Count += toDeposit
+		end
+	else
+		addItemToSlots(container.Slots, container.MaxSlots, itemId, toDeposit)
+	end
+
+	if container.OnChanged then
+		container.OnChanged(container.Slots)
+	end
+
+	notifyContainerViewers(container)
 end
 
 local function stepViewerDistanceCheck()
@@ -580,11 +756,15 @@ function LootService.RegisterSlotsContainer(
 		RespawnTime = 0,
 		ExpiresAt = expiresAt,
 		Depleted = false,
+		MaxSlots = Types.INVENTORY_SIZE,
+		AllowDeposit = false,
+		OwnerUserId = nil,
+		OnChanged = nil,
 		Model = model,
 		PrimaryPart = primaryPart,
 		Prompt = prompt,
 		Parts = collectPartSnapshots(model),
-		Slots = cloneInventory(slots),
+		Slots = cloneInventory(slots, Types.INVENTORY_SIZE),
 		Viewers = {},
 		RespawnToken = 0,
 	}
@@ -615,6 +795,89 @@ function LootService.SpawnTemporaryContainer(model: Model, title: string, tableI
 	return LootService.RegisterSlotsContainer(model, title, title, slots, lifeTime)
 end
 
+function LootService.RegisterStorageContainer(
+	model: Model,
+	title: string,
+	ownerUserId: number,
+	maxSlots: number,
+	initialSlots: Inventory,
+	onChanged: ((slots: Inventory) -> ())?
+): string
+	local primaryPart = model.PrimaryPart
+	if not primaryPart then
+		warn(string.format('[LootService] Storage container "%s" has no PrimaryPart', model.Name))
+		return ""
+	end
+
+	local effectiveMaxSlots = math.clamp(math.floor(maxSlots), 1, Types.INVENTORY_SIZE)
+	local containerId: string
+	repeat
+		nextStorageId += 1
+		containerId = string.format("storage_%d", nextStorageId)
+	until containers[containerId] == nil
+
+	local prompt = primaryPart:FindFirstChildOfClass("ProximityPrompt")
+	if not prompt then
+		local found = model:FindFirstChildWhichIsA("ProximityPrompt", true)
+		if found and found:IsA("ProximityPrompt") then
+			prompt = found
+		end
+	end
+	if not prompt then
+		local created = Instance.new("ProximityPrompt")
+		created.Name = "StoragePrompt"
+		created.ActionText = "Open Storage"
+		created.ObjectText = title
+		created.HoldDuration = 0
+		created.MaxActivationDistance = 12
+		created.RequiresLineOfSight = false
+		created.Parent = primaryPart
+		prompt = created
+	end
+
+	local container: ServerContainer = {
+		ContainerId = containerId,
+		Kind = "Storage",
+		Title = title,
+		OwnerName = title,
+		TableId = nil,
+		RespawnTime = 0,
+		ExpiresAt = 0,
+		Depleted = false,
+		MaxSlots = effectiveMaxSlots,
+		AllowDeposit = true,
+		OwnerUserId = ownerUserId,
+		OnChanged = onChanged,
+		Model = model,
+		PrimaryPart = primaryPart,
+		Prompt = prompt,
+		Parts = collectPartSnapshots(model),
+		Slots = cloneInventory(initialSlots, effectiveMaxSlots),
+		Viewers = {},
+		RespawnToken = 0,
+	}
+
+	containers[containerId] = container
+	model:SetAttribute("ContainerId", containerId)
+	model:SetAttribute("OwnerUserId", ownerUserId)
+	model:SetAttribute("Depleted", false)
+
+	if prompt then
+		bindPrompt(container, prompt)
+	end
+
+	return containerId
+end
+
+function LootService.UnregisterContainer(containerId: string)
+	local container = containers[containerId]
+	if container == nil then
+		return
+	end
+	containers[containerId] = nil
+	closeAllViewers(container)
+end
+
 function LootService.OpenContainerForPlayer(player: Player, containerId: string): boolean
 	if typeof(containerId) ~= "string" or #containerId == 0 then
 		return false
@@ -622,6 +885,10 @@ function LootService.OpenContainerForPlayer(player: Player, containerId: string)
 
 	local container = containers[containerId]
 	if container == nil or container.Depleted or not container.PrimaryPart.Parent then
+		return false
+	end
+
+	if not canPlayerAccessContainer(player, container) then
 		return false
 	end
 
@@ -680,7 +947,7 @@ function LootService.GetContainerState(containerId: string): LootContainerState?
 	return {
 		ContainerId = container.ContainerId,
 		OwnerName = container.OwnerName,
-		Slots = cloneInventory(container.Slots),
+		Slots = cloneInventory(container.Slots, container.MaxSlots),
 		ExpiresAt = container.ExpiresAt,
 	}
 end
@@ -704,6 +971,7 @@ function LootService.Init()
 
 	Net.GetEvent(Net.Events.CloseContainer).OnServerEvent:Connect(onCloseContainer)
 	Net.GetEvent(Net.Events.LootTakeSlot).OnServerEvent:Connect(onLootTakeSlot)
+	Net.GetEvent(Net.Events.ContainerDepositSlot).OnServerEvent:Connect(onContainerDepositSlot)
 
 	Players.PlayerRemoving:Connect(function(player: Player)
 		LootService.CloseContainerForPlayer(player, false)

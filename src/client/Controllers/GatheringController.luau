@@ -17,6 +17,7 @@ local InventoryController = require(script.Parent.InventoryController)
 local InventoryUIController = require(script.Parent.InventoryUIController)
 local CraftingController = require(script.Parent.CraftingController)
 local LootController = require(script.Parent.LootController)
+local BuildingController = require(script.Parent.BuildingController)
 
 type NodeClientState = Types.NodeClientState
 
@@ -265,7 +266,12 @@ local function updateHoverHud()
 		return
 	end
 
-	if InventoryUIController.IsOpen() or CraftingController.IsOpen() or LootController.IsOpen() then
+	if
+		BuildingController.IsBuildMode()
+		or InventoryUIController.IsOpen()
+		or CraftingController.IsOpen()
+		or LootController.IsOpen()
+	then
 		hudFrame.Visible = false
 		return
 	end
@@ -300,7 +306,12 @@ local function updateHoverHud()
 end
 
 local function tryGather()
-	if InventoryUIController.IsOpen() or CraftingController.IsOpen() or LootController.IsOpen() then
+	if
+		BuildingController.IsBuildMode()
+		or InventoryUIController.IsOpen()
+		or CraftingController.IsOpen()
+		or LootController.IsOpen()
+	then
 		return
 	end
 

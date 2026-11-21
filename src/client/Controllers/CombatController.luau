@@ -16,6 +16,7 @@ local InventoryUIController = require(script.Parent.InventoryUIController)
 local CraftingController = require(script.Parent.CraftingController)
 local LootController = require(script.Parent.LootController)
 local GatheringController = require(script.Parent.GatheringController)
+local BuildingController = require(script.Parent.BuildingController)
 
 type WeaponConfig = Types.WeaponConfig
 
@@ -220,7 +221,7 @@ local function spawnTracer(startPos: Vector3, endPos: Vector3, isHeadshot: boole
 end
 
 local function tryAttack()
-	if isAnyUiOpen() then
+	if BuildingController.IsBuildMode() or isAnyUiOpen() then
 		return
 	end
 

@@ -28,7 +28,13 @@
 - `SurvivalStats = { Health: number, Hunger: number, Thirst: number }`
 - `ConsumableConfig = { Health: number, Hunger: number, Thirst: number, UseCooldown: number }`
 - `LootContainerState = { ContainerId: string, OwnerName: string, Slots: Inventory, ExpiresAt: number }`
-- `PlayerData = { Version: number, Inventory: Inventory, Stats: SurvivalStats }`
+- `BuildPieceType = "foundation" | "wall" | "doorway" | "roof" | "storage_box" | "workbench_1"`
+- `BuildTier = "wood" | "stone" | "metal"`
+- `SavedBuildPiece = { Uid: string, PieceType: BuildPieceType, Tier: BuildTier, GridX: number, GridY: number, GridZ: number, RotY: number, Hp: number, Storage: { [string]: Slot }? }`
+- `BaseData = { Pieces: { SavedBuildPiece } }`
+- `BuildPieceConfig = { Name: string, Cost: { [string]: number }, BaseHp: number, Upgradeable: boolean, StorageSlots: number? }`
+- `BuildTierConfig = { Name: string, HpMultiplier: number, UpgradeCost: { [string]: number }? }`
+- `PlayerData = { Version: number, Inventory: Inventory, Stats: SurvivalStats, Base: BaseData }`
 - `ItemBatchEntry = { Id: string, Count: number }`
 - `ToolCategory = "Tree" | "Rock" | "Ore"`
 - `ToolConfig = { Power: number, Cooldown: number, PreferredNodeType: ToolCategory, BonusMultiplier: number }`
@@ -81,14 +87,19 @@
   - `CraftCancel` (Client -> Server): `()`
   - `CraftStateSync` (Server -> Client): `(state: Types.CraftingState?)`
   - `UseConsumable` (Client -> Server): `(slotIndex: number)`
-  - `OpenContainer` (Server -> Client): `(containerId: string, title: string, slots: { [string]: Types.Slot })`
+  - `OpenContainer` (Server -> Client): `(containerId: string, title: string, slots: { [string]: Types.Slot }, maxSlots: number?, allowDeposit: boolean?)`
   - `CloseContainer` (Client <-> Server): `(containerId: string?)`
   - `LootTakeSlot` (Client -> Server): `(containerId: string, containerSlot: number, targetPlayerSlot: number?)`
+  - `ContainerDepositSlot` (Client -> Server): `(containerId: string, playerSlot: number, targetContainerSlot: number?)`
   - `AttackRequest` (Client -> Server): `(origin: Vector3, direction: Vector3, targetModel: Model?, isHeadshotHint: boolean?)`
   - `AttackEffect` (Server -> Client): `(attacker: Player, weaponId: string, startPos: Vector3, endPos: Vector3, didHit: boolean, isHeadshot: boolean)`
   - `WorldEventNotify` (Server -> Client): `(payload: Types.WorldEventPayload)`
   - `ExtractionStateSync` (Server -> Client): `(state: Types.ExtractionState)`
   - `RequestReturnToMap` (Client -> Server): `()`
+  - `BuildPlaceRequest` (Client -> Server): `(pieceType: Types.BuildPieceType, gridX: number, gridY: number, gridZ: number, rotY: number)`
+  - `BuildUpgradeRequest` (Client -> Server): `(uid: string, targetTier: Types.BuildTier)`
+  - `BuildDemolishRequest` (Client -> Server): `(uid: string)`
+  - `BaseStateSync` (Server -> Client): `(pieces: { Types.SavedBuildPiece })`
 - `Net.InitServer()` — создаёт папку `Remotes` и все события.
 - `Net.GetEvent(eventName: string): RemoteEvent` — на сервере находит/создаёт `RemoteEvent`, на клиенте ожидает через `WaitForChild`.
 
@@ -100,6 +111,7 @@
 - `Recipes` (`Recipes.luau`): словарь `recipeId -> Types.RecipeConfig` (`craft_bandage`, `craft_water_bottle`, `craft_hatchet`, `craft_pickaxe`, `craft_workbench_1`, `craft_spear`, `craft_metal_hatchet`, `craft_hunting_bow`, `craft_arrow`, `craft_pipe_pistol`, `craft_pistol_ammo`).
 - `Weapons` (`Weapons.luau`): словарь `itemId -> Types.WeaponConfig` (`wooden_spear`, `spear`, `hatchet`, `metal_hatchet`, `pickaxe`, `hunting_bow`, `pipe_pistol`, а также константа `FISTS`).
 - `LootTables` (`LootTables.luau`): словарь `tableId -> Types.LootTableConfig` (`wooden_crate`, `military_crate`, `airdrop`).
+- `BuildingConfig` (`BuildingConfig.luau`): константы сетки (`GridSize = 12`, `WallHeight = 10`, `GridMinXZ = -10`, `GridMaxXZ = 10`, `GridMinY = 0`, `GridMaxY = 4`, `MaxPiecesPerBase = 200`, `ValidRotations`, `PieceOrder`, `TierOrder`), словарь `Pieces` (`foundation`, `wall`, `doorway`, `roof`, `storage_box`, `workbench_1`) и словарь `Tiers` (`wood`, `stone`, `metal`).
 
 ---
 
@@ -113,7 +125,7 @@
 - `DataService.IsTeleporting(player: Player): boolean` — возвращает `true`, если профиль игрока освобождён для штатного телепорта (чтобы `OnSessionEnd` не кикал игрока).
 - `DataService.ReleaseForTeleport(player: Player): boolean` — синхронизирует `RuntimeData` в `profile.Data`, вызывает `profile:EndSession()`, ожидает снятия `SessionLock` (`profile:IsActive() == false` и завершение `OnAfterSave` в пределах `5` сек) и возвращает результат.
 - `DataService.RestoreAfterFailedTeleport(player: Player): boolean` — перезагружает профиль игрока при сбое телепортации (`TeleportInitFailed` / таймаут).
-- `DataService.Init()` — подключает `PlayerAdded` / `PlayerRemoving`, управляет сессиями `ProfileStore` (включая `Stats: SurvivalStats` с `Reconcile` для старых профилей).
+- `DataService.Init()` — подключает `PlayerAdded` / `PlayerRemoving`, управляет сессиями `ProfileStore` (`PlayerData_v1`, включая `Stats: SurvivalStats` и `Base: BaseData` со строковой сериализацией слотов сундуков и `Reconcile` для старых профилей).
 
 ### `InventoryService` (`src/server/Services/InventoryService.luau`)
 - `InventoryService.GetEquippedSlot(player: Player): number` — возвращает текущий слот хотбара игрока (`1..6`, по умолчанию `1`).
@@ -135,8 +147,10 @@
 - `ResourceService.Init()` — сканирует `Workspace.ResourceNodes`, обрабатывает `HitNode` (валидация дистанции `<= 14`, кулдаун по инструменту, множители, `BonusOnDestroy`, истощение/респавн) и рассылает `NodeUpdated`.
 
 ### `CraftingService` (`src/server/Services/CraftingService.luau`)
+- `CraftingService.RegisterStation(stationId: string, stationType: string, position: Vector3)` — регистрирует динамически размещённый верстак (например, на базе игрока).
+- `CraftingService.UnregisterStation(stationId: string)` — удаляет динамический верстак по `stationId`.
 - `CraftingService.GetActiveCraft(player: Player): Types.CraftingState?` — возвращает текущий активный крафт игрока или `nil`.
-- `CraftingService.Init()` — сканирует `Workspace.Workbenches` (атрибут `StationType`, дистанция `<= 14` studs), обрабатывает `CraftRequest` (транзакционное списание, `task.delay` с токеном сессии, выдача результата) и `CraftCancel`, а также возвращает ресурсы через `DataService.OnBeforeUnload` и `PlayerRemoving`.
+- `CraftingService.Init()` — сканирует `Workspace.Workbenches` (атрибут `StationType`, дистанция `<= 14` studs, а также проверяет `dynamicStations`), обрабатывает `CraftRequest` (транзакционное списание, `task.delay` с токеном сессии, выдача результата) и `CraftCancel`, а также возвращает ресурсы через `DataService.OnBeforeUnload` и `PlayerRemoving`.
 
 ### `SurvivalService` (`src/server/Services/SurvivalService.luau`)
 - `SurvivalService.GetStats(player: Player): Types.SurvivalStats?` — возвращает копию текущих статов выживания игрока.
@@ -146,13 +160,15 @@
 ### `LootService` (`src/server/Services/LootService.luau`)
 - `LootService.RollLootTable(tableId: string): Types.Inventory` — взвешенная генерация лута по таблице из `LootTables`.
 - `LootService.RegisterSlotsContainer(model: Model, title: string, ownerName: string, slots: Types.Inventory, lifeTime: number): string` — регистрирует временный контейнер (рюкзак смерти, аирдроп и т.п.) с `ProximityPrompt` и авто-удалением по `lifeTime`.
+- `LootService.RegisterStorageContainer(model: Model, title: string, ownerUserId: number, maxSlots: number, initialSlots: Types.Inventory, onChanged: ((slots: Types.Inventory) -> ())?): string` — регистрирует постоянный сундук базы (`Kind = "Storage"`, `AllowDeposit = true`, проверка владельца `OwnerUserId`, `ProximityPrompt` `"Open Storage"`).
+- `LootService.UnregisterContainer(containerId: string)` — отвязывает контейнер и закрывает UI у зрителей без уничтожения модели.
 - `LootService.SpawnTemporaryContainer(model: Model, title: string, tableId: string, lifeTime: number): string` — генерирует лут по `tableId` и регистрирует временный контейнер.
-- `LootService.OpenContainerForPlayer(player: Player, containerId: string): boolean` — открывает контейнер игроку после проверки состояния и дистанции `<= MAX_LOOT_DISTANCE` (`14` studs).
+- `LootService.OpenContainerForPlayer(player: Player, containerId: string): boolean` — открывает контейнер игроку после проверки владельца, состояния и дистанции `<= MAX_LOOT_DISTANCE` (`14` studs).
 - `LootService.CloseContainerForPlayer(player: Player, notifyClient: boolean)` — закрывает активный контейнер игрока.
 - `LootService.DestroyContainer(containerId: string)` — закрывает окно у всех зрителей, удаляет контейнер и уничтожает его модель.
 - `LootService.GetContainerState(containerId: string): Types.LootContainerState?` — возвращает копию состояния контейнера или `nil`.
 - `LootService.IsContainerDepleted(containerId: string): boolean` — возвращает `true`, если POI-ящик сейчас истощён и ожидает респавна.
-- `LootService.Init()` — сканирует `Workspace.POI` (модели с атрибутом `LootTable`), наполняет ящики, привязывает `ProximityPrompt`, обрабатывает `CloseContainer` и `LootTakeSlot` (проверка дистанции `<= 14` studs), истощение/респавн POI-ящиков (`RespawnTime` или `RespawnTimeOverride` в Studio) и периодическую проверку дистанции активных зрителей.
+- `LootService.Init()` — сканирует `Workspace.POI` (модели с атрибутом `LootTable`), наполняет ящики, привязывает `ProximityPrompt`, обрабатывает `CloseContainer`, `LootTakeSlot` и `ContainerDepositSlot` (двусторонний обмен для сундуков с проверкой дистанции `<= 14` studs), истощение/респавн POI-ящиков (`RespawnTime` или `RespawnTimeOverride` в Studio) и периодическую проверку дистанции активных зрителей.
 
 ### `WorldEventService` (`src/server/Services/WorldEventService.luau`)
 - `WorldEventService.TriggerAirdropNow(descentTimeOverride: number?): Model` — немедленно запускает событие Supply Drop в случайной точке из `Workspace.AirdropZones` (или в безопасном радиусе на карте), рассылает `WorldEventNotify`, плавно спускает груз с парашютом и дымом, после посадки регистрирует контейнер через `LootService.SpawnTemporaryContainer(..., "Supply Drop", "airdrop", 180)`.
@@ -168,7 +184,13 @@
 - `ExtractionService.GetExtractionState(player: Player): Types.ExtractionState?` — возвращает текущее состояние активного экстракшена игрока или `nil`.
 - `ExtractionService.IsInCombatCooldown(player: Player): boolean` — проверяет, действуют ли ещё `Config.Extraction.CooldownAfterDamage` секунд с последнего получения урона.
 - `ExtractionService.RecordDamage(player: Player)` — фиксирует получение урона игроком и немедленно сбрасывает активный экстракшен.
-- `ExtractionService.Init()` — сканирует `Workspace.ExtractionZones`, отслеживает урон/смерть игроков (`Humanoid.HealthChanged`, `Humanoid.Died`), проверяет нахождение живых игроков в зонах раз в `0.25` сек, рассылает `ExtractionStateSync`, по завершении таймера вызывает `DataService.ReleaseForTeleport(player)` и выполняет симуляцию телепорта в Studio или `TeleportService:TeleportAsync` на `Config.Places.PlayerBase` (с обработкой `TeleportInitFailed`, повторами и восстановлением через `DataService.RestoreAfterFailedTeleport`), а также слушает `RequestReturnToMap`.
+- `ExtractionService.Init()` — сканирует `Workspace.ExtractionZones`, отслеживает урон/смерть игроков (`Humanoid.HealthChanged`, `Humanoid.Died`), проверяет нахождение живых игроков в зонах раз в `0.25` сек, рассылает `ExtractionStateSync`, по завершении таймера вызывает `DataService.ReleaseForTeleport(player)` и выполняет симуляцию телепорта в Studio или `TeleportService:TeleportAsync` на `Config.Places.PlayerBase` (с обработкой `TeleportInitFailed`, повторами и восстановлением через `DataService.RestoreAfterFailedTeleport`).
+
+### `BaseService` (`src/server/Services/BaseService.luau`)
+- `BaseService.IsBaseMode(): boolean` — возвращает `true`, если `game.PlaceId == Config.Places.PlayerBase` или в Studio включён `Workspace:GetAttribute("ForceBaseMode") == true`.
+- `BaseService.GetPlayerPieces(player: Player): { Types.SavedBuildPiece }` — возвращает копию сохранённых построек игрока из `DataService`.
+- `BaseService.GetStorageContainerId(player: Player, uid: string): string?` — возвращает `containerId` заспавненного сундука базы по `uid` постройки.
+- `BaseService.Init()` — в режиме базы спавнит постройки из `data.Base.Pieces` в `Workspace.PlayerBaseStructures` (с регистрацией `storage_box` в `LootService` и `workbench_1` в `CraftingService`), обрабатывает `BuildPlaceRequest`, `BuildUpgradeRequest`, `BuildDemolishRequest` (серверная валидация сетки/коллизий/ресурсов, пересчёт HP и материалов) и `RequestReturnToMap` (освобождение профиля через `DataService.ReleaseForTeleport` и возврат на `Config.Places.MainMap`).
 
 ---
 
@@ -192,35 +214,37 @@
 - `InventoryUIController.IsOpen(): boolean`
 - `InventoryUIController.SetOpen(open: boolean)`
 - `InventoryUIController.Toggle()`
-- `InventoryUIController.Init()` — строит `InventoryGui` (30 слотов), перекладывание двумя кликами, переключение по `Tab` / `I`.
+- `InventoryUIController.Init()` — строит `InventoryGui` (30 слотов), перекладывание двумя кликами, переключение по `Tab` / `I`, автоматическое открытие при открытии сундука с возможностью вложения и отправку `LootController.RequestDeposit` по клику при открытом `LootController.CanDeposit()`.
 
 ### `CraftingController` (`src/client/Controllers/CraftingController.luau`)
 - `CraftingController.IsOpen(): boolean`
 - `CraftingController.SetOpen(open: boolean)`
 - `CraftingController.Toggle()`
 - `CraftingController.GetActiveCraft(): Types.CraftingState?`
-- `CraftingController.Init()` — строит `CraftingGui` со списком рецептов (подсветка ингредиентов из `InventoryController`, пометка станции `[Workbench Lv.1]`), прогресс-баром по `CraftStateSync`, кнопками `Craft` / `Cancel`, открытием вместе с `InventoryUIController` или по `C`.
+- `CraftingController.Init()` — строит `CraftingGui` со списком рецептов (подсветка ингредиентов из `InventoryController`, пометка станции `[Workbench Lv.1]`), прогресс-баром по `CraftStateSync`, кнопками `Craft` / `Cancel`, открытием вместе с `InventoryUIController` (кроме случая открытого `LootController`) или по `C`.
 
 ### `GatheringController` (`src/client/Controllers/GatheringController.luau`)
 - `GatheringController.GetNodeState(nodeId: string): NodeClientState?`
 - `GatheringController.IsCursorOnActiveNode(): boolean` — проверяет, наведён ли курсор на неистощённую ноду ресурсов в радиусе добычи (`MAX_GATHER_DISTANCE_CLIENT`).
-- `GatheringController.Init()` — строит `GatherHudGui`, выполняет raycast от курсора (блокируется при открытом `InventoryUIController`, `CraftingController`, `LootController` или экипированном расходнике из `Consumables`), отправляет `HitNode`, слушает `NodeUpdated` и проигрывает визуальный отклик.
+- `GatheringController.Init()` — строит `GatherHudGui`, выполняет raycast от курсора (блокируется при активном `BuildingController.IsBuildMode()`, открытых `InventoryUIController`, `CraftingController`, `LootController` или экипированном расходнике из `Consumables`), отправляет `HitNode`, слушает `NodeUpdated` и проигрывает визуальный отклик.
 
 ### `SurvivalHudController` (`src/client/Controllers/SurvivalHudController.luau`)
 - `SurvivalHudController.Init()` — строит `SurvivalHudGui` (полоски `Health`, `Hunger`, `Thirst` в левом нижнем углу), читает `Humanoid.Health` и атрибуты `Hunger` / `Thirst` у `LocalPlayer`, подсвечивает/пульсирует полоску при `<= 15`.
 
 ### `ConsumableController` (`src/client/Controllers/ConsumableController.luau`)
-- `ConsumableController.Init()` — по клику ЛКМ (если закрыты окна `InventoryUIController`, `CraftingController`, `LootController` и выбранный слот хотбара содержит предмет из `Consumables`) отправляет `UseConsumable(selectedSlot)` с локальным кулдауном.
+- `ConsumableController.Init()` — по клику ЛКМ (если не активен `BuildingController.IsBuildMode()`, закрыты окна `InventoryUIController`, `CraftingController`, `LootController` и выбранный слот хотбара содержит предмет из `Consumables`) отправляет `UseConsumable(selectedSlot)` с локальным кулдауном.
 
 ### `LootController` (`src/client/Controllers/LootController.luau`)
 - `LootController.OpenChanged: Signal.Signal<boolean>` — сигнал открытия/закрытия окна лута.
 - `LootController.IsOpen(): boolean`
 - `LootController.GetActiveContainerId(): string?`
+- `LootController.CanDeposit(): boolean` — возвращает `true`, если открыт сундук с разрешением вложения предметов.
+- `LootController.RequestDeposit(playerSlot: number)` — отправляет `ContainerDepositSlot(activeContainerId, playerSlot)`.
 - `LootController.Close()`
-- `LootController.Init()` — строит `LootGui` (30-слотовая сетка контейнера и кнопка закрытия), открывается/обновляется по `OpenContainer`, закрывается по `CloseContainer` или кнопке `X`, по клику на слот отправляет `LootTakeSlot`.
+- `LootController.Init()` — строит `LootGui` (динамическая сетка до 30 слотов, 18 слотов и парное расположение рядом с `InventoryGui` для сундуков базы), открывается/обновляется по `OpenContainer`, закрывается по `CloseContainer` или кнопке `X`, по клику на слот отправляет `LootTakeSlot`.
 
 ### `CombatController` (`src/client/Controllers/CombatController.luau`)
-- `CombatController.Init()` — строит минималистичный прицел `CrosshairGui` по центру экрана (крестик + вспышка хитмаркера на `0.15s`, красная при хэдшоте), по ЛКМ (если закрыты UI-окна, нет фокуса в `TextBox`, в руках не предмет из `Consumables` и `GatheringController.IsCursorOnActiveNode() == false`) вычисляет `origin` от головы/`HumanoidRootPart` и `direction` в точку прицеливания курсора, проверяет локальный кулдаун и боеприпасы и отправляет `AttackRequest`, а по `AttackEffect` отрисовывает трассер для дальнобойного оружия (`0.12s`).
+- `CombatController.Init()` — строит минималистичный прицел `CrosshairGui` по центру экрана (крестик + вспышка хитмаркера на `0.15s`, красная при хэдшоте), по ЛКМ (если не активен `BuildingController.IsBuildMode()`, закрыты UI-окна, нет фокуса в `TextBox`, в руках не предмет из `Consumables` и `GatheringController.IsCursorOnActiveNode() == false`) вычисляет `origin` от головы/`HumanoidRootPart` и `direction` в точку прицеливания курсора, проверяет локальный кулдаун и боеприпасы и отправляет `AttackRequest`, а по `AttackEffect` отрисовывает трассер для дальнобойного оружия (`0.12s`).
 
 ### `WorldEventController` (`src/client/Controllers/WorldEventController.luau`)
 - `WorldEventController.IsBannerVisible(): boolean` — возвращает, отображается ли сейчас верхний HUD-баннер мирового события.
@@ -231,3 +255,10 @@
 - `ExtractionController.IsVisible(): boolean` — возвращает, отображается ли сейчас панель таймера экстракшена `ExtractionGui.ExtractionPanel`.
 - `ExtractionController.GetState(): Types.ExtractionState?` — возвращает копию последнего полученного от сервера состояния экстракшена или `nil`.
 - `ExtractionController.Init()` — создаёт `ExtractionGui` в верхней-центральной части экрана (`ExtractionPanel`), слушает `ExtractionStateSync`, отображает название зоны, текст статуса/таймера (`Extracting in %.1fs...`) и прогресс-бар заполнения и автоматически скрывает панель при `state.Active == false`.
+
+### `BuildingController` (`src/client/Controllers/BuildingController.luau`)
+- `BuildingController.IsBaseMode(): boolean` — возвращает `true` на плейсе базы или при `ForceBaseMode == true` в Studio.
+- `BuildingController.IsBuildMode(): boolean` — возвращает `true`, когда активен режим строительства на базе.
+- `BuildingController.SetBuildMode(enabled: boolean)` — включает/выключает режим строительства, сбрасывает превью и подсветку.
+- `BuildingController.GetPieces(): { Types.SavedBuildPiece }` — возвращает копию кэшированного списка построек базы.
+- `BuildingController.Init()` — строит `BuildingGui` (панель действий `Build [B]` и `Deploy to PvP Map`, меню выбора построек, кнопки `Rotate`, `Upgrade [G]`, `Demolish`), управляет призрачным превью по сетке `GridSize = 12` с зелёной/красной индикацией коллизии и ресурсов, отправляет `BuildPlaceRequest`, `BuildUpgradeRequest`, `BuildDemolishRequest`, `RequestReturnToMap` и слушает `BaseStateSync`.

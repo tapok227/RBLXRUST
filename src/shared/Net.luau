@@ -17,11 +17,16 @@ local Events = table.freeze({
 	OpenContainer = "OpenContainer",
 	CloseContainer = "CloseContainer",
 	LootTakeSlot = "LootTakeSlot",
+	ContainerDepositSlot = "ContainerDepositSlot",
 	AttackRequest = "AttackRequest",
 	AttackEffect = "AttackEffect",
 	WorldEventNotify = "WorldEventNotify",
 	ExtractionStateSync = "ExtractionStateSync",
 	RequestReturnToMap = "RequestReturnToMap",
+	BuildPlaceRequest = "BuildPlaceRequest",
+	BuildUpgradeRequest = "BuildUpgradeRequest",
+	BuildDemolishRequest = "BuildDemolishRequest",
+	BaseStateSync = "BaseStateSync",
 })
 
 local Net = {

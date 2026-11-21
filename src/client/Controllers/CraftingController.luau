@@ -11,6 +11,7 @@ local Recipes = require(ReplicatedStorage.Shared.configs.Recipes)
 local Net = require(ReplicatedStorage.Shared.Net)
 local InventoryController = require(script.Parent.InventoryController)
 local InventoryUIController = require(script.Parent.InventoryUIController)
+local LootController = require(script.Parent.LootController)
 
 type Inventory = Types.Inventory
 type RecipeConfig = Types.RecipeConfig
@@ -425,7 +426,17 @@ function CraftingController.Init()
 	end)
 
 	InventoryUIController.OpenChanged:Connect(function(open: boolean)
+		if open and LootController.IsOpen() then
+			CraftingController.SetOpen(false)
+			return
+		end
 		CraftingController.SetOpen(open)
+	end)
+
+	LootController.OpenChanged:Connect(function(open: boolean)
+		if open then
+			CraftingController.SetOpen(false)
+		end
 	end)
 
 	local stateSyncEvent = Net.GetEvent(Net.Events.CraftStateSync)
