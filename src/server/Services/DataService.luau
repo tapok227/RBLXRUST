@@ -25,6 +25,7 @@ local TELEPORT_RELEASE_TIMEOUT = 5
 local MOCK_RAID_TARGET_USER_ID = -1001
 local MOCK_RAID_TARGET_NAME = "MockRaidTarget"
 local MOCK_RAID_TARGET_PIECE_COUNT = 12
+local MAX_NAME_CACHE_ENTRIES = 256
 
 local DATA_TEMPLATE = {
 	Version = 1,
@@ -47,6 +48,7 @@ local unloadedByPlayer: { [Player]: boolean } = {}
 local teleportingPlayers: { [Player]: boolean } = {}
 local beforeUnloadCallbacks: { (player: Player, data: PlayerData) -> () } = {}
 local nameCache: { [number]: string } = {}
+local nameCacheCount = 0
 local lastRegisteredPieceCount: { [number]: number } = {}
 local registerInFlight: { [number]: boolean } = {}
 local raidableBasesStore: OrderedDataStore? = nil
@@ -376,6 +378,17 @@ local function registerRaidableBaseByUserId(userId: number, pieceCount: number)
 	end
 end
 
+local function cacheDisplayName(userId: number, displayName: string)
+	if nameCache[userId] == nil then
+		if nameCacheCount >= MAX_NAME_CACHE_ENTRIES then
+			table.clear(nameCache)
+			nameCacheCount = 0
+		end
+		nameCacheCount += 1
+	end
+	nameCache[userId] = displayName
+end
+
 local function resolveDisplayName(userId: number): string
 	local cached = nameCache[userId]
 	if cached ~= nil then
@@ -384,7 +397,7 @@ local function resolveDisplayName(userId: number): string
 
 	local online = Players:GetPlayerByUserId(userId)
 	if online ~= nil then
-		nameCache[userId] = online.DisplayName
+		cacheDisplayName(userId, online.DisplayName)
 		return online.DisplayName
 	end
 
@@ -392,7 +405,7 @@ local function resolveDisplayName(userId: number): string
 		return Players:GetNameFromUserIdAsync(userId)
 	end)
 	if ok and type(fetched) == "string" and #fetched > 0 then
-		nameCache[userId] = fetched
+		cacheDisplayName(userId, fetched)
 		return fetched
 	end
 
@@ -468,11 +481,14 @@ local function onPlayerRemoving(player: Player)
 			syncRuntimeToProfile(profile, runtimePlayerData)
 		end
 		profile:EndSession()
-		Profiles[player] = nil
-		RuntimeData[player] = nil
-		unloadedByPlayer[player] = nil
 	end
+	Profiles[player] = nil
+	RuntimeData[player] = nil
+	unloadedByPlayer[player] = nil
 	teleportingPlayers[player] = nil
+	if not registerInFlight[player.UserId] then
+		lastRegisteredPieceCount[player.UserId] = nil
+	end
 end
 
 function DataService.IsTeleporting(player: Player): boolean

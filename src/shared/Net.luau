@@ -40,6 +40,7 @@ local Net = {
 }
 
 local remotesFolder: Folder? = nil
+local eventCache: { [string]: RemoteEvent } = {}
 
 local function getOrCreateFolder(): Folder
 	if remotesFolder and remotesFolder.Parent then
@@ -68,27 +69,39 @@ function Net.InitServer()
 	local folder = getOrCreateFolder()
 	for _, eventName in Events do
 		local existing = folder:FindFirstChild(eventName)
-		if not existing then
+		if existing and existing:IsA("RemoteEvent") then
+			eventCache[eventName] = existing
+		elseif not existing then
 			local remote = Instance.new("RemoteEvent")
 			remote.Name = eventName
 			remote.Parent = folder
+			eventCache[eventName] = remote
 		end
 	end
 end
 
 function Net.GetEvent(eventName: string): RemoteEvent
+	local cached = eventCache[eventName]
+	if cached ~= nil and cached.Parent ~= nil then
+		return cached
+	end
+
 	local folder = getOrCreateFolder()
 	if RunService:IsServer() then
 		local existing = folder:FindFirstChild(eventName)
 		if existing and existing:IsA("RemoteEvent") then
+			eventCache[eventName] = existing
 			return existing
 		end
 		local remote = Instance.new("RemoteEvent")
 		remote.Name = eventName
 		remote.Parent = folder
+		eventCache[eventName] = remote
 		return remote
 	else
-		return folder:WaitForChild(eventName) :: RemoteEvent
+		local remote = folder:WaitForChild(eventName) :: RemoteEvent
+		eventCache[eventName] = remote
+		return remote
 	end
 end
 

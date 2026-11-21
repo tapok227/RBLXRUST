@@ -110,8 +110,8 @@
   - `PlaceExplosiveRequest` (Client -> Server): `(targetUid: string, hitPosition: Vector3)`
   - `RaidHudSync` (Server -> Client): `(state: Types.RaidHudState)`
   - `RaidExtractRequest` (Client -> Server): `()`
-- `Net.InitServer()` — создаёт папку `Remotes` и все события.
-- `Net.GetEvent(eventName: string): RemoteEvent` — на сервере находит/создаёт `RemoteEvent`, на клиенте ожидает через `WaitForChild`.
+- `Net.InitServer()` — создаёт папку `Remotes`, все события и прогревает кэш ссылок `RemoteEvent`.
+- `Net.GetEvent(eventName: string): RemoteEvent` — возвращает кэшированный `RemoteEvent` (при промахе кэша находит/создаёт на сервере или ожидает через `WaitForChild` на клиенте).
 
 ### Конфиги (`src/shared/configs/`)
 - `Items` (`Items.luau`): словарь `itemId -> Types.ItemConfig` (`wood`, `stone`, `metal_ore`, `cloth`, `hatchet`, `pickaxe`, `bandage`, `cooked_meat`, `water_bottle`, `workbench_1`, `spear`, `metal_hatchet`, `wooden_spear`, `hunting_bow`, `arrow`, `pipe_pistol`, `pistol_ammo`, `scrap`, `tech_parts`, `satchel_charge`, `c4_charge`).
@@ -140,7 +140,7 @@
 - `DataService.RegisterRaidableBase(player: Player)` — при наличии построек на базе игрока записывает `UserId` и их количество в `OrderedDataStore("RaidableBases_v1")` (внутри `pcall`).
 - `DataService.GetRaidTargets(excludeUserId: number, limit: number): { Types.RaidTargetInfo }` — возвращает топ целей из `RaidableBases_v1` (в Studio при отсутствии реальных целей добавляет `MockRaidTarget`).
 - `DataService.LoadBaseSnapshot(targetUserId: number): Types.BaseData?` — загружает read-only снимок базы цели через `PlayerStore:GetAsync("Player_" .. targetUserId)` без захвата `SessionLock`.
-- `DataService.Init()` — подключает `PlayerAdded` / `PlayerRemoving`, управляет сессиями `ProfileStore` (`PlayerData_v1`, включая `Stats: SurvivalStats` и `Base: BaseData` со строковой сериализацией слотов сундуков, автоматическим обновлением `RaidableBases_v1` при сохранении и `Reconcile` для старых профилей).
+- `DataService.Init()` — подключает `PlayerAdded` / `PlayerRemoving` (безусловная очистка всех таблиц игрока и `lastRegisteredPieceCount` при выходе, ограниченный кэш имён `nameCache <= 256`), управляет сессиями `ProfileStore` (`PlayerData_v1`, включая `Stats: SurvivalStats` и `Base: BaseData` со строковой сериализацией слотов сундуков, автоматическим обновлением `RaidableBases_v1` при сохранении и `Reconcile` для старых профилей).
 
 ### `InventoryService` (`src/server/Services/InventoryService.luau`)
 - `InventoryService.GetEquippedSlot(player: Player): number` — возвращает текущий слот хотбара игрока (`1..6`, по умолчанию `1`).
@@ -156,34 +156,34 @@
 - `InventoryService.RemoveItems(player: Player, items: { Types.ItemBatchEntry }): boolean` — транзакционное списание набора предметов (с откатом по снимку при сбое) + одна отправка `InventorySync`.
 - `InventoryService.ConsumeSlot(player: Player, slotIndex: number, count: number): boolean` — списывает `count` единиц из конкретного слота `1..30`, удаляет слот при `<= 0` и отправляет `InventorySync`.
 - `InventoryService.ClearInventory(player: Player): Types.Inventory` — очищает все 30 слотов игрока, отправляет `InventorySync` и возвращает копию изъятых предметов.
-- `InventoryService.Init()` — инициализирует `Net`, слушает `InventoryMove` (`1..30`), `HotbarSelect` (`1..6`) и выдаёт стартовый набор в Studio (включая `water_bottle`, `hunting_bow`, `satchel_charge` x3, `arrow`).
+- `InventoryService.Init()` — инициализирует `Net`, слушает `InventoryMove` (`1..30`), `HotbarSelect` (`1..6`), безопасно пропускает `InventorySync` для выходящих игроков (`player.Parent ~= Players`), очищает `equippedSlots` в `PlayerRemoving` и выдаёт стартовый набор в Studio (включая `water_bottle`, `hunting_bow`, `satchel_charge` x3, `arrow`).
 
 ### `ResourceService` (`src/server/Services/ResourceService.luau`)
-- `ResourceService.Init()` — сканирует `Workspace.ResourceNodes`, обрабатывает `HitNode` (валидация дистанции `<= 14`, кулдаун по инструменту, множители, `BonusOnDestroy`, истощение/респавн) и рассылает `NodeUpdated`.
+- `ResourceService.Init()` — сканирует `Workspace.ResourceNodes`, обрабатывает `HitNode` (валидация дистанции `<= 14`, кулдаун по инструменту, множители, `BonusOnDestroy`, истощение/респавн) и рассылает `NodeUpdated` ближайшим игрокам в радиусе `120` studs (и всем при истощении/респавне).
 
 ### `CraftingService` (`src/server/Services/CraftingService.luau`)
 - `CraftingService.RegisterStation(stationId: string, stationType: string, position: Vector3)` — регистрирует динамически размещённый верстак (например, на базе игрока).
 - `CraftingService.UnregisterStation(stationId: string)` — удаляет динамический верстак по `stationId`.
 - `CraftingService.GetActiveCraft(player: Player): Types.CraftingState?` — возвращает текущий активный крафт игрока или `nil`.
-- `CraftingService.Init()` — сканирует `Workspace.Workbenches` (атрибут `StationType`, дистанция `<= 14` studs, а также проверяет `dynamicStations`), обрабатывает `CraftRequest` (транзакционное списание, `task.delay` с токеном сессии, выдача результата) и `CraftCancel`, а также возвращает ресурсы через `DataService.OnBeforeUnload` и `PlayerRemoving`.
+- `CraftingService.Init()` — сканирует `Workspace.Workbenches` (атрибут `StationType`, дистанция `<= 14` studs, а также проверяет `dynamicStations`), обрабатывает `CraftRequest` (транзакционное списание, `task.delay` с токеном сессии и отменой потока через `task.cancel` при отмене/выходе, выдача результата) и `CraftCancel`, а также возвращает ресурсы через `DataService.OnBeforeUnload` и `PlayerRemoving`.
 
 ### `SurvivalService` (`src/server/Services/SurvivalService.luau`)
 - `SurvivalService.GetStats(player: Player): Types.SurvivalStats?` — возвращает копию текущих статов выживания игрока.
 - `SurvivalService.GetContainerState(containerId: string): Types.LootContainerState?` — делегирует в `LootService.GetContainerState(containerId)`.
-- `SurvivalService.Init()` — запускает цикл выживания раз в `2.0` сек (`-0.35` голода, `-0.5` жажды, пассивный реген `+1.5 HP` при `> 70`, урон `1.5 HP` при `<= 0`), реплицирует `Hunger` / `Thirst` / `Starving` / `Dehydrated` через атрибуты `Player`, обрабатывает `UseConsumable`, спавнит Greybox-рюкзак в `Workspace.LootContainers` при смерти (`Humanoid.Died`) на `300` сек (регистрация и логика контейнера делегированы `LootService`) и сбрасывает статы после респавна (`100 / 80 / 80`).
+- `SurvivalService.Init()` — запускает цикл выживания раз в `2.0` сек (`-0.35` голода, `-0.5` жажды, пассивный реген `+1.5 HP` при `> 70`, урон `1.5 HP` при `<= 0`), реплицирует `Hunger` / `Thirst` / `Starving` / `Dehydrated` через атрибуты `Player` с diff-проверкой `GetAttribute ~= value`, очищает пер-персонажные ресурсы по `CharacterRemoving` и `PlayerRemoving` через `Janitor`, обрабатывает `UseConsumable`, спавнит Greybox-рюкзак в `Workspace.LootContainers` при смерти (`Humanoid.Died`) на `300` сек (регистрация и логика контейнера делегированы `LootService`) и сбрасывает статы после респавна (`100 / 80 / 80`).
 
 ### `LootService` (`src/server/Services/LootService.luau`)
 - `LootService.RollLootTable(tableId: string): Types.Inventory` — взвешенная генерация лута по таблице из `LootTables`.
 - `LootService.RegisterSlotsContainer(model: Model, title: string, ownerName: string, slots: Types.Inventory, lifeTime: number): string` — регистрирует временный контейнер (рюкзак смерти, аирдроп и т.п.) с `ProximityPrompt` и авто-удалением по `lifeTime`.
 - `LootService.RegisterStorageContainer(model: Model, title: string, ownerUserId: number?, maxSlots: number, initialSlots: Types.Inventory, onChanged: ((slots: Types.Inventory) -> ())?, allowDeposit: boolean?): string` — регистрирует постоянный или рейдовый сундук (`Kind = "Storage"`, опциональная проверка владельца `OwnerUserId`, флаг `allowDeposit`, `ProximityPrompt`).
-- `LootService.UnregisterContainer(containerId: string)` — отвязывает контейнер и закрывает UI у зрителей без уничтожения модели.
+- `LootService.UnregisterContainer(containerId: string)` — отвязывает контейнер, отключает `PromptConn` / отменяет `ExpireThread` и закрывает UI у зрителей без уничтожения модели.
 - `LootService.SpawnTemporaryContainer(model: Model, title: string, tableId: string, lifeTime: number): string` — генерирует лут по `tableId` и регистрирует временный контейнер.
 - `LootService.OpenContainerForPlayer(player: Player, containerId: string): boolean` — открывает контейнер игроку после проверки владельца, состояния и дистанции `<= MAX_LOOT_DISTANCE` (`14` studs).
 - `LootService.CloseContainerForPlayer(player: Player, notifyClient: boolean)` — закрывает активный контейнер игрока.
-- `LootService.DestroyContainer(containerId: string)` — закрывает окно у всех зрителей, удаляет контейнер и уничтожает его модель.
+- `LootService.DestroyContainer(containerId: string)` — закрывает окно у всех зрителей, отключает `PromptConn` / отменяет `ExpireThread`, удаляет контейнер и уничтожает его модель.
 - `LootService.GetContainerState(containerId: string): Types.LootContainerState?` — возвращает копию состояния контейнера или `nil`.
 - `LootService.IsContainerDepleted(containerId: string): boolean` — возвращает `true`, если POI-ящик сейчас истощён и ожидает респавна.
-- `LootService.Init()` — сканирует `Workspace.POI` (модели с атрибутом `LootTable`), наполняет ящики, привязывает `ProximityPrompt`, обрабатывает `CloseContainer`, `LootTakeSlot` и `ContainerDepositSlot` (двусторонний обмен для сундуков с проверкой дистанции `<= 14` studs), истощение/респавн POI-ящиков (`RespawnTime` или `RespawnTimeOverride` в Studio) и периодическую проверку дистанции активных зрителей.
+- `LootService.Init()` — сканирует `Workspace.POI` (модели с атрибутом `LootTable`), наполняет ящики, привязывает `ProximityPrompt`, обрабатывает `CloseContainer`, `LootTakeSlot` и `ContainerDepositSlot` (двусторонний обмен для сундуков с проверкой дистанции `<= 14` studs), истощение/респавн POI-ящиков (`RespawnTime` или `RespawnTimeOverride` в Studio) и периодическую проверку дистанции активных зрителей (с быстрым выходом при отсутствии открытых контейнеров).
 
 ### `WorldEventService` (`src/server/Services/WorldEventService.luau`)
 - `WorldEventService.TriggerAirdropNow(descentTimeOverride: number?): Model` — немедленно запускает событие Supply Drop в случайной точке из `Workspace.AirdropZones` (или в безопасном радиусе на карте), рассылает `WorldEventNotify`, плавно спускает груз с парашютом и дымом, после посадки регистрирует контейнер через `LootService.SpawnTemporaryContainer(..., "Supply Drop", "airdrop", 180)`.
@@ -193,13 +193,13 @@
 
 ### `CombatService` (`src/server/Services/CombatService.luau`)
 - `CombatService.GetEquippedWeapon(player: Player): (string, Types.WeaponConfig)` — возвращает `weaponId` и конфиг активного оружия игрока (или `"fists", Weapons.FISTS`).
-- `CombatService.Init()` — инициализирует `Net`, подписывается на `AttackRequest` (валидация `Vector3` на `NaN`/бесконечность/длину, проверка жизни атакующего и дистанции `origin` от `HumanoidRootPart` `<= 8` studs, серверный кулдаун `Cooldown`, списание `AmmoId`, авторитетный серверный `Workspace:Raycast` с учётом препятствий и игнорированием не-коллизионных декораций, множитель хэдшота по `Head`, запись атрибута `LastAttackerUserId` на модель цели, рассылка `AttackEffect` всем клиентам) и обновляет `HpLabel` манекенов в `Workspace.TestDummies`.
+- `CombatService.Init()` — инициализирует `Net`, подписывается на `AttackRequest` (валидация `Vector3` на `NaN`/бесконечность/длину, проверка жизни атакующего и дистанции `origin` от `HumanoidRootPart` `<= 8` studs, серверный кулдаун `Cooldown`, списание `AmmoId`, авторитетный серверный `Workspace:Raycast` с кэшированием `Workspace.LootContainers` и игнорированием не-коллизионных декораций, множитель хэдшота по `Head`, запись атрибута `LastAttackerUserId` на модель цели, таргетированная рассылка `AttackEffect`: только атакующему при melee-попадании и в радиусе `250` studs для ranged) и обновляет `HpLabel` манекенов в `Workspace.TestDummies`.
 
 ### `ExtractionService` (`src/server/Services/ExtractionService.luau`)
 - `ExtractionService.GetExtractionState(player: Player): Types.ExtractionState?` — возвращает текущее состояние активного экстракшена игрока или `nil`.
 - `ExtractionService.IsInCombatCooldown(player: Player): boolean` — проверяет, действуют ли ещё `Config.Extraction.CooldownAfterDamage` секунд с последнего получения урона.
 - `ExtractionService.RecordDamage(player: Player)` — фиксирует получение урона игроком и немедленно сбрасывает активный экстракшен.
-- `ExtractionService.Init()` — сканирует `Workspace.ExtractionZones`, отслеживает урон/смерть игроков (`Humanoid.HealthChanged`, `Humanoid.Died`), проверяет нахождение живых игроков в зонах раз в `0.25` сек, рассылает `ExtractionStateSync`, по завершении таймера вызывает `DataService.ReleaseForTeleport(player)` и выполняет симуляцию телепорта в Studio или `TeleportService:TeleportAsync` на `Config.Places.PlayerBase` (с обработкой `TeleportInitFailed`, повторами и восстановлением через `DataService.RestoreAfterFailedTeleport`).
+- `ExtractionService.Init()` — сканирует `Workspace.ExtractionZones` (с предвычисленным `HalfSize`), отслеживает урон/смерть игроков (`Humanoid.HealthChanged`, `Humanoid.Died`) и очищает состояние по `CharacterRemoving` / `PlayerRemoving`, проверяет нахождение живых игроков в зонах раз в `0.25` сек, рассылает `ExtractionStateSync` только игрокам в зоне/статусе, по завершении таймера вызывает `DataService.ReleaseForTeleport(player)` и выполняет симуляцию телепорта в Studio или `TeleportService:TeleportAsync` на `Config.Places.PlayerBase` (с обработкой `TeleportInitFailed`, повторами и восстановлением через `DataService.RestoreAfterFailedTeleport`).
 
 ### `BaseService` (`src/server/Services/BaseService.luau`)
 - `BaseService.IsBaseMode(): boolean` — возвращает `true`, если `game.PlaceId == Config.Places.PlayerBase` (и не активен режим рейда `Workspace.RaidServerMode` / `PrivateServerOwnerId == 0`) или в Studio включён `Workspace:GetAttribute("ForceBaseMode") == true`.
@@ -247,7 +247,7 @@
 ### `GatheringController` (`src/client/Controllers/GatheringController.luau`)
 - `GatheringController.GetNodeState(nodeId: string): NodeClientState?`
 - `GatheringController.IsCursorOnActiveNode(): boolean` — проверяет, наведён ли курсор на неистощённую ноду ресурсов в радиусе добычи (`MAX_GATHER_DISTANCE_CLIENT`).
-- `GatheringController.Init()` — строит `GatherHudGui`, выполняет raycast от курсора (блокируется при активном `BuildingController.IsBuildMode()`, открытых `InventoryUIController`, `CraftingController`, `LootController` или экипированном расходнике из `Consumables`), отправляет `HitNode`, слушает `NodeUpdated` и проигрывает визуальный отклик.
+- `GatheringController.Init()` — строит `GatherHudGui`, выполняет raycast от курсора (блокируется при активном `BuildingController.IsBuildMode()`, открытых `InventoryUIController`, `CraftingController`, `LootController` или экипированном расходнике из `Consumables`; при наведении приоритетно читает атрибут `Hp` модели), отправляет `HitNode`, слушает `NodeUpdated` и проигрывает визуальный отклик.
 
 ### `SurvivalHudController` (`src/client/Controllers/SurvivalHudController.luau`)
 - `SurvivalHudController.Init()` — строит `SurvivalHudGui` (полоски `Health`, `Hunger`, `Thirst` в левом нижнем углу), читает `Humanoid.Health` и атрибуты `Hunger` / `Thirst` у `LocalPlayer`, подсвечивает/пульсирует полоску при `<= 15`.
@@ -291,3 +291,42 @@
 - `RaidController.OpenTargetList()` — открывает `RaidSelectFrame` и отправляет `RaidListRequest`.
 - `RaidController.CloseTargetList()` — закрывает `RaidSelectFrame`.
 - `RaidController.Init()` — строит `RaidGui` (верхний красный HUD `RaidHudFrame` с таймером `RAIDING: <TargetName> | Time Left: MM:SS` и кнопкой `"Extract with Loot"`, а также модальное окно `RaidSelectFrame` со списком целей и кнопками `"Launch Raid"`), привязывает `ProximityPrompt` на `Workspace.RaidTerminal`, слушает `RaidListSync` / `RaidHudSync` и по ЛКМ (при выбранной взрывчатке из `Explosives` в руках) отправляет `PlaceExplosiveRequest` по цели в `Workspace.RaidTargetStructures`. (При открытом окне терминала или взрывчатке в руках также блокируются клики в `CombatController`, `GatheringController` и `ConsumableController`.)
+
+---
+
+## 5. Производительность и нагрузочный тест (Этап 10)
+
+### Проведённые оптимизации и аудит утечек памяти
+- **Кэширование `RemoteEvent` (`Net`)**: `Net.GetEvent` кэширует найденные/созданные `RemoteEvent` в `eventCache`, исключая повторный `FindFirstChild` при частых тиках.
+- **Таргетированная сетевая рассылка**:
+  - `ResourceService`: `NodeUpdated` рассылается игрокам в радиусе `120` studs от ноды (и всем при истощении/респавне); `GatheringController` читает атрибут `Hp` модели при наведении.
+  - `CombatService`: `AttackEffect` для ближнего боя отправляется только атакующему при попадании; для дальнобойного оружия — игрокам в радиусе `250` studs.
+  - `SurvivalService`: атрибуты `Hunger` / `Thirst` / `Starving` / `Dehydrated` обновляются через `SetAttribute` только при изменении значения.
+  - `ExtractionService` и `RaidService`: рассылка `ExtractionStateSync` и `RaidHudSync` выполняется только для активных участников, а цикл зон экстракшена имеет ранний выход при `#zones == 0` и предвычисленный `HalfSize`.
+- **Полная очистка при выходе и смерти (`PlayerRemoving` / `CharacterRemoving`)**:
+  - `DataService`: безусловная очистка `Profiles`, `RuntimeData`, `unloadedByPlayer`, `teleportingPlayers` и `lastRegisteredPieceCount` в `onPlayerRemoving`; ограничение `nameCache` (`<= 256` записей).
+  - `InventoryService`: проверка `player.Parent == Players` перед `InventorySync`.
+  - `SurvivalService` и `ExtractionService`: добавлена очистка пер-персонажных связей через `CharacterRemoving` (`Janitor:Cleanup()`).
+  - `CraftingService` и `LootService`: отмена отложенных потоков `task.delay` через `task.cancel` и отключение `ProximityPrompt.Triggered` (`PromptConn:Disconnect()`) при отмене/уничтожении контейнера; ранний выход в `stepViewerDistanceCheck` при отсутствии открытых контейнеров.
+  - `RaidService`: удаление сработавших зарядов из `session.ActiveExplosives` при детонации.
+
+### Результаты замеров в Roblox Studio (50 виртуальных игроков × 100 итераций)
+- **Время серверного тика (бюджет `< 4.0 мс`)**:
+  - Суммарно все 6 подсистем за тик на 50 игроков: **0.809 мс** (пик **1.767 мс**).
+  - `Inventory`: **0.119 мс** (макс **0.313 мс**)
+  - `Resource`: **0.035 мс** (макс **0.185 мс**)
+  - `Crafting`: **0.097 мс** (макс **0.280 мс**)
+  - `Survival`: **0.165 мс** (макс **0.461 мс**)
+  - `Combat` (50 Raycast): **0.297 мс** (макс **0.790 мс**)
+  - `Extraction`: **0.092 мс** (макс **0.171 мс**)
+- **Память и утечки (`SceneAnalysisService` / `Stats`)**:
+  - `ScriptMemory` на сервере: **0.84 МБ** до спавна, **0.84 МБ** на пике, **0.84 МБ** после массовой очистки; на клиенте в чистом прогоне: **1.75 МБ** (`1,837,328` байт).
+  - Утечка экземпляров (`GetUnparentedInstancesAsync`): **0** экземпляров от сервисов и контроллеров проекта (2 системных на сервере и 11 встроенных `PlayerModule`/`Animate` на клиенте).
+- **Сетевой стресс-тест (`settings().Network`: 100 мс Inbound/Outbound, Jitter 15 мс, Loss 0.2%)**:
+  - Добыча дерева `tree_1` на бегу (`11.44` studs на клиенте): успешное попадание (`Hp: 100 -> 50`, `Wood: 250 -> 280`).
+  - Стрельба из `hunting_bow` по `Dummy_1`: успешный хэдшот (`Health: 100 -> 10`, `Wooden Arrow: 20 -> 19`).
+  - Двойной быстрый `InventoryMove` и двойной `CraftRequest("craft_bandage")`: без дублирования/потери предметов (`610 == 610`), крафт запустился однократно (`Cloth: 20 -> 18`, `Bandage: 5 -> 6`), UI корректно сбросился.
+- **Сквозной E2E-прогон и анализ сцены**:
+  - Ошибок скриптов в `Output`: **0**.
+  - Клиентский рендер (`GetTriangleCompositionAsync`): `Opaque` = `16` draw calls / `7,452` треугольников; `UI` = `12` draw calls / `210` треугольников.
+  - Карта: 1 `SpawnLocation`, все папки сцен на месте, тестовые атрибуты и временные объекты отсутствуют.

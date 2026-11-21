@@ -850,6 +850,11 @@ local function detonateExplosive(
 		explosiveRecord.Part:Destroy()
 	end
 
+	local idx = table.find(session.ActiveExplosives, explosiveRecord)
+	if idx ~= nil then
+		table.remove(session.ActiveExplosives, idx)
+	end
+
 	local explosion = Instance.new("Explosion")
 	explosion.Position = blastOrigin
 	explosion.BlastRadius = cfg.Radius

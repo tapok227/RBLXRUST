@@ -290,7 +290,8 @@ local function updateHoverHud()
 	end
 
 	local state = nodeStates[nodeId]
-	local hp = if state then state.Hp else nodeConfig.MaxHp
+	local attrHp = model:GetAttribute("Hp")
+	local hp = if typeof(attrHp) == "number" then attrHp elseif state then state.Hp else nodeConfig.MaxHp
 	local maxHp = if state then state.MaxHp else nodeConfig.MaxHp
 	local depleted = if state then state.Depleted else (model:GetAttribute("Depleted") == true)
 

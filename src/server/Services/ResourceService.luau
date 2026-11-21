@@ -31,11 +31,33 @@ type ServerNodeState = {
 	Depleted: boolean,
 }
 
+local NODE_UPDATE_BROADCAST_RADIUS = 120
+
 local nodesById: { [string]: ServerNodeState } = {}
 local lastHitTime: { [Player]: number } = {}
 local isInitialized = false
 
 local ResourceService = {}
+
+local function broadcastNodeUpdate(node: ServerNodeState, sourcePlayer: Player?, forceAll: boolean)
+	local updatedEvent = Net.GetEvent(Net.Events.NodeUpdated)
+	if forceAll then
+		updatedEvent:FireAllClients(node.NodeId, node.Hp, node.MaxHp, node.Depleted)
+		return
+	end
+
+	for _, other in Players:GetPlayers() do
+		if other == sourcePlayer then
+			updatedEvent:FireClient(other, node.NodeId, node.Hp, node.MaxHp, node.Depleted)
+			continue
+		end
+		local character = other.Character
+		local hrp = if character then character:FindFirstChild("HumanoidRootPart") else nil
+		if hrp and hrp:IsA("BasePart") and (hrp.Position - node.Position).Magnitude <= NODE_UPDATE_BROADCAST_RADIUS then
+			updatedEvent:FireClient(other, node.NodeId, node.Hp, node.MaxHp, node.Depleted)
+		end
+	end
+end
 
 local function registerNode(model: Instance)
 	if not model:IsA("Model") then
@@ -125,8 +147,7 @@ local function depleteNode(node: ServerNodeState, respawnTime: number)
 			snapshot.Part.CanQuery = snapshot.OriginalCanQuery
 		end
 
-		local updatedEvent = Net.GetEvent(Net.Events.NodeUpdated)
-		updatedEvent:FireAllClients(node.NodeId, node.Hp, node.MaxHp, false)
+		broadcastNodeUpdate(node, nil, true)
 	end)
 end
 
@@ -187,8 +208,7 @@ local function onHitNode(player: Player, nodeIdAny: any)
 
 	InventoryService.AddItem(player, nodeConfig.ResourceId, totalGrant)
 
-	local updatedEvent = Net.GetEvent(Net.Events.NodeUpdated)
-	updatedEvent:FireAllClients(node.NodeId, node.Hp, node.MaxHp, node.Depleted)
+	broadcastNodeUpdate(node, player, node.Depleted)
 end
 
 function ResourceService.Init()

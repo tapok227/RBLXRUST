@@ -46,6 +46,8 @@ type ServerContainer = {
 	Slots: Inventory,
 	Viewers: { [Player]: boolean },
 	RespawnToken: number,
+	PromptConn: RBXScriptConnection?,
+	ExpireThread: thread?,
 }
 
 local DEPLETED_TRANSPARENCY = 0.75
@@ -333,8 +335,26 @@ local function depletePoiContainer(container: ServerContainer)
 	end)
 end
 
+local function cleanupContainerHandles(container: ServerContainer)
+	if container.PromptConn ~= nil then
+		container.PromptConn:Disconnect()
+		container.PromptConn = nil
+	end
+	if
+		container.ExpireThread ~= nil
+		and container.ExpireThread ~= coroutine.running()
+		and coroutine.status(container.ExpireThread) == "suspended"
+	then
+		pcall(task.cancel, container.ExpireThread)
+	end
+	container.ExpireThread = nil
+end
+
 local function bindPrompt(container: ServerContainer, prompt: ProximityPrompt)
-	prompt.Triggered:Connect(function(viewer: Player)
+	if container.PromptConn ~= nil then
+		container.PromptConn:Disconnect()
+	end
+	container.PromptConn = prompt.Triggered:Connect(function(viewer: Player)
 		LootService.OpenContainerForPlayer(viewer, container.ContainerId)
 	end)
 end
@@ -424,6 +444,8 @@ local function registerPoiCrate(model: Instance)
 		Slots = LootService.RollLootTable(tableIdAttr),
 		Viewers = {},
 		RespawnToken = 0,
+		PromptConn = nil,
+		ExpireThread = nil,
 	}
 
 	containers[containerId] = container
@@ -645,6 +667,9 @@ local function onContainerDepositSlot(
 end
 
 local function stepViewerDistanceCheck()
+	if next(openContainerByPlayer) == nil then
+		return
+	end
 	local toClose: { Player } = {}
 	for player, openId in openContainerByPlayer do
 		local container = containers[openId]
@@ -767,6 +792,8 @@ function LootService.RegisterSlotsContainer(
 		Slots = cloneInventory(slots, Types.INVENTORY_SIZE),
 		Viewers = {},
 		RespawnToken = 0,
+		PromptConn = nil,
+		ExpireThread = nil,
 	}
 
 	containers[containerId] = container
@@ -780,7 +807,8 @@ function LootService.RegisterSlotsContainer(
 	end
 
 	if lifeTime > 0 then
-		task.delay(lifeTime, function()
+		container.ExpireThread = task.delay(lifeTime, function()
+			container.ExpireThread = nil
 			if containers[containerId] == container then
 				LootService.DestroyContainer(containerId)
 			end
@@ -857,6 +885,8 @@ function LootService.RegisterStorageContainer(
 		Slots = cloneInventory(initialSlots, effectiveMaxSlots),
 		Viewers = {},
 		RespawnToken = 0,
+		PromptConn = nil,
+		ExpireThread = nil,
 	}
 
 	containers[containerId] = container
@@ -879,6 +909,7 @@ function LootService.UnregisterContainer(containerId: string)
 		return
 	end
 	containers[containerId] = nil
+	cleanupContainerHandles(container)
 	closeAllViewers(container)
 end
 
@@ -936,6 +967,7 @@ function LootService.DestroyContainer(containerId: string)
 		return
 	end
 	containers[containerId] = nil
+	cleanupContainerHandles(container)
 	closeAllViewers(container)
 
 	if container.Model.Parent then

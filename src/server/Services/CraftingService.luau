@@ -24,6 +24,7 @@ type ActiveCraft = {
 	StartTime: number,
 	EndTime: number,
 	ConsumedIngredients: { Ingredient },
+	DelayThread: thread?,
 }
 
 local stations: { StationEntry } = {}
@@ -96,6 +97,14 @@ local function cancelCraft(player: Player, syncClient: boolean)
 	end
 
 	activeCrafts[player] = nil
+	if
+		active.DelayThread ~= nil
+		and active.DelayThread ~= coroutine.running()
+		and coroutine.status(active.DelayThread) == "suspended"
+	then
+		pcall(task.cancel, active.DelayThread)
+	end
+	active.DelayThread = nil
 	InventoryService.AddItems(player, active.ConsumedIngredients)
 
 	if syncClient and player.Parent == Players then
@@ -147,13 +156,15 @@ local function onCraftRequest(player: Player, recipeIdAny: any)
 		})
 	end
 
-	activeCrafts[player] = {
+	local craftRecord: ActiveCraft = {
 		Token = token,
 		RecipeId = recipe.Id,
 		StartTime = startTime,
 		EndTime = endTime,
 		ConsumedIngredients = consumed,
+		DelayThread = nil,
 	}
+	activeCrafts[player] = craftRecord
 
 	local statePayload: CraftingState = {
 		RecipeId = recipe.Id,
@@ -162,7 +173,8 @@ local function onCraftRequest(player: Player, recipeIdAny: any)
 	}
 	Net.GetEvent(Net.Events.CraftStateSync):FireClient(player, statePayload)
 
-	task.delay(recipe.CraftTime, function()
+	craftRecord.DelayThread = task.delay(recipe.CraftTime, function()
+		craftRecord.DelayThread = nil
 		local current = activeCrafts[player]
 		if current == nil or current.Token ~= token then
 			return

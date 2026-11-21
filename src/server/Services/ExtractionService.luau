@@ -17,6 +17,7 @@ type ExtractionState = Types.ExtractionState
 type ExtractionZone = {
 	Part: BasePart,
 	ZoneName: string,
+	HalfSize: Vector3,
 }
 
 type ActiveExtraction = {
@@ -80,15 +81,15 @@ local function getAliveCharacterParts(player: Player): (Model?, BasePart?, Human
 	return character, hrp, humanoid
 end
 
-local function isPointInZone(point: Vector3, zonePart: BasePart): boolean
-	local localPos = zonePart.CFrame:PointToObjectSpace(point)
-	local half = zonePart.Size * 0.5
+local function isPointInZone(point: Vector3, zone: ExtractionZone): boolean
+	local localPos = zone.Part.CFrame:PointToObjectSpace(point)
+	local half = zone.HalfSize
 	return math.abs(localPos.X) <= half.X and math.abs(localPos.Y) <= half.Y + 2 and math.abs(localPos.Z) <= half.Z
 end
 
 local function findZoneAtPosition(point: Vector3): ExtractionZone?
 	for _, zone in zones do
-		if zone.Part.Parent ~= nil and isPointInZone(point, zone.Part) then
+		if zone.Part.Parent ~= nil and isPointInZone(point, zone) then
 			return zone
 		end
 	end
@@ -132,6 +133,7 @@ local function scanExtractionZones()
 			table.insert(zones, {
 				Part = child,
 				ZoneName = zoneName,
+				HalfSize = child.Size * 0.5,
 			})
 		end
 	end
@@ -205,6 +207,14 @@ local function bindPlayer(player: Player)
 
 	janitor:Add(player.CharacterAdded:Connect(function(character: Model)
 		task.spawn(bindCharacter, player, character)
+	end))
+
+	janitor:Add(player.CharacterRemoving:Connect(function()
+		cancelExtraction(player, nil)
+		local existingCharJanitor = characterJanitors[player]
+		if existingCharJanitor then
+			existingCharJanitor:Cleanup()
+		end
 	end))
 
 	if player.Character then
@@ -389,6 +399,9 @@ local function onTeleportInitFailed(
 end
 
 local function stepExtractionLoop()
+	if #zones == 0 then
+		return
+	end
 	local now = os.clock()
 	for _, player in Players:GetPlayers() do
 		if teleportInProgress[player] or DataService.GetData(player) == nil then

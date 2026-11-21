@@ -63,11 +63,17 @@ local function getOrCreateLootFolder(): Folder
 	return folder
 end
 
+local function setAttributeIfChanged(player: Player, name: string, value: any)
+	if player:GetAttribute(name) ~= value then
+		player:SetAttribute(name, value)
+	end
+end
+
 local function syncPlayerAttributes(player: Player, stats: SurvivalStats)
-	player:SetAttribute("Hunger", roundStat(stats.Hunger))
-	player:SetAttribute("Thirst", roundStat(stats.Thirst))
-	player:SetAttribute("Starving", stats.Hunger <= 0)
-	player:SetAttribute("Dehydrated", stats.Thirst <= 0)
+	setAttributeIfChanged(player, "Hunger", roundStat(stats.Hunger))
+	setAttributeIfChanged(player, "Thirst", roundStat(stats.Thirst))
+	setAttributeIfChanged(player, "Starving", stats.Hunger <= 0)
+	setAttributeIfChanged(player, "Dehydrated", stats.Thirst <= 0)
 end
 
 local function getAliveCharacterParts(player: Player): (Model?, BasePart?, Humanoid?)
@@ -262,6 +268,14 @@ local function bindPlayer(player: Player)
 
 	janitor:Add(player.CharacterAdded:Connect(function(character: Model)
 		task.spawn(bindCharacter, player, character)
+	end))
+
+	janitor:Add(player.CharacterRemoving:Connect(function(character: Model)
+		appliedCharacters[character] = nil
+		local existingCharJanitor = characterJanitors[player]
+		if existingCharJanitor then
+			existingCharJanitor:Cleanup()
+		end
 	end))
 
 	if player.Character then

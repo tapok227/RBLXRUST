@@ -13,9 +13,11 @@ local InventoryService = require(ServerScriptService.Server.Services.InventorySe
 type WeaponConfig = Types.WeaponConfig
 
 local MAX_RAY_FILTER_PASSES = 8
+local ATTACK_EFFECT_BROADCAST_RADIUS = 250
 
 local lastAttackTime: { [Player]: number } = {}
 local boundDummies: { [Model]: boolean } = {}
+local cachedLootFolder: Instance? = nil
 local isInitialized = false
 
 local CombatService = {}
@@ -64,9 +66,11 @@ local function performServerRaycast(
 	attackerCharacter: Model
 ): RaycastResult?
 	local excludeList: { Instance } = { attackerCharacter }
-	local lootFolder = Workspace:FindFirstChild("LootContainers")
-	if lootFolder ~= nil then
-		table.insert(excludeList, lootFolder)
+	if cachedLootFolder == nil or cachedLootFolder.Parent == nil then
+		cachedLootFolder = Workspace:FindFirstChild("LootContainers")
+	end
+	if cachedLootFolder ~= nil then
+		table.insert(excludeList, cachedLootFolder)
 	end
 
 	local params = RaycastParams.new()
@@ -94,6 +98,42 @@ local function performServerRaycast(
 	end
 
 	return nil
+end
+
+local function broadcastAttackEffect(
+	attacker: Player,
+	weaponId: string,
+	category: Types.WeaponCategory,
+	origin: Vector3,
+	endPos: Vector3,
+	didHit: boolean,
+	isHeadshot: boolean
+)
+	local effectEvent = Net.GetEvent(Net.Events.AttackEffect)
+	if category == "Melee" then
+		if didHit and attacker.Parent == Players then
+			effectEvent:FireClient(attacker, attacker, weaponId, origin, endPos, didHit, isHeadshot)
+		end
+		return
+	end
+
+	for _, other in Players:GetPlayers() do
+		if other == attacker then
+			effectEvent:FireClient(other, attacker, weaponId, origin, endPos, didHit, isHeadshot)
+			continue
+		end
+		local char = other.Character
+		local hrp = if char then char:FindFirstChild("HumanoidRootPart") else nil
+		if hrp and hrp:IsA("BasePart") then
+			local pos = hrp.Position
+			if
+				(pos - origin).Magnitude <= ATTACK_EFFECT_BROADCAST_RADIUS
+				or (pos - endPos).Magnitude <= ATTACK_EFFECT_BROADCAST_RADIUS
+			then
+				effectEvent:FireClient(other, attacker, weaponId, origin, endPos, didHit, isHeadshot)
+			end
+		end
+	end
 end
 
 local function bindDummyHpDisplay(model: Model)
@@ -220,7 +260,7 @@ local function onAttackRequest(
 		end
 	end
 
-	Net.GetEvent(Net.Events.AttackEffect):FireAllClients(player, weaponId, origin, endPos, didHit, isHeadshot)
+	broadcastAttackEffect(player, weaponId, weapon.Category, origin, endPos, didHit, isHeadshot)
 end
 
 function CombatService.GetEquippedWeapon(player: Player): (string, WeaponConfig)

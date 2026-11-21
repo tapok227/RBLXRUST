@@ -62,6 +62,9 @@ local function serializeInventoryForNet(inv: Inventory): { [string]: Slot }
 end
 
 local function sendInventorySync(player: Player)
+	if player.Parent ~= Players then
+		return
+	end
 	local data = DataService.GetData(player)
 	if not data then
 		return
