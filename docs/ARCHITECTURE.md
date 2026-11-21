@@ -35,6 +35,9 @@
 - `CraftingState = { RecipeId: string, StartTime: number, EndTime: number }`
 - `WeaponCategory = "Melee" | "Ranged"`
 - `WeaponConfig = { Category: WeaponCategory, Damage: number, HeadshotMultiplier: number, Range: number, Cooldown: number, AmmoId: string? }`
+- `LootDropEntry = { Id: string, Weight: number, MinCount: number, MaxCount: number }`
+- `LootTableConfig = { Rolls: number, RespawnTime: number, Items: { LootDropEntry } }`
+- `WorldEventPayload = { EventType: string, Title: string, Position: Vector3, Duration: number }`
 
 Константы:
 - `INVENTORY_SIZE = 30`, `HOTBAR_SIZE = 6`
@@ -77,16 +80,18 @@
   - `LootTakeSlot` (Client -> Server): `(containerId: string, containerSlot: number, targetPlayerSlot: number?)`
   - `AttackRequest` (Client -> Server): `(origin: Vector3, direction: Vector3, targetModel: Model?, isHeadshotHint: boolean?)`
   - `AttackEffect` (Server -> Client): `(attacker: Player, weaponId: string, startPos: Vector3, endPos: Vector3, didHit: boolean, isHeadshot: boolean)`
+  - `WorldEventNotify` (Server -> Client): `(payload: Types.WorldEventPayload)`
 - `Net.InitServer()` — создаёт папку `Remotes` и все события.
 - `Net.GetEvent(eventName: string): RemoteEvent` — на сервере находит/создаёт `RemoteEvent`, на клиенте ожидает через `WaitForChild`.
 
 ### Конфиги (`src/shared/configs/`)
-- `Items` (`Items.luau`): словарь `itemId -> Types.ItemConfig` (`wood`, `stone`, `metal_ore`, `cloth`, `hatchet`, `pickaxe`, `bandage`, `cooked_meat`, `water_bottle`, `workbench_1`, `spear`, `metal_hatchet`, `wooden_spear`, `hunting_bow`, `arrow`, `pipe_pistol`, `pistol_ammo`).
+- `Items` (`Items.luau`): словарь `itemId -> Types.ItemConfig` (`wood`, `stone`, `metal_ore`, `cloth`, `hatchet`, `pickaxe`, `bandage`, `cooked_meat`, `water_bottle`, `workbench_1`, `spear`, `metal_hatchet`, `wooden_spear`, `hunting_bow`, `arrow`, `pipe_pistol`, `pistol_ammo`, `scrap`, `tech_parts`).
 - `Consumables` (`Consumables.luau`): словарь `itemId -> Types.ConsumableConfig` (`bandage`, `cooked_meat`, `water_bottle`).
 - `Tools` (`Tools.luau`): словарь `itemId -> Types.ToolConfig` (`hatchet`, `pickaxe`, `metal_hatchet`).
 - `Nodes` (`Nodes.luau`): словарь `nodeType -> Types.NodeConfig` (`tree`, `stone_node`, `metal_node`).
 - `Recipes` (`Recipes.luau`): словарь `recipeId -> Types.RecipeConfig` (`craft_bandage`, `craft_water_bottle`, `craft_hatchet`, `craft_pickaxe`, `craft_workbench_1`, `craft_spear`, `craft_metal_hatchet`, `craft_hunting_bow`, `craft_arrow`, `craft_pipe_pistol`, `craft_pistol_ammo`).
 - `Weapons` (`Weapons.luau`): словарь `itemId -> Types.WeaponConfig` (`wooden_spear`, `spear`, `hatchet`, `metal_hatchet`, `pickaxe`, `hunting_bow`, `pipe_pistol`, а также константа `FISTS`).
+- `LootTables` (`LootTables.luau`): словарь `tableId -> Types.LootTableConfig` (`wooden_crate`, `military_crate`, `airdrop`).
 
 ---
 
@@ -124,8 +129,25 @@
 
 ### `SurvivalService` (`src/server/Services/SurvivalService.luau`)
 - `SurvivalService.GetStats(player: Player): Types.SurvivalStats?` — возвращает копию текущих статов выживания игрока.
-- `SurvivalService.GetContainerState(containerId: string): Types.LootContainerState?` — возвращает копию состояния контейнера лута или `nil`.
-- `SurvivalService.Init()` — запускает цикл выживания раз в `2.0` сек (`-0.35` голода, `-0.5` жажды, пассивный реген `+1.5 HP` при `> 70`, урон `1.5 HP` при `<= 0`), реплицирует `Hunger` / `Thirst` / `Starving` / `Dehydrated` через атрибуты `Player`, обрабатывает `UseConsumable`, спавнит Greybox-рюкзак в `Workspace.LootContainers` при смерти (`Humanoid.Died`) на `300` сек с `ProximityPrompt` (`"Loot Body"`), сбрасывает статы после респавна (`100 / 80 / 80`) и валидирует `LootTakeSlot` (`<= 14` studs) и `CloseContainer`.
+- `SurvivalService.GetContainerState(containerId: string): Types.LootContainerState?` — делегирует в `LootService.GetContainerState(containerId)`.
+- `SurvivalService.Init()` — запускает цикл выживания раз в `2.0` сек (`-0.35` голода, `-0.5` жажды, пассивный реген `+1.5 HP` при `> 70`, урон `1.5 HP` при `<= 0`), реплицирует `Hunger` / `Thirst` / `Starving` / `Dehydrated` через атрибуты `Player`, обрабатывает `UseConsumable`, спавнит Greybox-рюкзак в `Workspace.LootContainers` при смерти (`Humanoid.Died`) на `300` сек (регистрация и логика контейнера делегированы `LootService`) и сбрасывает статы после респавна (`100 / 80 / 80`).
+
+### `LootService` (`src/server/Services/LootService.luau`)
+- `LootService.RollLootTable(tableId: string): Types.Inventory` — взвешенная генерация лута по таблице из `LootTables`.
+- `LootService.RegisterSlotsContainer(model: Model, title: string, ownerName: string, slots: Types.Inventory, lifeTime: number): string` — регистрирует временный контейнер (рюкзак смерти, аирдроп и т.п.) с `ProximityPrompt` и авто-удалением по `lifeTime`.
+- `LootService.SpawnTemporaryContainer(model: Model, title: string, tableId: string, lifeTime: number): string` — генерирует лут по `tableId` и регистрирует временный контейнер.
+- `LootService.OpenContainerForPlayer(player: Player, containerId: string): boolean` — открывает контейнер игроку после проверки состояния и дистанции `<= MAX_LOOT_DISTANCE` (`14` studs).
+- `LootService.CloseContainerForPlayer(player: Player, notifyClient: boolean)` — закрывает активный контейнер игрока.
+- `LootService.DestroyContainer(containerId: string)` — закрывает окно у всех зрителей, удаляет контейнер и уничтожает его модель.
+- `LootService.GetContainerState(containerId: string): Types.LootContainerState?` — возвращает копию состояния контейнера или `nil`.
+- `LootService.IsContainerDepleted(containerId: string): boolean` — возвращает `true`, если POI-ящик сейчас истощён и ожидает респавна.
+- `LootService.Init()` — сканирует `Workspace.POI` (модели с атрибутом `LootTable`), наполняет ящики, привязывает `ProximityPrompt`, обрабатывает `CloseContainer` и `LootTakeSlot` (проверка дистанции `<= 14` studs), истощение/респавн POI-ящиков (`RespawnTime` или `RespawnTimeOverride` в Studio) и периодическую проверку дистанции активных зрителей.
+
+### `WorldEventService` (`src/server/Services/WorldEventService.luau`)
+- `WorldEventService.TriggerAirdropNow(descentTimeOverride: number?): Model` — немедленно запускает событие Supply Drop в случайной точке из `Workspace.AirdropZones` (или в безопасном радиусе на карте), рассылает `WorldEventNotify`, плавно спускает груз с парашютом и дымом, после посадки регистрирует контейнер через `LootService.SpawnTemporaryContainer(..., "Supply Drop", "airdrop", 180)`.
+- `WorldEventService.GetActiveAirdropModel(): Model?` — возвращает текущую модель активного аирдропа или `nil`.
+- `WorldEventService.GetActiveAirdropContainerId(): string?` — возвращает `containerId` приземлившегося активного аирдропа или `nil`.
+- `WorldEventService.Init()` — инициализирует `Net`, создаёт `Workspace.WorldEvents`, запускает периодический цикл Supply Drop раз в `420` сек и слушает атрибут `Workspace.TriggerAirdropNow` в Studio.
 
 ### `CombatService` (`src/server/Services/CombatService.luau`)
 - `CombatService.GetEquippedWeapon(player: Player): (string, Types.WeaponConfig)` — возвращает `weaponId` и конфиг активного оружия игрока (или `"fists", Weapons.FISTS`).
@@ -182,3 +204,8 @@
 
 ### `CombatController` (`src/client/Controllers/CombatController.luau`)
 - `CombatController.Init()` — строит минималистичный прицел `CrosshairGui` по центру экрана (крестик + вспышка хитмаркера на `0.15s`, красная при хэдшоте), по ЛКМ (если закрыты UI-окна, нет фокуса в `TextBox`, в руках не предмет из `Consumables` и `GatheringController.IsCursorOnActiveNode() == false`) вычисляет `origin` от головы/`HumanoidRootPart` и `direction` в точку прицеливания курсора, проверяет локальный кулдаун и боеприпасы и отправляет `AttackRequest`, а по `AttackEffect` отрисовывает трассер для дальнобойного оружия (`0.12s`).
+
+### `WorldEventController` (`src/client/Controllers/WorldEventController.luau`)
+- `WorldEventController.IsBannerVisible(): boolean` — возвращает, отображается ли сейчас верхний HUD-баннер мирового события.
+- `WorldEventController.GetActiveBeaconCount(): number` — возвращает количество активных 3D-маяков мировых событий.
+- `WorldEventController.Init()` — строит `WorldEventHudGui`, слушает `WorldEventNotify`, показывает верхний баннер на `6` сек, создаёт 3D-маяк (`BillboardGui` с `AlwaysOnTop = true` и якорем в `Workspace.ClientEventBeacons`), обновляет расстояние в реальном времени через `RenderStepped` и удаляет маяк при исчезновении модели груза или по истечении `Duration`.

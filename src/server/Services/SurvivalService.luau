@@ -11,22 +11,12 @@ local Net = require(ReplicatedStorage.Shared.Net)
 local Janitor = require(ReplicatedStorage.Shared.Janitor)
 local DataService = require(ServerScriptService.Server.Services.DataService)
 local InventoryService = require(ServerScriptService.Server.Services.InventoryService)
+local LootService = require(ServerScriptService.Server.Services.LootService)
 
 type Inventory = Types.Inventory
-type Slot = Types.Slot
 type SurvivalStats = Types.SurvivalStats
 type LootContainerState = Types.LootContainerState
 type PlayerData = Types.PlayerData
-
-type ServerLootContainer = {
-	ContainerId: string,
-	OwnerName: string,
-	Slots: Inventory,
-	ExpiresAt: number,
-	Model: Model,
-	PrimaryPart: BasePart,
-	Viewers: { [Player]: boolean },
-}
 
 local HUNGER_LOSS_PER_TICK = 0.35
 local THIRST_LOSS_PER_TICK = 0.5
@@ -39,9 +29,7 @@ local characterJanitors: { [Player]: Janitor.Janitor } = {}
 local appliedCharacters: { [Model]: boolean } = {}
 local nextConsumeTime: { [Player]: number } = {}
 local pendingRespawnReset: { [Player]: boolean } = {}
-local openContainerByPlayer: { [Player]: string } = {}
-local lootContainers: { [string]: ServerLootContainer } = {}
-local nextContainerId = 0
+local nextBagId = 0
 local isInitialized = false
 
 local SurvivalService = {}
@@ -62,34 +50,6 @@ local function hasAnySlots(inv: Inventory): boolean
 		end
 	end
 	return false
-end
-
-local function cloneInventory(inv: Inventory): Inventory
-	local copy: Inventory = {}
-	for i = 1, Types.INVENTORY_SIZE do
-		local slot = inv[i]
-		if slot ~= nil and slot.Count > 0 then
-			copy[i] = {
-				Id = slot.Id,
-				Count = slot.Count,
-			}
-		end
-	end
-	return copy
-end
-
-local function serializeSlotsForNet(slots: Inventory): { [string]: Slot }
-	local raw: { [string]: Slot } = {}
-	for i = 1, Types.INVENTORY_SIZE do
-		local slot = slots[i]
-		if slot ~= nil and slot.Count > 0 then
-			raw[tostring(i)] = {
-				Id = slot.Id,
-				Count = slot.Count,
-			}
-		end
-	end
-	return raw
 end
 
 local function getOrCreateLootFolder(): Folder
@@ -123,90 +83,6 @@ local function getAliveCharacterParts(player: Player): (Model?, BasePart?, Human
 	return character, hrp, humanoid
 end
 
-local function closeContainerForPlayer(player: Player, notifyClient: boolean)
-	local containerId = openContainerByPlayer[player]
-	if containerId == nil then
-		return
-	end
-	openContainerByPlayer[player] = nil
-
-	local container = lootContainers[containerId]
-	if container ~= nil then
-		container.Viewers[player] = nil
-	end
-
-	if notifyClient and player.Parent == Players then
-		Net.GetEvent(Net.Events.CloseContainer):FireClient(player, containerId)
-	end
-end
-
-local function destroyLootContainer(containerId: string)
-	local container = lootContainers[containerId]
-	if container == nil then
-		return
-	end
-	lootContainers[containerId] = nil
-
-	local viewersToNotify: { Player } = {}
-	for viewer in container.Viewers do
-		table.insert(viewersToNotify, viewer)
-	end
-	table.clear(container.Viewers)
-
-	local closeEvent = Net.GetEvent(Net.Events.CloseContainer)
-	for _, viewer in viewersToNotify do
-		if openContainerByPlayer[viewer] == containerId then
-			openContainerByPlayer[viewer] = nil
-		end
-		if viewer.Parent == Players then
-			closeEvent:FireClient(viewer, containerId)
-		end
-	end
-
-	if container.Model.Parent then
-		container.Model:Destroy()
-	end
-end
-
-local function notifyContainerViewers(container: ServerLootContainer)
-	local payload = serializeSlotsForNet(container.Slots)
-	local title = string.format("%s's Backpack", container.OwnerName)
-	local openEvent = Net.GetEvent(Net.Events.OpenContainer)
-
-	local staleViewers: { Player } = {}
-	for viewer in container.Viewers do
-		if viewer.Parent == Players then
-			openEvent:FireClient(viewer, container.ContainerId, title, payload)
-		else
-			table.insert(staleViewers, viewer)
-		end
-	end
-
-	for _, stale in staleViewers do
-		container.Viewers[stale] = nil
-		if openContainerByPlayer[stale] == container.ContainerId then
-			openContainerByPlayer[stale] = nil
-		end
-	end
-end
-
-local function openContainerForPlayer(player: Player, container: ServerLootContainer)
-	local prevContainerId = openContainerByPlayer[player]
-	if prevContainerId ~= nil and prevContainerId ~= container.ContainerId then
-		local prevContainer = lootContainers[prevContainerId]
-		if prevContainer ~= nil then
-			prevContainer.Viewers[player] = nil
-		end
-	end
-
-	openContainerByPlayer[player] = container.ContainerId
-	container.Viewers[player] = true
-
-	local title = string.format("%s's Backpack", container.OwnerName)
-	Net.GetEvent(Net.Events.OpenContainer)
-		:FireClient(player, container.ContainerId, title, serializeSlotsForNet(container.Slots))
-end
-
 local function findDropPosition(deathPosition: Vector3, ignoreCharacter: Model?, lootFolder: Folder): Vector3
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
@@ -230,13 +106,12 @@ local function spawnLootContainer(ownerName: string, deathPosition: Vector3, slo
 	end
 
 	local lootFolder = getOrCreateLootFolder()
-	nextContainerId += 1
-	local containerId = string.format("loot_%d", nextContainerId)
-	local expiresAt = Workspace:GetServerTimeNow() + Types.LOOT_CONTAINER_LIFETIME
+	nextBagId += 1
 	local bagPos = findDropPosition(deathPosition, ignoreCharacter, lootFolder)
+	local title = string.format("%s's Backpack", ownerName)
 
 	local model = Instance.new("Model")
-	model.Name = string.format("LootBag_%s", containerId)
+	model.Name = string.format("LootBag_%d", nextBagId)
 
 	local body = Instance.new("Part")
 	body.Name = "BagBody"
@@ -269,53 +144,18 @@ local function spawnLootContainer(ownerName: string, deathPosition: Vector3, slo
 	strap.Parent = model
 
 	model.PrimaryPart = body
-	model:SetAttribute("ContainerId", containerId)
-	model:SetAttribute("OwnerName", ownerName)
-	model:SetAttribute("ExpiresAt", expiresAt)
 
 	local prompt = Instance.new("ProximityPrompt")
 	prompt.Name = "LootPrompt"
 	prompt.ActionText = "Loot Body"
-	prompt.ObjectText = string.format("%s's Backpack", ownerName)
+	prompt.ObjectText = title
 	prompt.HoldDuration = 0
 	prompt.MaxActivationDistance = 12
 	prompt.RequiresLineOfSight = false
 	prompt.Parent = body
 
-	local container: ServerLootContainer = {
-		ContainerId = containerId,
-		OwnerName = ownerName,
-		Slots = cloneInventory(slots),
-		ExpiresAt = expiresAt,
-		Model = model,
-		PrimaryPart = body,
-		Viewers = {},
-	}
-	lootContainers[containerId] = container
 	model.Parent = lootFolder
-
-	prompt.Triggered:Connect(function(viewer: Player)
-		if lootContainers[containerId] ~= container then
-			return
-		end
-		if DataService.GetData(viewer) == nil then
-			return
-		end
-		local _, hrp, _ = getAliveCharacterParts(viewer)
-		if not hrp then
-			return
-		end
-		if (hrp.Position - body.Position).Magnitude > Types.MAX_LOOT_DISTANCE then
-			return
-		end
-		openContainerForPlayer(viewer, container)
-	end)
-
-	task.delay(Types.LOOT_CONTAINER_LIFETIME, function()
-		if lootContainers[containerId] == container then
-			destroyLootContainer(containerId)
-		end
-	end)
+	LootService.RegisterSlotsContainer(model, title, ownerName, slots, Types.LOOT_CONTAINER_LIFETIME)
 end
 
 local function applyStatsToCharacter(player: Player, character: Model, data: PlayerData)
@@ -395,7 +235,7 @@ local function bindCharacter(player: Player, character: Model)
 		appliedCharacters[character] = nil
 
 		pendingRespawnReset[player] = true
-		closeContainerForPlayer(player, true)
+		LootService.CloseContainerForPlayer(player, true)
 
 		local currentData = DataService.GetData(player)
 		if currentData ~= nil then
@@ -489,85 +329,10 @@ local function onUseConsumable(player: Player, slotIndexAny: any)
 	syncPlayerAttributes(player, data.Stats)
 end
 
-local function onCloseContainer(player: Player, _containerIdAny: any)
-	closeContainerForPlayer(player, false)
-end
-
-local function onLootTakeSlot(player: Player, containerIdAny: any, containerSlotAny: any, targetPlayerSlotAny: any)
-	if typeof(containerIdAny) ~= "string" or #containerIdAny == 0 or #containerIdAny > 64 then
-		return
-	end
-	if not isValidInteger(containerSlotAny) then
-		return
-	end
-	local containerSlot = containerSlotAny :: number
-	if containerSlot < 1 or containerSlot > Types.INVENTORY_SIZE then
-		return
-	end
-
-	local targetPlayerSlot: number? = nil
-	if targetPlayerSlotAny ~= nil then
-		if not isValidInteger(targetPlayerSlotAny) then
-			return
-		end
-		local candidate = targetPlayerSlotAny :: number
-		if candidate < 1 or candidate > Types.INVENTORY_SIZE then
-			return
-		end
-		targetPlayerSlot = candidate
-	end
-
-	if DataService.GetData(player) == nil then
-		return
-	end
-
-	local _, hrp, _ = getAliveCharacterParts(player)
-	if not hrp then
-		return
-	end
-
-	local container = lootContainers[containerIdAny]
-	if container == nil or not container.PrimaryPart.Parent then
-		return
-	end
-
-	if (hrp.Position - container.PrimaryPart.Position).Magnitude > Types.MAX_LOOT_DISTANCE then
-		return
-	end
-
-	local slot = container.Slots[containerSlot]
-	if slot == nil or slot.Count <= 0 then
-		return
-	end
-
-	local remainder: number
-	if targetPlayerSlot ~= nil then
-		remainder = InventoryService.AddItemToSlot(player, slot.Id, slot.Count, targetPlayerSlot)
-	else
-		remainder = InventoryService.AddItem(player, slot.Id, slot.Count)
-	end
-
-	if remainder >= slot.Count then
-		return
-	end
-
-	if remainder <= 0 then
-		container.Slots[containerSlot] = nil
-	else
-		slot.Count = remainder
-	end
-
-	if not hasAnySlots(container.Slots) then
-		destroyLootContainer(container.ContainerId)
-	else
-		notifyContainerViewers(container)
-	end
-end
-
 local function stepSurvivalLoop()
 	for _, player in Players:GetPlayers() do
 		local data = DataService.GetData(player)
-		local _, hrp, humanoid = getAliveCharacterParts(player)
+		local _, _, humanoid = getAliveCharacterParts(player)
 		if data ~= nil and humanoid ~= nil then
 			local stats = data.Stats
 			stats.Hunger = math.clamp(stats.Hunger - HUNGER_LOSS_PER_TICK, 0, Types.MAX_HUNGER)
@@ -588,19 +353,6 @@ local function stepSurvivalLoop()
 			stats.Health = math.clamp(humanoid.Health, 0, humanoid.MaxHealth)
 			syncPlayerAttributes(player, stats)
 		end
-
-		local openId = openContainerByPlayer[player]
-		if openId ~= nil then
-			local container = lootContainers[openId]
-			if
-				container == nil
-				or not container.PrimaryPart.Parent
-				or not hrp
-				or (hrp.Position - container.PrimaryPart.Position).Magnitude > (Types.MAX_LOOT_DISTANCE + 2)
-			then
-				closeContainerForPlayer(player, true)
-			end
-		end
 	end
 end
 
@@ -617,16 +369,7 @@ function SurvivalService.GetStats(player: Player): SurvivalStats?
 end
 
 function SurvivalService.GetContainerState(containerId: string): LootContainerState?
-	local container = lootContainers[containerId]
-	if not container then
-		return nil
-	end
-	return {
-		ContainerId = container.ContainerId,
-		OwnerName = container.OwnerName,
-		Slots = cloneInventory(container.Slots),
-		ExpiresAt = container.ExpiresAt,
-	}
+	return LootService.GetContainerState(containerId)
 end
 
 function SurvivalService.Init()
@@ -639,8 +382,6 @@ function SurvivalService.Init()
 	getOrCreateLootFolder()
 
 	Net.GetEvent(Net.Events.UseConsumable).OnServerEvent:Connect(onUseConsumable)
-	Net.GetEvent(Net.Events.CloseContainer).OnServerEvent:Connect(onCloseContainer)
-	Net.GetEvent(Net.Events.LootTakeSlot).OnServerEvent:Connect(onLootTakeSlot)
 
 	Players.PlayerAdded:Connect(bindPlayer)
 	for _, player in Players:GetPlayers() do
@@ -648,7 +389,7 @@ function SurvivalService.Init()
 	end
 
 	Players.PlayerRemoving:Connect(function(player: Player)
-		closeContainerForPlayer(player, false)
+		LootService.CloseContainerForPlayer(player, false)
 		nextConsumeTime[player] = nil
 		pendingRespawnReset[player] = nil
 

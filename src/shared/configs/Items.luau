@@ -90,6 +90,16 @@ local Items: { [string]: ItemConfig } = {
 		Type = "Resource",
 		MaxStack = 64,
 	},
+	scrap = {
+		Name = "Scrap",
+		Type = "Resource",
+		MaxStack = 500,
+	},
+	tech_parts = {
+		Name = "Tech Parts",
+		Type = "Resource",
+		MaxStack = 50,
+	},
 }
 
 return table.freeze(Items)

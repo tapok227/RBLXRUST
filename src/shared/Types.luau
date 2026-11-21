@@ -104,6 +104,26 @@ export type WeaponConfig = {
 	AmmoId: string?,
 }
 
+export type LootDropEntry = {
+	Id: string,
+	Weight: number,
+	MinCount: number,
+	MaxCount: number,
+}
+
+export type LootTableConfig = {
+	Rolls: number,
+	RespawnTime: number,
+	Items: { LootDropEntry },
+}
+
+export type WorldEventPayload = {
+	EventType: string,
+	Title: string,
+	Position: Vector3,
+	Duration: number,
+}
+
 local Types = {
 	INVENTORY_SIZE = 30,
 	HOTBAR_SIZE = 6,

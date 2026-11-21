@@ -19,6 +19,7 @@ local Events = table.freeze({
 	LootTakeSlot = "LootTakeSlot",
 	AttackRequest = "AttackRequest",
 	AttackEffect = "AttackEffect",
+	WorldEventNotify = "WorldEventNotify",
 })
 
 local Net = {
