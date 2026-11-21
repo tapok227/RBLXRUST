@@ -20,6 +20,8 @@ local Events = table.freeze({
 	AttackRequest = "AttackRequest",
 	AttackEffect = "AttackEffect",
 	WorldEventNotify = "WorldEventNotify",
+	ExtractionStateSync = "ExtractionStateSync",
+	RequestReturnToMap = "RequestReturnToMap",
 })
 
 local Net = {

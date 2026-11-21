@@ -124,6 +124,14 @@ export type WorldEventPayload = {
 	Duration: number,
 }
 
+export type ExtractionState = {
+	Active: boolean,
+	ZoneName: string,
+	TimeLeft: number,
+	TotalTime: number,
+	StatusText: string?,
+}
+
 local Types = {
 	INVENTORY_SIZE = 30,
 	HOTBAR_SIZE = 6,

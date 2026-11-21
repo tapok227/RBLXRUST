@@ -14,6 +14,11 @@
 
 ## 2. Shared-модули (`ReplicatedStorage.Shared`)
 
+### `Config` (`src/shared/Config.luau`)
+- `Game = { Name: string, MaxPlayers: number }`
+- `Places = { MainMap: number, PlayerBase: number }` (`MainMap = 115796771630565`, `PlayerBase = 133157812100009`)
+- `Extraction = { Duration: number, CooldownAfterDamage: number }` (`Duration = 8`, `CooldownAfterDamage = 5`)
+
 ### `Types` (`src/shared/Types.luau`)
 Экспортируемые типы:
 - `ItemType = "Resource" | "Tool" | "Consumable"`
@@ -38,6 +43,7 @@
 - `LootDropEntry = { Id: string, Weight: number, MinCount: number, MaxCount: number }`
 - `LootTableConfig = { Rolls: number, RespawnTime: number, Items: { LootDropEntry } }`
 - `WorldEventPayload = { EventType: string, Title: string, Position: Vector3, Duration: number }`
+- `ExtractionState = { Active: boolean, ZoneName: string, TimeLeft: number, TotalTime: number, StatusText: string? }`
 
 Константы:
 - `INVENTORY_SIZE = 30`, `HOTBAR_SIZE = 6`
@@ -81,6 +87,8 @@
   - `AttackRequest` (Client -> Server): `(origin: Vector3, direction: Vector3, targetModel: Model?, isHeadshotHint: boolean?)`
   - `AttackEffect` (Server -> Client): `(attacker: Player, weaponId: string, startPos: Vector3, endPos: Vector3, didHit: boolean, isHeadshot: boolean)`
   - `WorldEventNotify` (Server -> Client): `(payload: Types.WorldEventPayload)`
+  - `ExtractionStateSync` (Server -> Client): `(state: Types.ExtractionState)`
+  - `RequestReturnToMap` (Client -> Server): `()`
 - `Net.InitServer()` — создаёт папку `Remotes` и все события.
 - `Net.GetEvent(eventName: string): RemoteEvent` — на сервере находит/создаёт `RemoteEvent`, на клиенте ожидает через `WaitForChild`.
 
@@ -102,6 +110,9 @@
 - `DataService.GetData(player: Player): PlayerData?` — возвращает данные игрока или `nil`, если профиль ещё не загружен/не активен.
 - `DataService.OnDataLoaded(callback: (player: Player, data: PlayerData) -> ()): Signal.Connection` — подписывается на `DataLoaded` и немедленно вызывает `callback` для уже загруженных игроков.
 - `DataService.OnBeforeUnload(callback: (player: Player, data: PlayerData) -> ())` — синхронный хук перед сериализацией и закрытием сессии (`PlayerRemoving` / `OnLastSave`).
+- `DataService.IsTeleporting(player: Player): boolean` — возвращает `true`, если профиль игрока освобождён для штатного телепорта (чтобы `OnSessionEnd` не кикал игрока).
+- `DataService.ReleaseForTeleport(player: Player): boolean` — синхронизирует `RuntimeData` в `profile.Data`, вызывает `profile:EndSession()`, ожидает снятия `SessionLock` (`profile:IsActive() == false` и завершение `OnAfterSave` в пределах `5` сек) и возвращает результат.
+- `DataService.RestoreAfterFailedTeleport(player: Player): boolean` — перезагружает профиль игрока при сбое телепортации (`TeleportInitFailed` / таймаут).
 - `DataService.Init()` — подключает `PlayerAdded` / `PlayerRemoving`, управляет сессиями `ProfileStore` (включая `Stats: SurvivalStats` с `Reconcile` для старых профилей).
 
 ### `InventoryService` (`src/server/Services/InventoryService.luau`)
@@ -152,6 +163,12 @@
 ### `CombatService` (`src/server/Services/CombatService.luau`)
 - `CombatService.GetEquippedWeapon(player: Player): (string, Types.WeaponConfig)` — возвращает `weaponId` и конфиг активного оружия игрока (или `"fists", Weapons.FISTS`).
 - `CombatService.Init()` — инициализирует `Net`, подписывается на `AttackRequest` (валидация `Vector3` на `NaN`/бесконечность/длину, проверка жизни атакующего и дистанции `origin` от `HumanoidRootPart` `<= 8` studs, серверный кулдаун `Cooldown`, списание `AmmoId`, авторитетный серверный `Workspace:Raycast` с учётом препятствий и игнорированием не-коллизионных декораций, множитель хэдшота по `Head`, запись атрибута `LastAttackerUserId` на модель цели, рассылка `AttackEffect` всем клиентам) и обновляет `HpLabel` манекенов в `Workspace.TestDummies`.
+
+### `ExtractionService` (`src/server/Services/ExtractionService.luau`)
+- `ExtractionService.GetExtractionState(player: Player): Types.ExtractionState?` — возвращает текущее состояние активного экстракшена игрока или `nil`.
+- `ExtractionService.IsInCombatCooldown(player: Player): boolean` — проверяет, действуют ли ещё `Config.Extraction.CooldownAfterDamage` секунд с последнего получения урона.
+- `ExtractionService.RecordDamage(player: Player)` — фиксирует получение урона игроком и немедленно сбрасывает активный экстракшен.
+- `ExtractionService.Init()` — сканирует `Workspace.ExtractionZones`, отслеживает урон/смерть игроков (`Humanoid.HealthChanged`, `Humanoid.Died`), проверяет нахождение живых игроков в зонах раз в `0.25` сек, рассылает `ExtractionStateSync`, по завершении таймера вызывает `DataService.ReleaseForTeleport(player)` и выполняет симуляцию телепорта в Studio или `TeleportService:TeleportAsync` на `Config.Places.PlayerBase` (с обработкой `TeleportInitFailed`, повторами и восстановлением через `DataService.RestoreAfterFailedTeleport`), а также слушает `RequestReturnToMap`.
 
 ---
 
@@ -209,3 +226,8 @@
 - `WorldEventController.IsBannerVisible(): boolean` — возвращает, отображается ли сейчас верхний HUD-баннер мирового события.
 - `WorldEventController.GetActiveBeaconCount(): number` — возвращает количество активных 3D-маяков мировых событий.
 - `WorldEventController.Init()` — строит `WorldEventHudGui`, слушает `WorldEventNotify`, показывает верхний баннер на `6` сек, создаёт 3D-маяк (`BillboardGui` с `AlwaysOnTop = true` и якорем в `Workspace.ClientEventBeacons`), обновляет расстояние в реальном времени через `RenderStepped` и удаляет маяк при исчезновении модели груза или по истечении `Duration`.
+
+### `ExtractionController` (`src/client/Controllers/ExtractionController.luau`)
+- `ExtractionController.IsVisible(): boolean` — возвращает, отображается ли сейчас панель таймера экстракшена `ExtractionGui.ExtractionPanel`.
+- `ExtractionController.GetState(): Types.ExtractionState?` — возвращает копию последнего полученного от сервера состояния экстракшена или `nil`.
+- `ExtractionController.Init()` — создаёт `ExtractionGui` в верхней-центральной части экрана (`ExtractionPanel`), слушает `ExtractionStateSync`, отображает название зоны, текст статуса/таймера (`Extracting in %.1fs...`) и прогресс-бар заполнения и автоматически скрывает панель при `state.Active == false`.

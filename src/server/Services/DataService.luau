@@ -12,6 +12,7 @@ type Slot = Types.Slot
 type SurvivalStats = Types.SurvivalStats
 
 local PROFILE_STORE_NAME = "PlayerData_v1"
+local TELEPORT_RELEASE_TIMEOUT = 5
 
 local DATA_TEMPLATE = {
 	Version = 1,
@@ -28,6 +29,7 @@ local PlayerStore = ProfileStore.New(PROFILE_STORE_NAME, DATA_TEMPLATE)
 local Profiles: { [Player]: any } = {}
 local RuntimeData: { [Player]: PlayerData } = {}
 local unloadedByPlayer: { [Player]: boolean } = {}
+local teleportingPlayers: { [Player]: boolean } = {}
 local beforeUnloadCallbacks: { (player: Player, data: PlayerData) -> () } = {}
 local dataLoadedSignal: Signal.Signal<Player, PlayerData> = Signal.new()
 local isInitialized = false
@@ -153,7 +155,7 @@ local function loadPlayerProfile(player: Player)
 			Profiles[player] = nil
 			RuntimeData[player] = nil
 			unloadedByPlayer[player] = nil
-			if player.Parent == Players then
+			if player.Parent == Players and not teleportingPlayers[player] then
 				player:Kick("Profile session ended - please rejoin.")
 			end
 		end)
@@ -188,6 +190,77 @@ local function onPlayerRemoving(player: Player)
 		RuntimeData[player] = nil
 		unloadedByPlayer[player] = nil
 	end
+	teleportingPlayers[player] = nil
+end
+
+function DataService.IsTeleporting(player: Player): boolean
+	return teleportingPlayers[player] == true
+end
+
+function DataService.ReleaseForTeleport(player: Player): boolean
+	local profile = Profiles[player]
+	if profile == nil or not profile:IsActive() then
+		return false
+	end
+
+	teleportingPlayers[player] = true
+
+	local runtimePlayerData = RuntimeData[player]
+	if runtimePlayerData ~= nil then
+		runBeforeUnload(player, runtimePlayerData)
+		profile.Data.Version = runtimePlayerData.Version
+		profile.Data.Inventory = serializeInventory(runtimePlayerData.Inventory)
+		profile.Data.Stats = serializeStats(runtimePlayerData.Stats)
+	end
+
+	local saveCompleted = false
+	local afterSaveConn = profile.OnAfterSave:Connect(function()
+		saveCompleted = true
+	end)
+
+	profile:EndSession()
+
+	local deadline = os.clock() + TELEPORT_RELEASE_TIMEOUT
+	while (profile:IsActive() or not saveCompleted) and os.clock() < deadline do
+		task.wait(0.05)
+	end
+
+	afterSaveConn:Disconnect()
+
+	if not profile:IsActive() then
+		Profiles[player] = nil
+		RuntimeData[player] = nil
+		unloadedByPlayer[player] = nil
+	end
+
+	if not saveCompleted then
+		warn(
+			string.format(
+				"[DataService] ReleaseForTeleport timed out for %s (IsActive=%s)",
+				player.Name,
+				tostring(profile:IsActive())
+			)
+		)
+	end
+
+	return not profile:IsActive() and saveCompleted
+end
+
+function DataService.RestoreAfterFailedTeleport(player: Player): boolean
+	if player.Parent ~= Players then
+		teleportingPlayers[player] = nil
+		return false
+	end
+
+	local existingProfile = Profiles[player]
+	if existingProfile ~= nil and existingProfile:IsActive() then
+		teleportingPlayers[player] = nil
+		return true
+	end
+
+	teleportingPlayers[player] = nil
+	loadPlayerProfile(player)
+	return DataService.GetData(player) ~= nil
 end
 
 function DataService.GetData(player: Player): PlayerData?
