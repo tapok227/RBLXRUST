@@ -50,6 +50,9 @@
 - `LootTableConfig = { Rolls: number, RespawnTime: number, Items: { LootDropEntry } }`
 - `WorldEventPayload = { EventType: string, Title: string, Position: Vector3, Duration: number }`
 - `ExtractionState = { Active: boolean, ZoneName: string, TimeLeft: number, TotalTime: number, StatusText: string? }`
+- `ExplosiveConfig = { StructureDamage: number, Radius: number, FuseTime: number }`
+- `RaidTargetInfo = { UserId: number, DisplayName: string, PieceCount: number }`
+- `RaidHudState = { Active: boolean, TargetName: string, TimeLeft: number, StatusText: string? }`
 
 Константы:
 - `INVENTORY_SIZE = 30`, `HOTBAR_SIZE = 6`
@@ -60,6 +63,7 @@
 - `RESPAWN_HEALTH = 100`, `RESPAWN_HUNGER = 80`, `RESPAWN_THIRST = 80`
 - `SURVIVAL_TICK_INTERVAL = 2.0`, `MAX_LOOT_DISTANCE = 14`, `LOOT_CONTAINER_LIFETIME = 300`
 - `MAX_ATTACK_ORIGIN_OFFSET = 8`
+- `MAX_EXPLOSIVE_PLACE_DISTANCE = 14`, `RAID_DURATION = 300`
 
 ### `Signal` (`src/shared/Signal.luau`)
 - `Signal.new<T...>(): Signal<T...>`
@@ -100,16 +104,23 @@
   - `BuildUpgradeRequest` (Client -> Server): `(uid: string, targetTier: Types.BuildTier)`
   - `BuildDemolishRequest` (Client -> Server): `(uid: string)`
   - `BaseStateSync` (Server -> Client): `(pieces: { Types.SavedBuildPiece })`
+  - `RaidListRequest` (Client -> Server): `()`
+  - `RaidListSync` (Server -> Client): `(targets: { Types.RaidTargetInfo })`
+  - `StartRaidRequest` (Client -> Server): `(targetUserId: number)`
+  - `PlaceExplosiveRequest` (Client -> Server): `(targetUid: string, hitPosition: Vector3)`
+  - `RaidHudSync` (Server -> Client): `(state: Types.RaidHudState)`
+  - `RaidExtractRequest` (Client -> Server): `()`
 - `Net.InitServer()` — создаёт папку `Remotes` и все события.
 - `Net.GetEvent(eventName: string): RemoteEvent` — на сервере находит/создаёт `RemoteEvent`, на клиенте ожидает через `WaitForChild`.
 
 ### Конфиги (`src/shared/configs/`)
-- `Items` (`Items.luau`): словарь `itemId -> Types.ItemConfig` (`wood`, `stone`, `metal_ore`, `cloth`, `hatchet`, `pickaxe`, `bandage`, `cooked_meat`, `water_bottle`, `workbench_1`, `spear`, `metal_hatchet`, `wooden_spear`, `hunting_bow`, `arrow`, `pipe_pistol`, `pistol_ammo`, `scrap`, `tech_parts`).
+- `Items` (`Items.luau`): словарь `itemId -> Types.ItemConfig` (`wood`, `stone`, `metal_ore`, `cloth`, `hatchet`, `pickaxe`, `bandage`, `cooked_meat`, `water_bottle`, `workbench_1`, `spear`, `metal_hatchet`, `wooden_spear`, `hunting_bow`, `arrow`, `pipe_pistol`, `pistol_ammo`, `scrap`, `tech_parts`, `satchel_charge`, `c4_charge`).
 - `Consumables` (`Consumables.luau`): словарь `itemId -> Types.ConsumableConfig` (`bandage`, `cooked_meat`, `water_bottle`).
 - `Tools` (`Tools.luau`): словарь `itemId -> Types.ToolConfig` (`hatchet`, `pickaxe`, `metal_hatchet`).
 - `Nodes` (`Nodes.luau`): словарь `nodeType -> Types.NodeConfig` (`tree`, `stone_node`, `metal_node`).
-- `Recipes` (`Recipes.luau`): словарь `recipeId -> Types.RecipeConfig` (`craft_bandage`, `craft_water_bottle`, `craft_hatchet`, `craft_pickaxe`, `craft_workbench_1`, `craft_spear`, `craft_metal_hatchet`, `craft_hunting_bow`, `craft_arrow`, `craft_pipe_pistol`, `craft_pistol_ammo`).
+- `Recipes` (`Recipes.luau`): словарь `recipeId -> Types.RecipeConfig` (`craft_bandage`, `craft_water_bottle`, `craft_hatchet`, `craft_pickaxe`, `craft_workbench_1`, `craft_spear`, `craft_metal_hatchet`, `craft_hunting_bow`, `craft_arrow`, `craft_pipe_pistol`, `craft_pistol_ammo`, `craft_satchel_charge`, `craft_c4_charge`).
 - `Weapons` (`Weapons.luau`): словарь `itemId -> Types.WeaponConfig` (`wooden_spear`, `spear`, `hatchet`, `metal_hatchet`, `pickaxe`, `hunting_bow`, `pipe_pistol`, а также константа `FISTS`).
+- `Explosives` (`Explosives.luau`): словарь `itemId -> Types.ExplosiveConfig` (`satchel_charge`, `c4_charge`).
 - `LootTables` (`LootTables.luau`): словарь `tableId -> Types.LootTableConfig` (`wooden_crate`, `military_crate`, `airdrop`).
 - `BuildingConfig` (`BuildingConfig.luau`): константы сетки (`GridSize = 12`, `WallHeight = 10`, `GridMinXZ = -10`, `GridMaxXZ = 10`, `GridMinY = 0`, `GridMaxY = 4`, `MaxPiecesPerBase = 200`, `ValidRotations`, `PieceOrder`, `TierOrder`), словарь `Pieces` (`foundation`, `wall`, `doorway`, `roof`, `storage_box`, `workbench_1`) и словарь `Tiers` (`wood`, `stone`, `metal`).
 
@@ -119,13 +130,17 @@
 
 ### `DataService` (`src/server/Services/DataService.luau`)
 - `DataService.DataLoaded: Signal.Signal<Player, PlayerData>` — событие завершения загрузки профиля игрока.
+- `DataService.MOCK_RAID_TARGET_USER_ID: number` — идентификатор тестовой цели рейда в Studio (`-1001`).
 - `DataService.GetData(player: Player): PlayerData?` — возвращает данные игрока или `nil`, если профиль ещё не загружен/не активен.
 - `DataService.OnDataLoaded(callback: (player: Player, data: PlayerData) -> ()): Signal.Connection` — подписывается на `DataLoaded` и немедленно вызывает `callback` для уже загруженных игроков.
 - `DataService.OnBeforeUnload(callback: (player: Player, data: PlayerData) -> ())` — синхронный хук перед сериализацией и закрытием сессии (`PlayerRemoving` / `OnLastSave`).
 - `DataService.IsTeleporting(player: Player): boolean` — возвращает `true`, если профиль игрока освобождён для штатного телепорта (чтобы `OnSessionEnd` не кикал игрока).
 - `DataService.ReleaseForTeleport(player: Player): boolean` — синхронизирует `RuntimeData` в `profile.Data`, вызывает `profile:EndSession()`, ожидает снятия `SessionLock` (`profile:IsActive() == false` и завершение `OnAfterSave` в пределах `5` сек) и возвращает результат.
 - `DataService.RestoreAfterFailedTeleport(player: Player): boolean` — перезагружает профиль игрока при сбое телепортации (`TeleportInitFailed` / таймаут).
-- `DataService.Init()` — подключает `PlayerAdded` / `PlayerRemoving`, управляет сессиями `ProfileStore` (`PlayerData_v1`, включая `Stats: SurvivalStats` и `Base: BaseData` со строковой сериализацией слотов сундуков и `Reconcile` для старых профилей).
+- `DataService.RegisterRaidableBase(player: Player)` — при наличии построек на базе игрока записывает `UserId` и их количество в `OrderedDataStore("RaidableBases_v1")` (внутри `pcall`).
+- `DataService.GetRaidTargets(excludeUserId: number, limit: number): { Types.RaidTargetInfo }` — возвращает топ целей из `RaidableBases_v1` (в Studio при отсутствии реальных целей добавляет `MockRaidTarget`).
+- `DataService.LoadBaseSnapshot(targetUserId: number): Types.BaseData?` — загружает read-only снимок базы цели через `PlayerStore:GetAsync("Player_" .. targetUserId)` без захвата `SessionLock`.
+- `DataService.Init()` — подключает `PlayerAdded` / `PlayerRemoving`, управляет сессиями `ProfileStore` (`PlayerData_v1`, включая `Stats: SurvivalStats` и `Base: BaseData` со строковой сериализацией слотов сундуков, автоматическим обновлением `RaidableBases_v1` при сохранении и `Reconcile` для старых профилей).
 
 ### `InventoryService` (`src/server/Services/InventoryService.luau`)
 - `InventoryService.GetEquippedSlot(player: Player): number` — возвращает текущий слот хотбара игрока (`1..6`, по умолчанию `1`).
@@ -141,7 +156,7 @@
 - `InventoryService.RemoveItems(player: Player, items: { Types.ItemBatchEntry }): boolean` — транзакционное списание набора предметов (с откатом по снимку при сбое) + одна отправка `InventorySync`.
 - `InventoryService.ConsumeSlot(player: Player, slotIndex: number, count: number): boolean` — списывает `count` единиц из конкретного слота `1..30`, удаляет слот при `<= 0` и отправляет `InventorySync`.
 - `InventoryService.ClearInventory(player: Player): Types.Inventory` — очищает все 30 слотов игрока, отправляет `InventorySync` и возвращает копию изъятых предметов.
-- `InventoryService.Init()` — инициализирует `Net`, слушает `InventoryMove` (`1..30`), `HotbarSelect` (`1..6`) и выдаёт стартовый набор в Studio (включая `water_bottle`, `hunting_bow`, `arrow`).
+- `InventoryService.Init()` — инициализирует `Net`, слушает `InventoryMove` (`1..30`), `HotbarSelect` (`1..6`) и выдаёт стартовый набор в Studio (включая `water_bottle`, `hunting_bow`, `satchel_charge` x3, `arrow`).
 
 ### `ResourceService` (`src/server/Services/ResourceService.luau`)
 - `ResourceService.Init()` — сканирует `Workspace.ResourceNodes`, обрабатывает `HitNode` (валидация дистанции `<= 14`, кулдаун по инструменту, множители, `BonusOnDestroy`, истощение/респавн) и рассылает `NodeUpdated`.
@@ -160,7 +175,7 @@
 ### `LootService` (`src/server/Services/LootService.luau`)
 - `LootService.RollLootTable(tableId: string): Types.Inventory` — взвешенная генерация лута по таблице из `LootTables`.
 - `LootService.RegisterSlotsContainer(model: Model, title: string, ownerName: string, slots: Types.Inventory, lifeTime: number): string` — регистрирует временный контейнер (рюкзак смерти, аирдроп и т.п.) с `ProximityPrompt` и авто-удалением по `lifeTime`.
-- `LootService.RegisterStorageContainer(model: Model, title: string, ownerUserId: number, maxSlots: number, initialSlots: Types.Inventory, onChanged: ((slots: Types.Inventory) -> ())?): string` — регистрирует постоянный сундук базы (`Kind = "Storage"`, `AllowDeposit = true`, проверка владельца `OwnerUserId`, `ProximityPrompt` `"Open Storage"`).
+- `LootService.RegisterStorageContainer(model: Model, title: string, ownerUserId: number?, maxSlots: number, initialSlots: Types.Inventory, onChanged: ((slots: Types.Inventory) -> ())?, allowDeposit: boolean?): string` — регистрирует постоянный или рейдовый сундук (`Kind = "Storage"`, опциональная проверка владельца `OwnerUserId`, флаг `allowDeposit`, `ProximityPrompt`).
 - `LootService.UnregisterContainer(containerId: string)` — отвязывает контейнер и закрывает UI у зрителей без уничтожения модели.
 - `LootService.SpawnTemporaryContainer(model: Model, title: string, tableId: string, lifeTime: number): string` — генерирует лут по `tableId` и регистрирует временный контейнер.
 - `LootService.OpenContainerForPlayer(player: Player, containerId: string): boolean` — открывает контейнер игроку после проверки владельца, состояния и дистанции `<= MAX_LOOT_DISTANCE` (`14` studs).
@@ -187,10 +202,16 @@
 - `ExtractionService.Init()` — сканирует `Workspace.ExtractionZones`, отслеживает урон/смерть игроков (`Humanoid.HealthChanged`, `Humanoid.Died`), проверяет нахождение живых игроков в зонах раз в `0.25` сек, рассылает `ExtractionStateSync`, по завершении таймера вызывает `DataService.ReleaseForTeleport(player)` и выполняет симуляцию телепорта в Studio или `TeleportService:TeleportAsync` на `Config.Places.PlayerBase` (с обработкой `TeleportInitFailed`, повторами и восстановлением через `DataService.RestoreAfterFailedTeleport`).
 
 ### `BaseService` (`src/server/Services/BaseService.luau`)
-- `BaseService.IsBaseMode(): boolean` — возвращает `true`, если `game.PlaceId == Config.Places.PlayerBase` или в Studio включён `Workspace:GetAttribute("ForceBaseMode") == true`.
+- `BaseService.IsBaseMode(): boolean` — возвращает `true`, если `game.PlaceId == Config.Places.PlayerBase` (и не активен режим рейда `Workspace.RaidServerMode` / `PrivateServerOwnerId == 0`) или в Studio включён `Workspace:GetAttribute("ForceBaseMode") == true`.
 - `BaseService.GetPlayerPieces(player: Player): { Types.SavedBuildPiece }` — возвращает копию сохранённых построек игрока из `DataService`.
 - `BaseService.GetStorageContainerId(player: Player, uid: string): string?` — возвращает `containerId` заспавненного сундука базы по `uid` постройки.
-- `BaseService.Init()` — в режиме базы спавнит постройки из `data.Base.Pieces` в `Workspace.PlayerBaseStructures` (с регистрацией `storage_box` в `LootService` и `workbench_1` в `CraftingService`), обрабатывает `BuildPlaceRequest`, `BuildUpgradeRequest`, `BuildDemolishRequest` (серверная валидация сетки/коллизий/ресурсов, пересчёт HP и материалов) и `RequestReturnToMap` (освобождение профиля через `DataService.ReleaseForTeleport` и возврат на `Config.Places.MainMap`).
+- `BaseService.Init()` — в режиме базы (игнорируя подключения с `TeleportData.Mode == "Raid"`) спавнит постройки из `data.Base.Pieces` в `Workspace.PlayerBaseStructures` (с регистрацией `storage_box` в `LootService` и `workbench_1` в `CraftingService`), обрабатывает `BuildPlaceRequest`, `BuildUpgradeRequest`, `BuildDemolishRequest` (серверная валидация сетки/коллизий/ресурсов, пересчёт HP и материалов) и `RequestReturnToMap` (освобождение профиля через `DataService.ReleaseForTeleport` и возврат на `Config.Places.MainMap`).
+
+### `RaidService` (`src/server/Services/RaidService.luau`)
+- `RaidService.EnterStudioMockRaid(player: Player, targetUserId: number): boolean` — запускает локальный мок-рейд в Studio, спавнит копию базы цели (или готовую тестовую базу с укреплёнными стенами и сундуком) в `Workspace.RaidTargetStructures` и запускает 300-секундный таймер.
+- `RaidService.IsPlayerInRaid(player: Player): boolean` — возвращает `true`, если игрок находится в активной рейд-сессии.
+- `RaidService.GetActiveSessionInfo(player: Player): Types.RaidHudState?` — возвращает состояние активной рейд-сессии игрока или `nil`.
+- `RaidService.Init()` — в режиме `MainMap` обрабатывает `RaidListRequest` и `StartRaidRequest` (`DataService.ReleaseForTeleport` + `ReserveServer` / `TeleportToPrivateServer` на `PlayerBase` или Studio Mock Raid); в режиме рейда спавнит копию базы цели по `LoadBaseSnapshot` без записи в профиль цели, обновляет таймер (`RaidHudSync`), обрабатывает `PlaceExplosiveRequest` (проверка предмета из `Explosives`, дистанции `<= 14` studs, списание слота, визуальный заряд с `FuseTime`, урон по постройкам в `Radius`, выпадение мешка с лутом в `Workspace.LootContainers` при разрушении `storage_box`) и эвакуирует игрока на `MainMap` (или из мок-рейда) по `RaidExtractRequest` или истечении таймера.
 
 ---
 
@@ -257,8 +278,16 @@
 - `ExtractionController.Init()` — создаёт `ExtractionGui` в верхней-центральной части экрана (`ExtractionPanel`), слушает `ExtractionStateSync`, отображает название зоны, текст статуса/таймера (`Extracting in %.1fs...`) и прогресс-бар заполнения и автоматически скрывает панель при `state.Active == false`.
 
 ### `BuildingController` (`src/client/Controllers/BuildingController.luau`)
-- `BuildingController.IsBaseMode(): boolean` — возвращает `true` на плейсе базы или при `ForceBaseMode == true` в Studio.
+- `BuildingController.IsBaseMode(): boolean` — возвращает `true` на плейсе базы (кроме режима рейда `RaidServerMode` / `InRaid`) или при `ForceBaseMode == true` в Studio.
 - `BuildingController.IsBuildMode(): boolean` — возвращает `true`, когда активен режим строительства на базе.
 - `BuildingController.SetBuildMode(enabled: boolean)` — включает/выключает режим строительства, сбрасывает превью и подсветку.
 - `BuildingController.GetPieces(): { Types.SavedBuildPiece }` — возвращает копию кэшированного списка построек базы.
 - `BuildingController.Init()` — строит `BuildingGui` (панель действий `Build [B]` и `Deploy to PvP Map`, меню выбора построек, кнопки `Rotate`, `Upgrade [G]`, `Demolish`), управляет призрачным превью по сетке `GridSize = 12` с зелёной/красной индикацией коллизии и ресурсов, отправляет `BuildPlaceRequest`, `BuildUpgradeRequest`, `BuildDemolishRequest`, `RequestReturnToMap` и слушает `BaseStateSync`.
+
+### `RaidController` (`src/client/Controllers/RaidController.luau`)
+- `RaidController.IsInRaid(): boolean` — возвращает `true` во время активного рейда.
+- `RaidController.IsSelectionOpen(): boolean` — возвращает `true`, пока открыто окно выбора цели рейда.
+- `RaidController.GetHudState(): Types.RaidHudState?` — возвращает копию последнего `RaidHudState` от сервера или `nil`.
+- `RaidController.OpenTargetList()` — открывает `RaidSelectFrame` и отправляет `RaidListRequest`.
+- `RaidController.CloseTargetList()` — закрывает `RaidSelectFrame`.
+- `RaidController.Init()` — строит `RaidGui` (верхний красный HUD `RaidHudFrame` с таймером `RAIDING: <TargetName> | Time Left: MM:SS` и кнопкой `"Extract with Loot"`, а также модальное окно `RaidSelectFrame` со списком целей и кнопками `"Launch Raid"`), привязывает `ProximityPrompt` на `Workspace.RaidTerminal`, слушает `RaidListSync` / `RaidHudSync` и по ЛКМ (при выбранной взрывчатке из `Explosives` в руках) отправляет `PlaceExplosiveRequest` по цели в `Workspace.RaidTargetStructures`. (При открытом окне терминала или взрывчатке в руках также блокируются клики в `CombatController`, `GatheringController` и `ConsumableController`.)

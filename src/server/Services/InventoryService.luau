@@ -511,6 +511,7 @@ local function onPlayerDataLoaded(player: Player, data: Types.PlayerData)
 				{ Id = "hatchet", Count = 1 },
 				{ Id = "pickaxe", Count = 1 },
 				{ Id = "hunting_bow", Count = 1 },
+				{ Id = "satchel_charge", Count = 3 },
 				{ Id = "arrow", Count = 20 },
 				{ Id = "wood", Count = 250 },
 				{ Id = "stone", Count = 150 },
@@ -530,6 +531,9 @@ local function onPlayerDataLoaded(player: Player, data: Types.PlayerData)
 			end
 			if InventoryService.GetItemCount(player, "hunting_bow") == 0 then
 				table.insert(topUp, { Id = "hunting_bow", Count = 1 })
+			end
+			if InventoryService.GetItemCount(player, "satchel_charge") == 0 then
+				table.insert(topUp, { Id = "satchel_charge", Count = 3 })
 			end
 			if InventoryService.GetItemCount(player, "arrow") == 0 then
 				table.insert(topUp, { Id = "arrow", Count = 20 })

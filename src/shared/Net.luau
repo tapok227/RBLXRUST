@@ -27,6 +27,12 @@ local Events = table.freeze({
 	BuildUpgradeRequest = "BuildUpgradeRequest",
 	BuildDemolishRequest = "BuildDemolishRequest",
 	BaseStateSync = "BaseStateSync",
+	RaidListRequest = "RaidListRequest",
+	RaidListSync = "RaidListSync",
+	StartRaidRequest = "StartRaidRequest",
+	PlaceExplosiveRequest = "PlaceExplosiveRequest",
+	RaidHudSync = "RaidHudSync",
+	RaidExtractRequest = "RaidExtractRequest",
 })
 
 local Net = {

@@ -100,6 +100,16 @@ local Items: { [string]: ItemConfig } = {
 		Type = "Resource",
 		MaxStack = 50,
 	},
+	satchel_charge = {
+		Name = "Satchel Charge",
+		Type = "Tool",
+		MaxStack = 10,
+	},
+	c4_charge = {
+		Name = "Timed C4",
+		Type = "Tool",
+		MaxStack = 5,
+	},
 }
 
 return table.freeze(Items)

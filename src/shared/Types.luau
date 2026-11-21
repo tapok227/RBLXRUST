@@ -167,6 +167,25 @@ export type ExtractionState = {
 	StatusText: string?,
 }
 
+export type ExplosiveConfig = {
+	StructureDamage: number,
+	Radius: number,
+	FuseTime: number,
+}
+
+export type RaidTargetInfo = {
+	UserId: number,
+	DisplayName: string,
+	PieceCount: number,
+}
+
+export type RaidHudState = {
+	Active: boolean,
+	TargetName: string,
+	TimeLeft: number,
+	StatusText: string?,
+}
+
 local Types = {
 	INVENTORY_SIZE = 30,
 	HOTBAR_SIZE = 6,
@@ -186,6 +205,8 @@ local Types = {
 	MAX_LOOT_DISTANCE = 14,
 	LOOT_CONTAINER_LIFETIME = 300,
 	MAX_ATTACK_ORIGIN_OFFSET = 8,
+	MAX_EXPLOSIVE_PLACE_DISTANCE = 14,
+	RAID_DURATION = 300,
 }
 
 return Types

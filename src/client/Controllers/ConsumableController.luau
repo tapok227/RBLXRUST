@@ -1,4 +1,5 @@
 --!strict
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 
@@ -18,8 +19,11 @@ local isInitialized = false
 local ConsumableController = {}
 
 local function tryUseEquippedConsumable()
+	local localPlayer = Players.LocalPlayer
+	local raidSelectOpen = localPlayer ~= nil and localPlayer:GetAttribute("RaidSelectOpen") == true
 	if
-		BuildingController.IsBuildMode()
+		raidSelectOpen
+		or BuildingController.IsBuildMode()
 		or InventoryUIController.IsOpen()
 		or CraftingController.IsOpen()
 		or LootController.IsOpen()

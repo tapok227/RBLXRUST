@@ -798,10 +798,11 @@ end
 function LootService.RegisterStorageContainer(
 	model: Model,
 	title: string,
-	ownerUserId: number,
+	ownerUserId: number?,
 	maxSlots: number,
 	initialSlots: Inventory,
-	onChanged: ((slots: Inventory) -> ())?
+	onChanged: ((slots: Inventory) -> ())?,
+	allowDeposit: boolean?
 ): string
 	local primaryPart = model.PrimaryPart
 	if not primaryPart then
@@ -809,6 +810,7 @@ function LootService.RegisterStorageContainer(
 		return ""
 	end
 
+	local canDeposit = if allowDeposit == nil then true else allowDeposit == true
 	local effectiveMaxSlots = math.clamp(math.floor(maxSlots), 1, Types.INVENTORY_SIZE)
 	local containerId: string
 	repeat
@@ -826,7 +828,7 @@ function LootService.RegisterStorageContainer(
 	if not prompt then
 		local created = Instance.new("ProximityPrompt")
 		created.Name = "StoragePrompt"
-		created.ActionText = "Open Storage"
+		created.ActionText = if canDeposit then "Open Storage" else "Loot Chest"
 		created.ObjectText = title
 		created.HoldDuration = 0
 		created.MaxActivationDistance = 12
@@ -845,7 +847,7 @@ function LootService.RegisterStorageContainer(
 		ExpiresAt = 0,
 		Depleted = false,
 		MaxSlots = effectiveMaxSlots,
-		AllowDeposit = true,
+		AllowDeposit = canDeposit,
 		OwnerUserId = ownerUserId,
 		OnChanged = onChanged,
 		Model = model,
@@ -859,7 +861,9 @@ function LootService.RegisterStorageContainer(
 
 	containers[containerId] = container
 	model:SetAttribute("ContainerId", containerId)
-	model:SetAttribute("OwnerUserId", ownerUserId)
+	if ownerUserId ~= nil then
+		model:SetAttribute("OwnerUserId", ownerUserId)
+	end
 	model:SetAttribute("Depleted", false)
 
 	if prompt then

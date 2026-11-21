@@ -124,6 +124,30 @@ local Recipes: { [string]: RecipeConfig } = {
 			{ Id = "metal_ore", Count = 10 },
 		},
 	},
+	craft_satchel_charge = {
+		Id = "craft_satchel_charge",
+		ResultId = "satchel_charge",
+		ResultCount = 1,
+		CraftTime = 6,
+		Station = "workbench_1",
+		Ingredients = {
+			{ Id = "scrap", Count = 25 },
+			{ Id = "cloth", Count = 10 },
+			{ Id = "metal_ore", Count = 20 },
+		},
+	},
+	craft_c4_charge = {
+		Id = "craft_c4_charge",
+		ResultId = "c4_charge",
+		ResultCount = 1,
+		CraftTime = 10,
+		Station = "workbench_1",
+		Ingredients = {
+			{ Id = "tech_parts", Count = 4 },
+			{ Id = "scrap", Count = 60 },
+			{ Id = "metal_ore", Count = 50 },
+		},
+	},
 }
 
 return table.freeze(Recipes)

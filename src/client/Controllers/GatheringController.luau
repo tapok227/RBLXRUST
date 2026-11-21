@@ -11,6 +11,7 @@ local Items = require(ReplicatedStorage.Shared.configs.Items)
 local Nodes = require(ReplicatedStorage.Shared.configs.Nodes)
 local Tools = require(ReplicatedStorage.Shared.configs.Tools)
 local Consumables = require(ReplicatedStorage.Shared.configs.Consumables)
+local Explosives = require(ReplicatedStorage.Shared.configs.Explosives)
 local Net = require(ReplicatedStorage.Shared.Net)
 local HotbarController = require(script.Parent.HotbarController)
 local InventoryController = require(script.Parent.InventoryController)
@@ -306,8 +307,11 @@ local function updateHoverHud()
 end
 
 local function tryGather()
+	local localPlayer = Players.LocalPlayer
+	local raidSelectOpen = localPlayer ~= nil and localPlayer:GetAttribute("RaidSelectOpen") == true
 	if
-		BuildingController.IsBuildMode()
+		raidSelectOpen
+		or BuildingController.IsBuildMode()
 		or InventoryUIController.IsOpen()
 		or CraftingController.IsOpen()
 		or LootController.IsOpen()
@@ -317,7 +321,7 @@ local function tryGather()
 
 	local equippedSlot = HotbarController.GetSelectedSlot()
 	local equippedItem = InventoryController.GetSlot(equippedSlot)
-	if equippedItem ~= nil and Consumables[equippedItem.Id] ~= nil then
+	if equippedItem ~= nil and (Consumables[equippedItem.Id] ~= nil or Explosives[equippedItem.Id] ~= nil) then
 		return
 	end
 

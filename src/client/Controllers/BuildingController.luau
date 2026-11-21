@@ -781,6 +781,13 @@ local function onBaseStateSync(piecesAny: any)
 end
 
 function BuildingController.IsBaseMode(): boolean
+	if Workspace:GetAttribute("RaidServerMode") == true then
+		return false
+	end
+	local localPlayer = Players.LocalPlayer
+	if localPlayer ~= nil and localPlayer:GetAttribute("InRaid") == true then
+		return false
+	end
 	return game.PlaceId == Config.Places.PlayerBase
 		or (RunService:IsStudio() and Workspace:GetAttribute("ForceBaseMode") == true)
 end

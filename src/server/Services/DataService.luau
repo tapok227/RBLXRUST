@@ -1,6 +1,8 @@
 --!strict
+local DataStoreService = game:GetService("DataStoreService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local Types = require(ReplicatedStorage.Shared.Types)
@@ -15,9 +17,14 @@ type BuildPieceType = Types.BuildPieceType
 type BuildTier = Types.BuildTier
 type SavedBuildPiece = Types.SavedBuildPiece
 type BaseData = Types.BaseData
+type RaidTargetInfo = Types.RaidTargetInfo
 
 local PROFILE_STORE_NAME = "PlayerData_v1"
+local RAIDABLE_BASES_STORE_NAME = "RaidableBases_v1"
 local TELEPORT_RELEASE_TIMEOUT = 5
+local MOCK_RAID_TARGET_USER_ID = -1001
+local MOCK_RAID_TARGET_NAME = "MockRaidTarget"
+local MOCK_RAID_TARGET_PIECE_COUNT = 12
 
 local DATA_TEMPLATE = {
 	Version = 1,
@@ -39,11 +46,16 @@ local RuntimeData: { [Player]: PlayerData } = {}
 local unloadedByPlayer: { [Player]: boolean } = {}
 local teleportingPlayers: { [Player]: boolean } = {}
 local beforeUnloadCallbacks: { (player: Player, data: PlayerData) -> () } = {}
+local nameCache: { [number]: string } = {}
+local lastRegisteredPieceCount: { [number]: number } = {}
+local registerInFlight: { [number]: boolean } = {}
+local raidableBasesStore: OrderedDataStore? = nil
 local dataLoadedSignal: Signal.Signal<Player, PlayerData> = Signal.new()
 local isInitialized = false
 
 local DataService = {
 	DataLoaded = dataLoadedSignal,
+	MOCK_RAID_TARGET_USER_ID = MOCK_RAID_TARGET_USER_ID,
 }
 
 local function runBeforeUnload(player: Player, data: PlayerData)
@@ -321,6 +333,72 @@ local function syncRuntimeToProfile(profile: any, runtimePlayerData: PlayerData)
 	profile.Data.Base = serializeBase(runtimePlayerData.Base)
 end
 
+local function getRaidableBasesStore(): OrderedDataStore?
+	if raidableBasesStore ~= nil then
+		return raidableBasesStore
+	end
+	local ok, store = pcall(function()
+		return DataStoreService:GetOrderedDataStore(RAIDABLE_BASES_STORE_NAME)
+	end)
+	if ok and store ~= nil then
+		raidableBasesStore = store
+		return store
+	end
+	return nil
+end
+
+local function registerRaidableBaseByUserId(userId: number, pieceCount: number)
+	if not isValidFiniteInteger(userId) or userId <= 0 then
+		return
+	end
+	if not isValidFiniteInteger(pieceCount) or pieceCount <= 0 then
+		return
+	end
+	local count = math.floor(pieceCount)
+	if lastRegisteredPieceCount[userId] == count or registerInFlight[userId] then
+		return
+	end
+
+	local store = getRaidableBasesStore()
+	if store == nil then
+		return
+	end
+
+	registerInFlight[userId] = true
+	local ok, err = pcall(function()
+		store:SetAsync(tostring(userId), count)
+	end)
+	registerInFlight[userId] = nil
+	if ok then
+		lastRegisteredPieceCount[userId] = count
+	elseif not RunService:IsStudio() then
+		warn(string.format("[DataService] Failed to register raidable base for %d: %s", userId, tostring(err)))
+	end
+end
+
+local function resolveDisplayName(userId: number): string
+	local cached = nameCache[userId]
+	if cached ~= nil then
+		return cached
+	end
+
+	local online = Players:GetPlayerByUserId(userId)
+	if online ~= nil then
+		nameCache[userId] = online.DisplayName
+		return online.DisplayName
+	end
+
+	local ok, fetched = pcall(function()
+		return Players:GetNameFromUserIdAsync(userId)
+	end)
+	if ok and type(fetched) == "string" and #fetched > 0 then
+		nameCache[userId] = fetched
+		return fetched
+	end
+
+	return string.format("Player_%d", userId)
+end
+
 local function loadPlayerProfile(player: Player)
 	local profileKey = string.format("Player_%d", player.UserId)
 	local profile = PlayerStore:StartSessionAsync(profileKey, {
@@ -344,11 +422,17 @@ local function loadPlayerProfile(player: Player)
 
 		profile.OnSave:Connect(function()
 			syncRuntimeToProfile(profile, runtimePlayerData)
+			if #runtimePlayerData.Base.Pieces > 0 then
+				task.spawn(registerRaidableBaseByUserId, player.UserId, #runtimePlayerData.Base.Pieces)
+			end
 		end)
 
 		profile.OnLastSave:Connect(function()
 			runBeforeUnload(player, runtimePlayerData)
 			syncRuntimeToProfile(profile, runtimePlayerData)
+			if #runtimePlayerData.Base.Pieces > 0 then
+				task.spawn(registerRaidableBaseByUserId, player.UserId, #runtimePlayerData.Base.Pieces)
+			end
 		end)
 
 		profile.OnSessionEnd:Connect(function()
@@ -482,6 +566,85 @@ end
 
 function DataService.OnBeforeUnload(callback: (player: Player, data: PlayerData) -> ())
 	table.insert(beforeUnloadCallbacks, callback)
+end
+
+function DataService.RegisterRaidableBase(player: Player)
+	local data = DataService.GetData(player)
+	if data == nil or #data.Base.Pieces <= 0 then
+		return
+	end
+	registerRaidableBaseByUserId(player.UserId, #data.Base.Pieces)
+end
+
+function DataService.GetRaidTargets(excludeUserId: number, limit: number): { RaidTargetInfo }
+	local clampedLimit = if isValidFiniteInteger(limit) then math.clamp(math.floor(limit), 1, 20) else 10
+	local targets: { RaidTargetInfo } = {}
+
+	local store = getRaidableBasesStore()
+	if store ~= nil then
+		local ok, pageEntries = pcall(function()
+			local pages = store:GetSortedAsync(false, math.min(clampedLimit + 5, 50))
+			return pages:GetCurrentPage()
+		end)
+		if ok and type(pageEntries) == "table" then
+			for _, entry in pageEntries do
+				if #targets >= clampedLimit then
+					break
+				end
+				if type(entry) ~= "table" then
+					continue
+				end
+				local userId = tonumber(entry.key)
+				local pieceCount = entry.value
+				if
+					userId ~= nil
+					and isValidFiniteInteger(userId)
+					and userId > 0
+					and userId ~= excludeUserId
+					and isValidFiniteInteger(pieceCount)
+					and pieceCount > 0
+				then
+					local intUserId = math.floor(userId)
+					table.insert(targets, {
+						UserId = intUserId,
+						DisplayName = resolveDisplayName(intUserId),
+						PieceCount = math.floor(pieceCount),
+					})
+				end
+			end
+		end
+	end
+
+	if RunService:IsStudio() and #targets == 0 then
+		table.insert(targets, {
+			UserId = MOCK_RAID_TARGET_USER_ID,
+			DisplayName = MOCK_RAID_TARGET_NAME,
+			PieceCount = MOCK_RAID_TARGET_PIECE_COUNT,
+		})
+	end
+
+	return targets
+end
+
+function DataService.LoadBaseSnapshot(targetUserId: number): BaseData?
+	if not isValidFiniteInteger(targetUserId) or targetUserId <= 0 then
+		return nil
+	end
+
+	local profileKey = string.format("Player_%d", math.floor(targetUserId))
+	local ok, viewProfile = pcall(function()
+		return PlayerStore:GetAsync(profileKey)
+	end)
+	if not ok or viewProfile == nil then
+		return nil
+	end
+
+	local rawData = (viewProfile :: any).Data
+	if type(rawData) ~= "table" then
+		return nil
+	end
+
+	return deserializeBase(rawData.Base)
 end
 
 function DataService.Init()

@@ -9,6 +9,7 @@ local Workspace = game:GetService("Workspace")
 local Types = require(ReplicatedStorage.Shared.Types)
 local Weapons = require(ReplicatedStorage.Shared.configs.Weapons)
 local Consumables = require(ReplicatedStorage.Shared.configs.Consumables)
+local Explosives = require(ReplicatedStorage.Shared.configs.Explosives)
 local Net = require(ReplicatedStorage.Shared.Net)
 local HotbarController = require(script.Parent.HotbarController)
 local InventoryController = require(script.Parent.InventoryController)
@@ -35,7 +36,9 @@ local hitmarkerBars: { Frame } = {}
 local CombatController = {}
 
 local function isAnyUiOpen(): boolean
-	return InventoryUIController.IsOpen() or CraftingController.IsOpen() or LootController.IsOpen()
+	local localPlayer = Players.LocalPlayer
+	local raidSelectOpen = localPlayer ~= nil and localPlayer:GetAttribute("RaidSelectOpen") == true
+	return raidSelectOpen or InventoryUIController.IsOpen() or CraftingController.IsOpen() or LootController.IsOpen()
 end
 
 local function hasAmmoInInventory(ammoId: string): boolean
@@ -227,7 +230,7 @@ local function tryAttack()
 
 	local selectedSlot = HotbarController.GetSelectedSlot()
 	local equippedItem = InventoryController.GetSlot(selectedSlot)
-	if equippedItem ~= nil and Consumables[equippedItem.Id] ~= nil then
+	if equippedItem ~= nil and (Consumables[equippedItem.Id] ~= nil or Explosives[equippedItem.Id] ~= nil) then
 		return
 	end
 

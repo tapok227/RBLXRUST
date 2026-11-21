@@ -661,6 +661,12 @@ local function onForceBaseModeChanged()
 end
 
 function BaseService.IsBaseMode(): boolean
+	if Workspace:GetAttribute("RaidServerMode") == true then
+		return false
+	end
+	if game.PlaceId == Config.Places.PlayerBase and game.PrivateServerId ~= "" and game.PrivateServerOwnerId == 0 then
+		return false
+	end
 	return game.PlaceId == Config.Places.PlayerBase
 		or (RunService:IsStudio() and Workspace:GetAttribute("ForceBaseMode") == true)
 end
@@ -704,7 +710,16 @@ function BaseService.Init()
 	TeleportService.TeleportInitFailed:Connect(onTeleportInitFailed)
 
 	DataService.OnDataLoaded(function(player: Player, data: Types.PlayerData)
-		if BaseService.IsBaseMode() then
+		local isRaidJoin = false
+		local ok, joinData = pcall(function()
+			return player:GetJoinData()
+		end)
+		if ok and type(joinData) == "table" and type(joinData.TeleportData) == "table" then
+			if joinData.TeleportData.Mode == "Raid" then
+				isRaidJoin = true
+			end
+		end
+		if not isRaidJoin and BaseService.IsBaseMode() then
 			spawnBaseForPlayer(player, data)
 		end
 	end)
