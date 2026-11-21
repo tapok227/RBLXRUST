@@ -58,7 +58,7 @@ local function updateSlotsContent(inv: Inventory)
 			if slotData and slotData.Count > 0 then
 				local itemConfig = Items[slotData.Id]
 				ui.NameLabel.Text = if itemConfig then itemConfig.Name else slotData.Id
-				ui.CountLabel.Text = `x{slotData.Count}`
+				ui.CountLabel.Text = string.format("x%d", slotData.Count)
 			else
 				ui.NameLabel.Text = ""
 				ui.CountLabel.Text = ""
@@ -116,7 +116,7 @@ local function createHotbarGui()
 
 	for i = 1, Types.HOTBAR_SIZE do
 		local slotFrame = Instance.new("Frame")
-		slotFrame.Name = `Slot_{i}`
+		slotFrame.Name = string.format("Slot_%d", i)
 		slotFrame.LayoutOrder = i
 		slotFrame.Size = UDim2.fromOffset(72, 72)
 		slotFrame.BackgroundColor3 = COLOR_BG_DEFAULT

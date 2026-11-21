@@ -44,20 +44,20 @@ local function registerNode(model: Instance)
 
 	local primaryPart = model.PrimaryPart
 	if not primaryPart then
-		warn(`[ResourceService] Node model "{model.Name}" has no PrimaryPart`)
+		warn(string.format('[ResourceService] Node model "%s" has no PrimaryPart', model.Name))
 		return
 	end
 
 	local nodeId = model:GetAttribute("NodeId")
 	local nodeType = model:GetAttribute("NodeType")
 	if typeof(nodeId) ~= "string" or #nodeId == 0 or typeof(nodeType) ~= "string" then
-		warn(`[ResourceService] Node model "{model.Name}" missing valid NodeId/NodeType attributes`)
+		warn(string.format('[ResourceService] Node model "%s" missing valid NodeId/NodeType attributes', model.Name))
 		return
 	end
 
 	local nodeConfig = Nodes[nodeType]
 	if not nodeConfig then
-		warn(`[ResourceService] Unknown NodeType "{nodeType}" on "{model.Name}"`)
+		warn(string.format('[ResourceService] Unknown NodeType "%s" on "%s"', nodeType, model.Name))
 		return
 	end
 

@@ -3,15 +3,18 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Types = require(ReplicatedStorage.Shared.Types)
 local Net = require(ReplicatedStorage.Shared.Net)
+local Signal = require(ReplicatedStorage.Shared.Signal)
 
 type Inventory = Types.Inventory
 type Slot = Types.Slot
 
 local currentInventory: Inventory = {}
-local changedListeners: { (inventory: Inventory) -> () } = {}
+local changedSignal: Signal.Signal<Inventory> = Signal.new()
 local isInitialized = false
 
-local InventoryController = {}
+local InventoryController = {
+	Changed = changedSignal,
+}
 
 local function parseSyncPayload(payload: any): Inventory
 	local inv: Inventory = {}
@@ -40,12 +43,6 @@ local function parseSyncPayload(payload: any): Inventory
 	return inv
 end
 
-local function fireChanged()
-	for _, listener in changedListeners do
-		task.spawn(listener, currentInventory)
-	end
-end
-
 function InventoryController.GetInventory(): Inventory
 	return currentInventory
 end
@@ -54,16 +51,10 @@ function InventoryController.GetSlot(slotIndex: number): Slot?
 	return currentInventory[slotIndex]
 end
 
-function InventoryController.OnChanged(callback: (inventory: Inventory) -> ()): () -> ()
-	table.insert(changedListeners, callback)
+function InventoryController.OnChanged(callback: (inventory: Inventory) -> ()): Signal.Connection
+	local conn = changedSignal:Connect(callback)
 	task.spawn(callback, currentInventory)
-
-	return function()
-		local idx = table.find(changedListeners, callback)
-		if idx then
-			table.remove(changedListeners, idx)
-		end
-	end
+	return conn
 end
 
 function InventoryController.RequestMove(fromSlot: number, toSlot: number)
@@ -80,7 +71,7 @@ function InventoryController.Init()
 	local syncEvent = Net.GetEvent(Net.Events.InventorySync)
 	syncEvent.OnClientEvent:Connect(function(payload: any)
 		currentInventory = parseSyncPayload(payload)
-		fireChanged()
+		changedSignal:Fire(currentInventory)
 	end)
 end
 

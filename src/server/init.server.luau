@@ -2,7 +2,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Config = require(ReplicatedStorage.Shared.Config)
 
-print(`[Server] {Config.Game.Name} started`)
+print(string.format("[Server] %s started", Config.Game.Name))
 
 local servicesFolder = script:FindFirstChild("Services")
 if servicesFolder then
@@ -12,7 +12,7 @@ if servicesFolder then
 			if ok and type(service) == "table" and service.Init then
 				service.Init()
 			elseif not ok then
-				warn(`[Server] failed to load {module.Name}: {service}`)
+				warn(string.format("[Server] failed to load %s: %s", module.Name, tostring(service)))
 			end
 		end
 	end

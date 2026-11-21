@@ -51,7 +51,7 @@ local function refreshInventoryUI(inv: Inventory)
 			if slotData and slotData.Count > 0 then
 				local itemConfig = Items[slotData.Id]
 				ui.NameLabel.Text = if itemConfig then itemConfig.Name else slotData.Id
-				ui.CountLabel.Text = `x{slotData.Count}`
+				ui.CountLabel.Text = string.format("x%d", slotData.Count)
 			else
 				ui.NameLabel.Text = ""
 				ui.CountLabel.Text = ""
@@ -79,7 +79,7 @@ end
 
 local function createSlotButton(parent: Instance, slotIndex: number, layoutOrder: number)
 	local btn = Instance.new("TextButton")
-	btn.Name = `Slot_{slotIndex}`
+	btn.Name = string.format("Slot_%d", slotIndex)
 	btn.LayoutOrder = layoutOrder
 	btn.BackgroundColor3 = COLOR_SLOT_DEFAULT
 	btn.BorderSizePixel = 0
@@ -318,9 +318,7 @@ function InventoryUIController.Init()
 			return
 		end
 
-		if input.KeyCode == Enum.KeyCode.Tab then
-			InventoryUIController.Toggle()
-		elseif input.KeyCode == Enum.KeyCode.I and not gameProcessedEvent then
+		if input.KeyCode == Enum.KeyCode.Tab or (input.KeyCode == Enum.KeyCode.I and not gameProcessedEvent) then
 			InventoryUIController.Toggle()
 		end
 	end)

@@ -4,6 +4,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local Types = require(ReplicatedStorage.Shared.Types)
+local Signal = require(ReplicatedStorage.Shared.Signal)
 local ProfileStore = require(ServerScriptService.Server.Vendor.ProfileStore)
 
 type PlayerData = Types.PlayerData
@@ -20,10 +21,12 @@ local PlayerStore = ProfileStore.New(PROFILE_STORE_NAME, DATA_TEMPLATE)
 
 local Profiles: { [Player]: any } = {}
 local RuntimeData: { [Player]: PlayerData } = {}
-local DataLoadedCallbacks: { (player: Player, data: PlayerData) -> () } = {}
+local dataLoadedSignal: Signal.Signal<Player, PlayerData> = Signal.new()
 local isInitialized = false
 
-local DataService = {}
+local DataService = {
+	DataLoaded = dataLoadedSignal,
+}
 
 local function deserializeInventory(rawInv: { [any]: any }): Types.Inventory
 	local inv: Types.Inventory = {}
@@ -62,14 +65,8 @@ local function serializeInventory(inv: Types.Inventory): { [string]: Slot }
 	return raw
 end
 
-local function fireDataLoaded(player: Player, data: PlayerData)
-	for _, callback in DataLoadedCallbacks do
-		task.spawn(callback, player, data)
-	end
-end
-
 local function loadPlayerProfile(player: Player)
-	local profileKey = `Player_{player.UserId}`
+	local profileKey = string.format("Player_%d", player.UserId)
 	local profile = PlayerStore:StartSessionAsync(profileKey, {
 		Cancel = function()
 			return player.Parent ~= Players
@@ -103,7 +100,7 @@ local function loadPlayerProfile(player: Player)
 		if player.Parent == Players then
 			Profiles[player] = profile
 			RuntimeData[player] = runtimePlayerData
-			fireDataLoaded(player, runtimePlayerData)
+			dataLoadedSignal:Fire(player, runtimePlayerData)
 		else
 			profile:EndSession()
 		end
@@ -136,8 +133,8 @@ function DataService.GetData(player: Player): PlayerData?
 	return nil
 end
 
-function DataService.OnDataLoaded(callback: (player: Player, data: PlayerData) -> ())
-	table.insert(DataLoadedCallbacks, callback)
+function DataService.OnDataLoaded(callback: (player: Player, data: PlayerData) -> ()): Signal.Connection
+	local conn = dataLoadedSignal:Connect(callback)
 	for player, profile in Profiles do
 		if profile:IsActive() then
 			local data = RuntimeData[player]
@@ -146,6 +143,7 @@ function DataService.OnDataLoaded(callback: (player: Player, data: PlayerData) -
 			end
 		end
 	end
+	return conn
 end
 
 function DataService.Init()

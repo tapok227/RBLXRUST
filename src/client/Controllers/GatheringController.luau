@@ -290,7 +290,7 @@ local function updateHoverHud()
 	end
 
 	hudTitleLabel.Text = nodeConfig.Name
-	hudHpLabel.Text = `{math.ceil(hp)} / {maxHp}`
+	hudHpLabel.Text = string.format("%d / %d", math.ceil(hp), maxHp)
 	local ratio = if maxHp > 0 then math.clamp(hp / maxHp, 0, 1) else 0
 	hudFillBar.Size = UDim2.fromScale(ratio, 1)
 	hudFrame.Visible = true
@@ -360,7 +360,7 @@ function GatheringController.Init()
 				local resConfig = if nodeConfig then Items[nodeConfig.ResourceId] else nil
 				local resName = if resConfig then resConfig.Name else "Resource"
 				local dmgDelta = math.max(1, math.floor(prevHp - hp + 0.5))
-				playHitFeedback(model, `-{dmgDelta} HP ({resName})`)
+				playHitFeedback(model, string.format("-%d HP (%s)", dmgDelta, resName))
 			end
 		end
 	end)
