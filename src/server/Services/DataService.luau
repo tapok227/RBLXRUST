@@ -9,12 +9,18 @@ local ProfileStore = require(ServerScriptService.Server.Vendor.ProfileStore)
 
 type PlayerData = Types.PlayerData
 type Slot = Types.Slot
+type SurvivalStats = Types.SurvivalStats
 
 local PROFILE_STORE_NAME = "PlayerData_v1"
 
 local DATA_TEMPLATE = {
 	Version = 1,
 	Inventory = {},
+	Stats = {
+		Health = Types.MAX_HEALTH,
+		Hunger = Types.MAX_HUNGER,
+		Thirst = Types.MAX_THIRST,
+	},
 }
 
 local PlayerStore = ProfileStore.New(PROFILE_STORE_NAME, DATA_TEMPLATE)
@@ -80,6 +86,36 @@ local function serializeInventory(inv: Types.Inventory): { [string]: Slot }
 	return raw
 end
 
+local function sanitizeStat(value: any, defaultValue: number, minValue: number, maxValue: number): number
+	if type(value) == "number" and value == value and math.abs(value) ~= math.huge then
+		return math.clamp(value, minValue, maxValue)
+	end
+	return defaultValue
+end
+
+local function deserializeStats(rawStats: any): SurvivalStats
+	if type(rawStats) ~= "table" then
+		return {
+			Health = Types.MAX_HEALTH,
+			Hunger = Types.MAX_HUNGER,
+			Thirst = Types.MAX_THIRST,
+		}
+	end
+	return {
+		Health = sanitizeStat(rawStats.Health, Types.MAX_HEALTH, 0, Types.MAX_HEALTH),
+		Hunger = sanitizeStat(rawStats.Hunger, Types.MAX_HUNGER, 0, Types.MAX_HUNGER),
+		Thirst = sanitizeStat(rawStats.Thirst, Types.MAX_THIRST, 0, Types.MAX_THIRST),
+	}
+end
+
+local function serializeStats(stats: SurvivalStats): SurvivalStats
+	return {
+		Health = sanitizeStat(stats.Health, Types.MAX_HEALTH, 0, Types.MAX_HEALTH),
+		Hunger = sanitizeStat(stats.Hunger, Types.MAX_HUNGER, 0, Types.MAX_HUNGER),
+		Thirst = sanitizeStat(stats.Thirst, Types.MAX_THIRST, 0, Types.MAX_THIRST),
+	}
+end
+
 local function loadPlayerProfile(player: Player)
 	local profileKey = string.format("Player_%d", player.UserId)
 	local profile = PlayerStore:StartSessionAsync(profileKey, {
@@ -97,17 +133,20 @@ local function loadPlayerProfile(player: Player)
 			Inventory = deserializeInventory(
 				if type(profile.Data.Inventory) == "table" then profile.Data.Inventory else {}
 			),
+			Stats = deserializeStats(profile.Data.Stats),
 		}
 
 		profile.OnSave:Connect(function()
 			profile.Data.Version = runtimePlayerData.Version
 			profile.Data.Inventory = serializeInventory(runtimePlayerData.Inventory)
+			profile.Data.Stats = serializeStats(runtimePlayerData.Stats)
 		end)
 
 		profile.OnLastSave:Connect(function()
 			runBeforeUnload(player, runtimePlayerData)
 			profile.Data.Version = runtimePlayerData.Version
 			profile.Data.Inventory = serializeInventory(runtimePlayerData.Inventory)
+			profile.Data.Stats = serializeStats(runtimePlayerData.Stats)
 		end)
 
 		profile.OnSessionEnd:Connect(function()
@@ -142,6 +181,7 @@ local function onPlayerRemoving(player: Player)
 			runBeforeUnload(player, runtimePlayerData)
 			profile.Data.Version = runtimePlayerData.Version
 			profile.Data.Inventory = serializeInventory(runtimePlayerData.Inventory)
+			profile.Data.Stats = serializeStats(runtimePlayerData.Stats)
 		end
 		profile:EndSession()
 		Profiles[player] = nil

@@ -45,6 +45,11 @@ local Items: { [string]: ItemConfig } = {
 		Type = "Consumable",
 		MaxStack = 10,
 	},
+	water_bottle = {
+		Name = "Water Bottle",
+		Type = "Consumable",
+		MaxStack = 5,
+	},
 	workbench_1 = {
 		Name = "Workbench Lv.1",
 		Type = "Consumable",

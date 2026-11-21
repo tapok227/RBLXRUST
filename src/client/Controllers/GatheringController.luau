@@ -10,11 +10,13 @@ local Types = require(ReplicatedStorage.Shared.Types)
 local Items = require(ReplicatedStorage.Shared.configs.Items)
 local Nodes = require(ReplicatedStorage.Shared.configs.Nodes)
 local Tools = require(ReplicatedStorage.Shared.configs.Tools)
+local Consumables = require(ReplicatedStorage.Shared.configs.Consumables)
 local Net = require(ReplicatedStorage.Shared.Net)
 local HotbarController = require(script.Parent.HotbarController)
 local InventoryController = require(script.Parent.InventoryController)
 local InventoryUIController = require(script.Parent.InventoryUIController)
 local CraftingController = require(script.Parent.CraftingController)
+local LootController = require(script.Parent.LootController)
 
 type NodeClientState = Types.NodeClientState
 
@@ -263,7 +265,7 @@ local function updateHoverHud()
 		return
 	end
 
-	if InventoryUIController.IsOpen() or CraftingController.IsOpen() then
+	if InventoryUIController.IsOpen() or CraftingController.IsOpen() or LootController.IsOpen() then
 		hudFrame.Visible = false
 		return
 	end
@@ -298,7 +300,13 @@ local function updateHoverHud()
 end
 
 local function tryGather()
-	if InventoryUIController.IsOpen() or CraftingController.IsOpen() then
+	if InventoryUIController.IsOpen() or CraftingController.IsOpen() or LootController.IsOpen() then
+		return
+	end
+
+	local equippedSlot = HotbarController.GetSelectedSlot()
+	local equippedItem = InventoryController.GetSlot(equippedSlot)
+	if equippedItem ~= nil and Consumables[equippedItem.Id] ~= nil then
 		return
 	end
 
@@ -313,8 +321,6 @@ local function tryGather()
 		return
 	end
 
-	local equippedSlot = HotbarController.GetSelectedSlot()
-	local equippedItem = InventoryController.GetSlot(equippedSlot)
 	local toolConfig = if equippedItem ~= nil then Tools[equippedItem.Id] else nil
 	local cooldown = if toolConfig ~= nil then toolConfig.Cooldown else Types.HANDS_COOLDOWN
 

@@ -15,6 +15,17 @@ local Recipes: { [string]: RecipeConfig } = {
 			{ Id = "cloth", Count = 2 },
 		},
 	},
+	craft_water_bottle = {
+		Id = "craft_water_bottle",
+		ResultId = "water_bottle",
+		ResultCount = 1,
+		CraftTime = 2,
+		Station = nil,
+		Ingredients = {
+			{ Id = "cloth", Count = 1 },
+			{ Id = "stone", Count = 5 },
+		},
+	},
 	craft_hatchet = {
 		Id = "craft_hatchet",
 		ResultId = "hatchet",

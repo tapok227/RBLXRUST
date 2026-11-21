@@ -13,6 +13,10 @@ local Events = table.freeze({
 	CraftRequest = "CraftRequest",
 	CraftCancel = "CraftCancel",
 	CraftStateSync = "CraftStateSync",
+	UseConsumable = "UseConsumable",
+	OpenContainer = "OpenContainer",
+	CloseContainer = "CloseContainer",
+	LootTakeSlot = "LootTakeSlot",
 })
 
 local Net = {
