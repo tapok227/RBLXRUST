@@ -35,6 +35,12 @@ local Tools: { [string]: ToolConfig } = {
 		PreferredNodeType = "Build",
 		BonusMultiplier = 1.0,
 	},
+	repair_hammer = {
+		Power = 5,
+		Cooldown = 0.5,
+		PreferredNodeType = "Build",
+		BonusMultiplier = 1.0,
+	},
 }
 
 return table.freeze(Tools)

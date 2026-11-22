@@ -341,3 +341,33 @@
 ### Онлайн-сигнализация (`Active Raid Defense`)
 - При старте реального рейда (или при первом уроне по постройкам, **не срабатывает в `Self-Raid`**) `RaidService.triggerActiveRaidAlarm` проверяет присутствие владельца локально и через `MessagingService` (`MyRobloxGame_RaidAlarm`), отправляя `RaidAlarmNotify` (`Phase = "Prompt"`, `15` сек на принятие).
 - При согласии (`RaidAlarmResponse(true, raidId)`) запускается `6`-секундный экран подготовки (`DefensePrepOverlay`), после чего защитник телепортируется к безопасному месту у своего TC (`Mode = "RaidDefense"`, `ReservedAccessCode`), получает спавн-защиту и боекомплект из хранилища TC / инвентаря (дополняется из `Config.Raid.ActiveDefenseFallbackKit`), а по завершении рейда возвращается на `PlayerBase`.
+
+---
+
+## 10. Беспроводная логика-лайт, визуальный износ/ремонт и чертежи планировки (Этап 2)
+
+### Профиль и миграция (`DataVersion = 7`)
+- `Types.CURRENT_DATA_VERSION` повышен с `6` до `7` (`DataService.MigrateProfileData` шаг `v6 -> v7`).
+- В `PlayerData` добавлено поле `BaseBlueprints: { [string]: BaseBlueprintSlot }` (максимум `2` слота игрока, сериализуются относительные координаты/повороты/типы модулей относительно TC без хранения `Storage`/лута). Существующие постройки (`Base.Pieces`) мигрируют без потерь.
+
+### Беспроводная логика-лайт (`hbhf_sensor` + `smart_door`)
+- **Элементы обороны (`Config.DefenseCapacity`, `Defenses.luau`, `BuildingConfig.luau`, `Recipes.luau`):**
+  - `hbhf_sensor` (стоимость `10` очков `DefenseCapacity`, `BaseHp = 100`, крепление `WallOrCeiling`, крафт на `workbench_2`): в `DefenseService.tickHbhfSensor` сканирует конус/радиус `16` studs (только враги или `IsQaTest`/`AllowOwnerTarget`, с проверкой `hasLineOfSight`), игнорируя владельца, и рассылает беспроводной сигнал всем `smart_door` того же владельца в радиусе `24` studs (`DefenseEffect("SmartDoorSignal")`).
+  - `smart_door` (стоимость `5` очков `DefenseCapacity`, прочность `800` HP как у металлической двери, крепление в `doorway` или на ровный пол, крафт на `workbench_1`): по умолчанию закрыта (скрывая за собой `shotgun_trap`), при сигнале от `hbhf_sensor` открывается на `5` сек (`tickSmartDoor`) и закрывается обратно; обе системы отключаются ЭМИ-гранатой (`DefenseService.DisableTurretsInRadius` + `RaidExplosives.TriggerEmpPulse`).
+- **Геометрия и валидация:** модели из примитивов `Part` описаны в `BuildingGeometry.luau`, поддержаны в `BuildingValidator.luau` (посадка `smart_door` в проём `doorway`, учёт `smart_door` как барьера в `CheckMaxWallsToTC`) и `BuildingController.luau`.
+
+### Визуальный износ и Ремонтный молоток (`repair_hammer`)
+- **Визуальный износ (`BuildingGeometry.ApplyWearVisuals`):** обновляет внешний вид моделей при спавне, уроне, гниении, апгрейде и ремонте (`BaseService`, `BaseUpkeep`, `RaidService`, `DefenseService`):
+  - `>= 60%` MaxHP — штатные материалы и цвета тира;
+  - `< 60%` MaxHP — лёгкое потемнение и смена материала на `Concrete` (дерево/камень) или `CorrodedMetal` (металл/броня);
+  - `< 30%` MaxHP — сильное потемнение, накладные примитивные трещины `WearCrack_*` (`Part`, `CanCollide = false`) и эффект дыма `WearSmoke` (`Smoke`).
+- **Ремонтный молоток (`repair_hammer`):** инструмент в `Items.luau` / `Tools.luau` (`Cooldown = 0.5`) / `Recipes.luau` (ручной крафт без верстака), отдельный режим `RepairHammer` в `BuildingController.luau` и серверный обработчик `BaseService.onBuildRepairRequest`. Удар по повреждённому блоку своей базы вне `30`-секундного рейд-блока восстанавливает `25%` MaxHP за удар, списывая пропорциональное количество ресурсов (`wood`/`stone`/`metal_ore`/`high_quality_metal`) напрямую из хранилища TC (`BaseUpkeep.ConsumeCostFromTcStorage`).
+
+### Чертежи планировки базы (`BaseBlueprints` + `ToolCupboardController`)
+- **Встроенный шаблон и слоты игрока (`src/server/Services/Base/BaseBlueprints.luau`):**
+  - В окне TC добавлена вкладка **«Планировки»** (`ToolCupboardController`), отправляющая `ToolCupboardAction` (`"SaveBlueprint"`, `"LoadBlueprint"`).
+  - Сохранение записывает относительную раскладку (`RelX`, `RelY`, `RelZ`, `RelRotY`, `PieceType`, `Tier`, `MountSurface`) в `slot_1` / `slot_2` без лута.
+  - Загрузка (`builtin_2x2` **«Компактный 2x2 с бункером»** из `18` блоков или пользовательский слот) запрещена в рейде/рейд-блоке, предварительно валидирует раскладку через `BuildingValidator` (`IsInRaidOutpostZone`, `CheckWorldOverlap`, `ComputeDefenseCapacity`, `CheckMaxWallsToTC`, `FindUnsupportedPieces`), проверяет ресурсы в TC с учётом `80%` возврата стоимости старых не-TC модулей и перестраивает каркас без потери самого TC и его хранилища.
+
+### Сцена Studio (`QA_TestArena`)
+- В `Workspace.QA_TestArena.LogicWearTestStand` добавлена связка `QA_HbhfSensor` (`hbhf_sensor`) + `QA_SmartDoor` (`smart_door`) + скрытый за дверью `QA_HiddenShotgunTrap` (`shotgun_trap`), а также повреждённая каменная стена `QA_DamagedWall` (`120 / 500` HP, `IsQaRepairTarget = true`) для проверки визуального износа и `repair_hammer`.

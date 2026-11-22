@@ -64,6 +64,29 @@ local Configs: { [string]: DefenseConfig } = table.freeze({
 		ProjectileSpeed = 190,
 		ProjectileGravity = 12,
 	}),
+	hbhf_sensor = table.freeze({
+		Id = "hbhf_sensor" :: Types.BuildPieceType,
+		Name = "HBHF Sensor",
+		CapacityCost = Config.DefenseCapacity.Costs.hbhf_sensor,
+		AllowedMount = "WallOrCeiling" :: Types.DefenseAllowedMount,
+		BaseHp = 100,
+		Range = 16,
+		ConeHalfAngleDeg = 75,
+		Cooldown = 0.5,
+		Damage = 0,
+		SignalRadius = 24,
+	}),
+	smart_door = table.freeze({
+		Id = "smart_door" :: Types.BuildPieceType,
+		Name = "Smart Door",
+		CapacityCost = Config.DefenseCapacity.Costs.smart_door,
+		AllowedMount = "Doorway" :: Types.DefenseAllowedMount,
+		BaseHp = 800,
+		Range = 0,
+		Cooldown = 0.5,
+		Damage = 0,
+		OpenDuration = 5.0,
+	}),
 })
 
 local Defenses = {}
@@ -72,6 +95,8 @@ Defenses.floor_spikes = Configs.floor_spikes
 Defenses.landmine = Configs.landmine
 Defenses.shotgun_trap = Configs.shotgun_trap
 Defenses.auto_turret = Configs.auto_turret
+Defenses.hbhf_sensor = Configs.hbhf_sensor
+Defenses.smart_door = Configs.smart_door
 
 function Defenses.Get(pieceType: string): DefenseConfig?
 	return Configs[pieceType]

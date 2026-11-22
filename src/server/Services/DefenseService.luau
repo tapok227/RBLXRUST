@@ -67,6 +67,8 @@ type ActiveDefenseRecord = {
 	MaxHp: number,
 	LastFireTime: number,
 	DisabledUntil: number,
+	OpenUntil: number,
+	IsDoorOpen: boolean,
 	Triggered: boolean,
 	LockTarget: Model?,
 	LockStartTime: number,
@@ -919,6 +921,110 @@ local function tickAutoTurret(record: ActiveDefenseRecord, now: number)
 	end
 end
 
+local function setDoorIndicatorColor(doorModel: Model, color: Color3)
+	local indicator = doorModel:FindFirstChild("DoorIndicator")
+	if indicator and indicator:IsA("BasePart") then
+		indicator.Color = color
+	end
+end
+
+local function tickHbhfSensor(record: ActiveDefenseRecord, now: number)
+	if now < record.DisabledUntil then
+		return
+	end
+	if record.Model:GetAttribute("EmpDisabled") == true then
+		record.Model:SetAttribute("EmpDisabled", false)
+		setSensorColor(record, Color3.fromRGB(65, 225, 110))
+	end
+
+	local cfg = record.Config
+	local sensorPos = getDefenseOriginPosition(record)
+	local mountAttr = record.Model:GetAttribute("MountSurface")
+	local isCeiling = mountAttr == "Ceiling" or (record.PieceRef ~= nil and record.PieceRef.MountSurface == "Ceiling")
+	local scanDir = if isCeiling then Vector3.new(0, -1, 0) else record.BaseWorldCF.LookVector
+	local maxAngleDeg = cfg.ConeHalfAngleDeg or 75
+	local detected = false
+
+	for _, target in collectCandidateTargets(record) do
+		if isCharacterInvulnerable(target.Model) then
+			continue
+		end
+		local delta = target.Root.Position - sensorPos
+		local dist = delta.Magnitude
+		if dist > 0.1 and dist <= cfg.Range then
+			local unitDir = delta / dist
+			local angleDeg = math.deg(math.acos(math.clamp(scanDir:Dot(unitDir), -1, 1)))
+			if
+				(dist <= 6 or angleDeg <= maxAngleDeg)
+				and hasLineOfSight(sensorPos, target.Root, target.Model, record.Model)
+			then
+				detected = true
+				break
+			end
+		end
+	end
+
+	if not detected then
+		setSensorColor(record, Color3.fromRGB(65, 225, 110))
+		return
+	end
+
+	setSensorColor(record, Color3.fromRGB(255, 165, 45))
+	local signalRadius = cfg.SignalRadius or 24
+	local doorPositions: { Vector3 } = {}
+
+	for _, other in defensesByUid do
+		if other.Model.Parent == nil or other.PieceType ~= "smart_door" then
+			continue
+		end
+		if now < other.DisabledUntil then
+			continue
+		end
+		local sameOwner = if record.IsQaTest
+			then other.IsQaTest
+			else (other.OwnerUserId == record.OwnerUserId and other.IsRaidInstance == record.IsRaidInstance)
+		if not sameOwner then
+			continue
+		end
+		local doorPos = getDefenseOriginPosition(other)
+		if (doorPos - sensorPos).Magnitude <= signalRadius then
+			local openDur = other.Config.OpenDuration or 5.0
+			other.OpenUntil = now + openDur
+			if not other.IsDoorOpen then
+				other.IsDoorOpen = true
+				BuildingGeometry.SetDoorOpen(other.Model, true)
+				setDoorIndicatorColor(other.Model, Color3.fromRGB(65, 220, 110))
+			end
+			table.insert(doorPositions, doorPos)
+		end
+	end
+
+	if (now - record.LastFireTime) >= cfg.Cooldown then
+		record.LastFireTime = now
+		broadcastDefenseEffect("SmartDoorSignal", sensorPos, doorPositions)
+	end
+end
+
+local function tickSmartDoor(record: ActiveDefenseRecord, now: number)
+	if now < record.DisabledUntil then
+		return
+	end
+	if record.Model:GetAttribute("EmpDisabled") == true and record.Model:GetAttribute("EmpSavedDoorOpen") == nil then
+		record.Model:SetAttribute("EmpDisabled", false)
+		local openNow = record.Model:GetAttribute("DoorOpen") == true
+		record.IsDoorOpen = openNow
+		setDoorIndicatorColor(
+			record.Model,
+			if openNow then Color3.fromRGB(65, 220, 110) else Color3.fromRGB(220, 65, 65)
+		)
+	end
+	if record.IsDoorOpen and now >= record.OpenUntil then
+		record.IsDoorOpen = false
+		BuildingGeometry.SetDoorOpen(record.Model, false)
+		setDoorIndicatorColor(record.Model, Color3.fromRGB(220, 65, 65))
+	end
+end
+
 local function onHeartbeat()
 	local now = os.clock()
 	if (now - lastScanClock) < SCAN_INTERVAL then
@@ -945,6 +1051,10 @@ local function onHeartbeat()
 			tickShotgunTrap(record, now)
 		elseif record.PieceType == "auto_turret" then
 			tickAutoTurret(record, now)
+		elseif record.PieceType == "hbhf_sensor" then
+			tickHbhfSensor(record, now)
+		elseif record.PieceType == "smart_door" then
+			tickSmartDoor(record, now)
 		end
 	end
 end
@@ -1066,10 +1176,31 @@ local function onDefenseAction(player: Player, actionAny: any, argAny: any)
 	end)
 end
 
+local function tryApplyQaRepairWear(inst: Instance)
+	if not inst:IsA("Model") or inst:GetAttribute("IsQaRepairTarget") ~= true then
+		return
+	end
+	local pieceTypeAttr = inst:GetAttribute("PieceType")
+	local tierAttr = inst:GetAttribute("Tier")
+	local hpAttr = inst:GetAttribute("Health") or inst:GetAttribute("Hp")
+	local maxHpAttr = inst:GetAttribute("MaxHealth") or inst:GetAttribute("MaxHp")
+	if
+		typeof(pieceTypeAttr) ~= "string"
+		or typeof(tierAttr) ~= "string"
+		or typeof(hpAttr) ~= "number"
+		or typeof(maxHpAttr) ~= "number"
+	then
+		return
+	end
+	local canonical = BuildingGeometry.CanonicalPieceType(pieceTypeAttr)
+	BuildingGeometry.ApplyWearVisuals(inst, canonical, tierAttr :: Types.BuildTier, hpAttr, maxHpAttr)
+end
+
 local function tryRegisterQaModel(inst: Instance)
 	if not inst:IsA("Model") then
 		return
 	end
+	tryApplyQaRepairWear(inst)
 	if inst:GetAttribute("IsQaDefense") ~= true then
 		return
 	end
@@ -1100,6 +1231,9 @@ local function tryRegisterQaModel(inst: Instance)
 	local maxHp = if typeof(maxHpAttr) == "number" and maxHpAttr > 0 then maxHpAttr else defCfg.BaseHp
 	local hpAttr = inst:GetAttribute("Health")
 	local hp = if typeof(hpAttr) == "number" and hpAttr > 0 then hpAttr else maxHp
+	if hp < maxHp then
+		BuildingGeometry.ApplyWearVisuals(inst, canonical, "wood", hp, maxHp)
+	end
 
 	local mountAttr = inst:GetAttribute("MountSurface")
 	local mountSurface: Types.DefenseMountSurface? = if mountAttr == "Floor"
@@ -1210,6 +1344,8 @@ function DefenseService.RegisterDefense(options: RegisterDefenseOptions)
 		MaxHp = options.MaxHp or defCfg.BaseHp,
 		LastFireTime = 0,
 		DisabledUntil = 0,
+		OpenUntil = 0,
+		IsDoorOpen = options.Model:GetAttribute("DoorOpen") == true,
 		Triggered = false,
 		LockTarget = nil,
 		LockStartTime = 0,
@@ -1275,7 +1411,10 @@ function DefenseService.DisableTurretsInRadius(origin: Vector3, radius: number, 
 	local untilTime = now + math.max(0.1, duration)
 	local affected = 0
 	for _, record in defensesByUid do
-		if record.Model.Parent == nil or record.PieceType ~= "auto_turret" then
+		local isEmpAffected = record.PieceType == "auto_turret"
+			or record.PieceType == "hbhf_sensor"
+			or record.PieceType == "smart_door"
+		if record.Model.Parent == nil or not isEmpAffected then
 			continue
 		end
 		local pos = getDefenseOriginPosition(record)
@@ -1287,7 +1426,11 @@ function DefenseService.DisableTurretsInRadius(origin: Vector3, radius: number, 
 			record.BurstRemaining = 0
 			record.Model:SetAttribute("DisabledUntil", record.DisabledUntil)
 			record.Model:SetAttribute("EmpDisabled", true)
-			setSensorColor(record, Color3.fromRGB(60, 185, 255))
+			if record.PieceType == "smart_door" then
+				setDoorIndicatorColor(record.Model, Color3.fromRGB(60, 185, 255))
+			else
+				setSensorColor(record, Color3.fromRGB(60, 185, 255))
+			end
 			broadcastDefenseEffect("TurretEmp", pos, {})
 			affected += 1
 		end

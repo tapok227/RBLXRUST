@@ -36,6 +36,7 @@ export type UpkeepDeps = {
 	RecalculateAndSyncBaseTier: (player: Player) -> (),
 	SyncBaseState: (player: Player) -> (),
 	SyncToolCupboardForPlayer: (player: Player) -> (),
+	BuildBlueprintsSummary: ((player: Player) -> { Types.BaseBlueprintSummary })?,
 }
 
 local upkeepFractions: { [Player]: { [string]: number } } = {}
@@ -207,7 +208,21 @@ function BaseUpkeep.BuildToolCupboardState(player: Player, deps: UpkeepDeps): Ty
 		DefenseMax = defMax,
 		Slots = deps.StorageMapToInventory(tcPiece.Storage, maxSlots),
 		DefenseLogs = data.DefenseLogs,
+		Blueprints = if deps.BuildBlueprintsSummary ~= nil then deps.BuildBlueprintsSummary(player) else nil,
 	}
+end
+
+function BaseUpkeep.CanAffordInTcStorage(tcPiece: SavedBuildPiece?, costMap: { [string]: number }): boolean
+	if tcPiece == nil then
+		return false
+	end
+	local totals = BaseUpkeep.ComputeTcStorageTotals(tcPiece)
+	for resId, required in costMap do
+		if required > 0 and (totals[resId] or 0) < required then
+			return false
+		end
+	end
+	return true
 end
 
 local function consumeFromTcStorage(tcPiece: SavedBuildPiece, itemId: string, amount: number): number
@@ -232,6 +247,18 @@ local function consumeFromTcStorage(tcPiece: SavedBuildPiece, itemId: string, am
 		end
 	end
 	return amount - remaining
+end
+
+function BaseUpkeep.ConsumeCostFromTcStorage(tcPiece: SavedBuildPiece, costMap: { [string]: number }): boolean
+	if not BaseUpkeep.CanAffordInTcStorage(tcPiece, costMap) then
+		return false
+	end
+	for resId, required in costMap do
+		if required > 0 then
+			consumeFromTcStorage(tcPiece, resId, required)
+		end
+	end
+	return true
 end
 
 local function isOuterBasePiece(
@@ -408,6 +435,8 @@ function BaseUpkeep.ProcessUpkeepAndDecay(player: Player, elapsedSeconds: number
 					record.Model:SetAttribute("Health", piece.Hp)
 					record.Model:SetAttribute("Hp", piece.Hp)
 					DefenseService.UpdateDefenseHp(piece.Uid, piece.Hp, nil)
+					local maxHp = BuildingGeometry.ComputeMaxHp(piece.PieceType, piece.Tier)
+					BuildingGeometry.ApplyWearVisuals(record.Model, piece.PieceType, piece.Tier, piece.Hp, maxHp)
 				end
 			end
 		end
@@ -479,6 +508,10 @@ local function depositIntoSavedPieceStorage(
 	end
 
 	return count - remaining
+end
+
+function BaseUpkeep.DepositResourceToTcStorage(tcPiece: SavedBuildPiece, itemId: string, amount: number): number
+	return depositIntoSavedPieceStorage(tcPiece, itemId, math.floor(amount), Config.Upkeep.TcStorageSlots)
 end
 
 function BaseUpkeep.DepositScrapToToolCupboard(player: Player, amount: number, deps: UpkeepDeps): number

@@ -658,6 +658,128 @@ function BuildingGeometry.CreateModel(
 			isGhost
 		)
 		sensor.CanCollide = false
+	elseif canonical == "hbhf_sensor" then
+		local resolvedMount: DefenseMountSurface = if mountSurface == "Ceiling" then "Ceiling" else "Wall"
+		if resolvedMount == "Ceiling" then
+			primaryLocalCF = CFrame.new(0, -0.1, 0)
+			primaryPart =
+				spawnPrim("Part", model, "MountPlate", Vector3.new(1.3, 0.2, 1.3), worldCF * primaryLocalCF, isGhost)
+			spawnPrim(
+				"Part",
+				model,
+				"SensorBody",
+				Vector3.new(1.0, 0.55, 1.0),
+				worldCF * CFrame.new(0, -0.48, 0),
+				isGhost
+			)
+			spawnPrim(
+				"Part",
+				model,
+				"LensHousing",
+				Vector3.new(0.75, 0.2, 0.75),
+				worldCF * CFrame.new(0, -0.82, 0),
+				isGhost
+			)
+			local indicator = spawnPrim(
+				"Part",
+				model,
+				"SensorLight",
+				Vector3.new(0.32, 0.16, 0.32),
+				worldCF * CFrame.new(0, -0.94, 0),
+				isGhost
+			)
+			indicator.CanCollide = false
+			local antenna = spawnPrim(
+				"Part",
+				model,
+				"Antenna",
+				Vector3.new(0.1, 0.65, 0.1),
+				worldCF * CFrame.new(0.38, -0.55, 0.38),
+				isGhost
+			)
+			antenna.CanCollide = false
+		else
+			primaryLocalCF = CFrame.new(0, 0, -0.1)
+			primaryPart =
+				spawnPrim("Part", model, "MountPlate", Vector3.new(1.3, 1.3, 0.2), worldCF * primaryLocalCF, isGhost)
+			spawnPrim(
+				"Part",
+				model,
+				"SensorBody",
+				Vector3.new(1.0, 1.0, 0.55),
+				worldCF * CFrame.new(0, 0, -0.48),
+				isGhost
+			)
+			spawnPrim(
+				"Part",
+				model,
+				"LensHousing",
+				Vector3.new(0.75, 0.75, 0.2),
+				worldCF * CFrame.new(0, 0, -0.82),
+				isGhost
+			)
+			local indicator = spawnPrim(
+				"Part",
+				model,
+				"SensorLight",
+				Vector3.new(0.32, 0.32, 0.16),
+				worldCF * CFrame.new(0, 0, -0.94),
+				isGhost
+			)
+			indicator.CanCollide = false
+			local antenna = spawnPrim(
+				"Part",
+				model,
+				"Antenna",
+				Vector3.new(0.1, 0.75, 0.1),
+				worldCF * CFrame.new(0.38, 0.75, -0.45),
+				isGhost
+			)
+			antenna.CanCollide = false
+		end
+	elseif canonical == "smart_door" then
+		primaryLocalCF = CFrame.new(0, 0.1, 0)
+		primaryPart =
+			spawnPrim("Part", model, "DoorThreshold", Vector3.new(4.9, 0.2, 0.6), worldCF * primaryLocalCF, isGhost)
+		spawnPrim(
+			"Part",
+			model,
+			"DoorFrameLeft",
+			Vector3.new(0.25, 7.55, 0.6),
+			worldCF * CFrame.new(-2.375, 3.775, 0),
+			isGhost
+		)
+		spawnPrim(
+			"Part",
+			model,
+			"DoorFrameRight",
+			Vector3.new(0.25, 7.55, 0.6),
+			worldCF * CFrame.new(2.375, 3.775, 0),
+			isGhost
+		)
+		spawnPrim("Part", model, "DoorFrameTop", Vector3.new(5.0, 0.35, 0.6), worldCF * CFrame.new(0, 7.45, 0), isGhost)
+		spawnPrim("Part", model, "ServoBox", Vector3.new(1.15, 0.48, 0.75), worldCF * CFrame.new(0, 7.35, 0), isGhost)
+		local doorIndicator = spawnPrim(
+			"Part",
+			model,
+			"DoorIndicator",
+			Vector3.new(0.35, 0.25, 0.85),
+			worldCF * CFrame.new(1.65, 7.35, 0),
+			isGhost
+		)
+		doorIndicator.CanCollide = false
+
+		local closedCF = worldCF * CFrame.new(0, 3.75, 0)
+		local hingeCF = worldCF * CFrame.new(-2.25, 3.75, 0)
+		local openCF = hingeCF * CFrame.Angles(0, math.rad(95), 0) * CFrame.new(2.25, 0, 0)
+		local doorPanel = spawnPrim("Part", model, "DoorPanel", Vector3.new(4.5, 7.25, 0.35), closedCF, isGhost)
+		if not isGhost then
+			doorPanel:SetAttribute("ClosedCFrame", closedCF)
+			doorPanel:SetAttribute("OpenCFrame", openCF)
+			model:SetAttribute("IsSmartDoor", true)
+			model:SetAttribute("HasDoor", true)
+			model:SetAttribute("DoorOpen", false)
+		end
 	end
 
 	if primaryPart ~= nil then
@@ -786,12 +908,141 @@ function BuildingGeometry.ApplyTierVisuals(model: Model, pieceType: BuildPieceTy
 					child.Material = Enum.Material.DiamondPlate
 					child.Color = Color3.fromRGB(88, 92, 96)
 				end
+			elseif canonical == "hbhf_sensor" then
+				if child.Name == "SensorLight" then
+					child.Material = Enum.Material.Neon
+					child.Color = Color3.fromRGB(65, 225, 110)
+				elseif child.Name == "LensHousing" then
+					child.Material = Enum.Material.SmoothPlastic
+					child.Color = Color3.fromRGB(32, 38, 46)
+				elseif child.Name == "Antenna" then
+					child.Material = Enum.Material.Metal
+					child.Color = Color3.fromRGB(165, 172, 182)
+				else
+					child.Material = Enum.Material.Metal
+					child.Color = Color3.fromRGB(76, 86, 98)
+				end
+			elseif canonical == "smart_door" then
+				if child.Name == "DoorIndicator" then
+					child.Material = Enum.Material.Neon
+					child.Color = Color3.fromRGB(220, 65, 65)
+				elseif child.Name == "ServoBox" then
+					child.Material = Enum.Material.DiamondPlate
+					child.Color = Color3.fromRGB(52, 60, 72)
+				elseif child.Name == "DoorPanel" then
+					child.Material = Enum.Material.Metal
+					child.Color = Color3.fromRGB(92, 102, 114)
+				else
+					child.Material = Enum.Material.Metal
+					child.Color = Color3.fromRGB(62, 70, 80)
+				end
 			elseif child.Name == "DoorPanel" then
 				child.Material = tierCfg.Material
 				child.Color = tierCfg.Color:Lerp(Color3.new(0, 0, 0), 0.18)
 			else
 				child.Material = tierCfg.Material
 				child.Color = tierCfg.Color
+			end
+		end
+	end
+end
+
+local PRESERVED_INDICATOR_NAMES: { [string]: boolean } = {
+	SensorLight = true,
+	IndicatorLight = true,
+	DoorIndicator = true,
+	TopLamp = true,
+	LampHead = true,
+}
+
+function BuildingGeometry.ApplyWearVisuals(
+	model: Model,
+	pieceType: BuildPieceType,
+	tier: BuildTier,
+	hp: number,
+	maxHp: number
+)
+	local canonical = BuildingGeometry.CanonicalPieceType(pieceType)
+	local ratio = if maxHp > 0 then math.clamp(hp / maxHp, 0, 1) else 1
+
+	local savedIndicatorColors: { [string]: Color3 } = {}
+	for _, desc in model:GetDescendants() do
+		if
+			(desc.Name == "WearSmoke" and desc:IsA("Smoke"))
+			or (string.sub(desc.Name, 1, 10) == "WearCrack_" and desc:IsA("BasePart"))
+		then
+			desc:Destroy()
+		elseif desc:IsA("BasePart") and PRESERVED_INDICATOR_NAMES[desc.Name] then
+			savedIndicatorColors[desc.Name] = desc.Color
+		end
+	end
+
+	BuildingGeometry.ApplyTierVisuals(model, canonical, tier)
+	for _, desc in model:GetDescendants() do
+		if desc:IsA("BasePart") and savedIndicatorColors[desc.Name] ~= nil then
+			desc.Color = savedIndicatorColors[desc.Name]
+		end
+	end
+
+	if ratio >= 0.6 then
+		model:SetAttribute("WearState", "Healthy")
+		return
+	end
+
+	local isSevere = ratio < 0.3
+	local darkenTarget = if isSevere then Color3.fromRGB(16, 14, 14) else Color3.fromRGB(28, 26, 24)
+	local darkenAlpha = if isSevere then 0.52 else 0.28
+	model:SetAttribute("WearState", if isSevere then "Critical" else "Damaged")
+
+	for _, desc in model:GetDescendants() do
+		if desc:IsA("BasePart") and not PRESERVED_INDICATOR_NAMES[desc.Name] then
+			desc.Color = desc.Color:Lerp(darkenTarget, darkenAlpha)
+			if
+				desc.Material == Enum.Material.Metal
+				or desc.Material == Enum.Material.DiamondPlate
+				or desc.Material == Enum.Material.CorrodedMetal
+			then
+				desc.Material = Enum.Material.CorrodedMetal
+			else
+				desc.Material = Enum.Material.Concrete
+			end
+		end
+	end
+
+	if isSevere then
+		local primary = model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")
+		if primary ~= nil then
+			local smoke = Instance.new("Smoke")
+			smoke.Name = "WearSmoke"
+			smoke.Color = Color3.fromRGB(58, 56, 54)
+			smoke.Opacity = 0.22
+			smoke.RiseVelocity = 2.5
+			smoke.Size = 2.2
+			smoke.Parent = primary
+
+			local sz = primary.Size
+			local halfX = math.max(0.4, sz.X * 0.26)
+			local halfY = math.max(0.4, sz.Y * 0.24)
+			local faceZ = sz.Z * 0.5 + 0.04
+			local crackOffsets = {
+				CFrame.new(-halfX * 0.6, halfY * 0.35, faceZ) * CFrame.Angles(0, 0, math.rad(28)),
+				CFrame.new(halfX * 0.45, -halfY * 0.2, -faceZ) * CFrame.Angles(0, 0, math.rad(-34)),
+				CFrame.new(0, 0, faceZ) * CFrame.Angles(0, 0, math.rad(55)),
+			}
+			local crackLen = math.clamp(math.min(sz.X, sz.Y) * 0.55, 0.7, 3.6)
+			for idx, relCF in crackOffsets do
+				local crack = Instance.new("Part")
+				crack.Name = string.format("WearCrack_%d", idx)
+				crack.Anchored = true
+				crack.CanCollide = false
+				crack.CanQuery = false
+				crack.CanTouch = false
+				crack.CastShadow = false
+				crack.Material = Enum.Material.Slate
+				crack.Color = Color3.fromRGB(14, 12, 12)
+				crack.Size = Vector3.new(crackLen, 0.14, 0.08)
+				crack.CFrame = primary.CFrame * relCF
+				crack.Parent = model
 			end
 		end
 	end
@@ -1118,6 +1369,14 @@ function BuildingGeometry.GetOverlapBoxes(
 		end
 	elseif canonical == "auto_turret" then
 		table.insert(boxes, { CFrame = worldCF * CFrame.new(0, 1.75, 0), Size = Vector3.new(2.2, 3.1, 2.2) })
+	elseif canonical == "hbhf_sensor" then
+		if mountSurface == "Ceiling" then
+			table.insert(boxes, { CFrame = worldCF * CFrame.new(0, -0.5, 0), Size = Vector3.new(1.2, 0.9, 1.2) })
+		else
+			table.insert(boxes, { CFrame = worldCF * CFrame.new(0, 0, -0.5), Size = Vector3.new(1.2, 1.2, 0.9) })
+		end
+	elseif canonical == "smart_door" then
+		table.insert(boxes, { CFrame = worldCF * CFrame.new(0, 3.75, 0), Size = Vector3.new(4.4, 7.0, 0.55) })
 	end
 	return boxes
 end

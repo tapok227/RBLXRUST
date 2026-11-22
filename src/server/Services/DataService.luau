@@ -26,6 +26,8 @@ type RaidTargetInfo = Types.RaidTargetInfo
 type RaidDefenseReport = Types.RaidDefenseReport
 type DeathGhostPoint = Types.DeathGhostPoint
 type DefenseLogEntry = Types.DefenseLogEntry
+type BlueprintPieceEntry = Types.BlueprintPieceEntry
+type BaseBlueprintSlot = Types.BaseBlueprintSlot
 
 local PROFILE_STORE_NAME = "PlayerData_v1"
 local RAIDABLE_BASES_STORE_NAME = "RaidableBases_v1"
@@ -110,6 +112,7 @@ local DATA_TEMPLATE = {
 	},
 	UnlockedBlueprints = {},
 	DefenseLogs = {},
+	BaseBlueprints = {},
 	LastStarterKitAt = 0,
 }
 
@@ -335,6 +338,79 @@ end
 
 local function serializeBlueprints(unlocked: { [string]: boolean }?): { [string]: boolean }
 	return deserializeBlueprints(unlocked)
+end
+
+local MAX_BASE_BLUEPRINT_SLOTS = 2
+
+local function deserializeBaseBlueprints(rawMap: any): { [string]: BaseBlueprintSlot }
+	local result: { [string]: BaseBlueprintSlot } = {}
+	if type(rawMap) ~= "table" then
+		return result
+	end
+	for slotIdx = 1, MAX_BASE_BLUEPRINT_SLOTS do
+		local key = tostring(slotIdx)
+		local rawSlot = rawMap[key]
+		if type(rawSlot) == "table" and type(rawSlot.Pieces) == "table" then
+			local pieces: { BlueprintPieceEntry } = {}
+			for _, rawEntry in rawSlot.Pieces do
+				if
+					type(rawEntry) == "table"
+					and type(rawEntry.PieceType) == "string"
+					and SecurityService.IsFiniteNumber(rawEntry.RelX)
+					and SecurityService.IsFiniteNumber(rawEntry.RelY)
+					and SecurityService.IsFiniteNumber(rawEntry.RelZ)
+				then
+					local canonical = BuildingGeometry.CanonicalPieceType(rawEntry.PieceType)
+					if BuildingConfig.Pieces[canonical] ~= nil then
+						local tier: BuildTier = if type(rawEntry.Tier) == "string"
+								and BuildingConfig.Tiers[rawEntry.Tier :: BuildTier] ~= nil
+							then rawEntry.Tier :: BuildTier
+							else "wood"
+						local relRotY = if SecurityService.IsFiniteNumber(rawEntry.RelRotY)
+							then BuildingGeometry.QuantizeYaw30(rawEntry.RelRotY :: number)
+							else 0
+						local mountSurface: DefenseMountSurface? = if rawEntry.MountSurface == "Floor"
+								or rawEntry.MountSurface == "Wall"
+								or rawEntry.MountSurface == "Ceiling"
+							then rawEntry.MountSurface :: DefenseMountSurface
+							else nil
+						table.insert(pieces, {
+							PieceType = canonical,
+							Tier = tier,
+							RelX = rawEntry.RelX :: number,
+							RelY = rawEntry.RelY :: number,
+							RelZ = rawEntry.RelZ :: number,
+							RelRotY = relRotY,
+							MountSurface = mountSurface,
+							IsTc = if rawEntry.IsTc == true then true else nil,
+						})
+					end
+				end
+				if #pieces >= BuildingConfig.MaxPiecesPerBase then
+					break
+				end
+			end
+			if #pieces > 0 then
+				local slotName = if type(rawSlot.Name) == "string" and #rawSlot.Name > 0
+					then string.sub(rawSlot.Name, 1, 48)
+					else string.format("Планировка #%d", slotIdx)
+				local savedAt = if isValidFiniteInteger(rawSlot.SavedAt) and (rawSlot.SavedAt :: number) >= 0
+					then math.floor(rawSlot.SavedAt :: number)
+					else 0
+				result[key] = {
+					Id = string.format("slot_%d", slotIdx),
+					Name = slotName,
+					SavedAt = savedAt,
+					Pieces = pieces,
+				}
+			end
+		end
+	end
+	return result
+end
+
+local function serializeBaseBlueprints(blueprints: { [string]: BaseBlueprintSlot }?): { [string]: BaseBlueprintSlot }
+	return deserializeBaseBlueprints(blueprints)
 end
 
 local function isValidMountSurface(val: any): boolean
@@ -805,6 +881,12 @@ function DataService.MigrateProfileData(rawData: { [string]: any }): { [string]:
 		data.DataVersion = 6
 	end
 
+	-- Step 7: BaseBlueprints (v6 -> v7), preserving existing Base.Pieces without loss
+	if Types.CURRENT_DATA_VERSION >= 7 and data.DataVersion < 7 then
+		data.BaseBlueprints = deserializeBaseBlueprints(data.BaseBlueprints)
+		data.DataVersion = 7
+	end
+
 	data.Version = data.DataVersion
 	return data
 end
@@ -817,6 +899,7 @@ local function syncRuntimeToProfile(profile: any, runtimePlayerData: PlayerData)
 	profile.Data.Base = serializeBase(runtimePlayerData.Base)
 	profile.Data.UnlockedBlueprints = serializeBlueprints(runtimePlayerData.UnlockedBlueprints)
 	profile.Data.DefenseLogs = serializeDefenseLogs(runtimePlayerData.DefenseLogs)
+	profile.Data.BaseBlueprints = serializeBaseBlueprints(runtimePlayerData.BaseBlueprints)
 	profile.Data.LastStarterKitAt = if isValidFiniteInteger(runtimePlayerData.LastStarterKitAt)
 			and (runtimePlayerData.LastStarterKitAt :: number) >= 0
 		then math.floor(runtimePlayerData.LastStarterKitAt :: number)
@@ -927,6 +1010,7 @@ local function loadPlayerProfile(player: Player)
 			Base = deserializeBase(profile.Data.Base),
 			UnlockedBlueprints = deserializeBlueprints(profile.Data.UnlockedBlueprints),
 			DefenseLogs = deserializeDefenseLogs(profile.Data.DefenseLogs),
+			BaseBlueprints = deserializeBaseBlueprints(profile.Data.BaseBlueprints),
 			LastStarterKitAt = if isValidFiniteInteger(profile.Data.LastStarterKitAt)
 					and (profile.Data.LastStarterKitAt :: number) >= 0
 				then math.floor(profile.Data.LastStarterKitAt :: number)

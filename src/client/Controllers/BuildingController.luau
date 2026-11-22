@@ -58,7 +58,7 @@ local selectedPieceIndex = 1
 local currentRotStep = 0
 local currentYawDeg = 0
 local manualBuildMode = false
-local toolMode: "None" | "Build" | "Hammer" | "DefenseItem" = "None"
+local toolMode: "None" | "Build" | "Hammer" | "RepairHammer" | "DefenseItem" = "None"
 local upgradeModeToggle = false
 local demolishModeToggle = false
 
@@ -178,12 +178,20 @@ local function getSelectedPieceType(): BuildPieceType
 	return BuildingConfig.PieceOrder[selectedPieceIndex] or "foundation"
 end
 
+local function isRepairHammerActive(): boolean
+	return toolMode == "RepairHammer"
+end
+
 local function isHammerModeActive(): boolean
-	return toolMode == "Hammer" or upgradeModeToggle or demolishModeToggle or UserInputService:IsKeyDown(Enum.KeyCode.G)
+	return toolMode == "Hammer"
+		or toolMode == "RepairHammer"
+		or upgradeModeToggle
+		or demolishModeToggle
+		or UserInputService:IsKeyDown(Enum.KeyCode.G)
 end
 
 local function isDemolishSubModeActive(): boolean
-	return demolishModeToggle and not UserInputService:IsKeyDown(Enum.KeyCode.G)
+	return demolishModeToggle and not isRepairHammerActive() and not UserInputService:IsKeyDown(Enum.KeyCode.G)
 end
 
 local function formatCostText(costMap: { [string]: number }): string
@@ -412,11 +420,16 @@ local function updateBuildUiVisuals()
 		deployToMapBtn.Visible = inBase
 	end
 	if buildToggleBtn then
+		local repairActive = buildActive and isRepairHammerActive()
 		buildToggleBtn.BackgroundColor3 = if hammerActive
 			then COLOR_ACTION_ACTIVE
 			elseif buildActive then COLOR_STROKE_SELECTED
 			else Color3.fromRGB(55, 110, 165)
-		buildToggleBtn.Text = if hammerActive then "Hammer [B]" elseif buildActive then "Build: ON [B]" else "Build [B]"
+		buildToggleBtn.Text = if repairActive
+			then "Repair [B]"
+			elseif hammerActive then "Hammer [B]"
+			elseif buildActive then "Build: ON [B]"
+			else "Build [B]"
 	end
 	if buildMenuFrame then
 		buildMenuFrame.Visible = canBuild and buildActive
@@ -453,9 +466,10 @@ local function updateBuildUiVisuals()
 
 	if statusInfoLabel then
 		if hammerActive then
-			statusInfoLabel.Text = if #hammerStatusMessage > 0
-				then hammerStatusMessage
+			local defaultHint = if isRepairHammerActive()
+				then "Repair Hammer: LMB Repair (+25% HP from TC)"
 				else "Hammer: LMB Upgrade/Repair | RMB Demolish"
+			statusInfoLabel.Text = if #hammerStatusMessage > 0 then hammerStatusMessage else defaultHint
 			statusInfoLabel.TextColor3 = if hammerStatusValid
 				then Color3.fromRGB(255, 215, 105)
 				else Color3.fromRGB(235, 110, 110)
@@ -501,14 +515,22 @@ end
 
 local function raycastStructureUnderCursor(): (Model?, string?, BuildPieceType?, BuildTier?)
 	local structuresFolder = getActiveStructuresFolder()
+	local qaFolder = if isRepairHammerActive() then Workspace:FindFirstChild("QA_TestArena") else nil
 	local camera = Workspace.CurrentCamera
-	if not structuresFolder or not camera then
+	if (not structuresFolder and not qaFolder) or not camera then
 		return nil, nil, nil, nil
 	end
 
+	local includeList: { Instance } = {}
+	if structuresFolder ~= nil then
+		table.insert(includeList, structuresFolder)
+	end
+	if qaFolder ~= nil then
+		table.insert(includeList, qaFolder)
+	end
 	local mouseLoc = UserInputService:GetMouseLocation()
 	local unitRay = camera:ViewportPointToRay(mouseLoc.X, mouseLoc.Y)
-	cachedHammerRayParams.FilterDescendantsInstances = { structuresFolder }
+	cachedHammerRayParams.FilterDescendantsInstances = includeList
 
 	local result = Workspace:Raycast(unitRay.Origin, unitRay.Direction * 120, cachedHammerRayParams)
 	if not result or not result.Instance then
@@ -516,7 +538,13 @@ local function raycastStructureUnderCursor(): (Model?, string?, BuildPieceType?,
 	end
 
 	local current: Instance? = result.Instance
-	while current ~= nil and current.Parent ~= structuresFolder do
+	while current ~= nil do
+		if structuresFolder ~= nil and current.Parent == structuresFolder then
+			break
+		end
+		if qaFolder ~= nil and current:IsA("Model") and current:GetAttribute("IsQaRepairTarget") == true then
+			break
+		end
 		current = current.Parent
 	end
 	if not current or not current:IsA("Model") then
@@ -556,10 +584,25 @@ local function handleHammerAction(forceDemolish: boolean)
 	if not hoveredModel or uid == nil or pieceType == nil or tier == nil then
 		return
 	end
-	if hoveredModel:GetAttribute("OwnerUserId") ~= localPlayer.UserId then
+	local isQaTarget = isRepairHammerActive() and hoveredModel:GetAttribute("IsQaRepairTarget") == true
+	if not isQaTarget and hoveredModel:GetAttribute("OwnerUserId") ~= localPlayer.UserId then
 		return
 	end
 	if (hrp.Position - hoveredModel:GetPivot().Position).Magnitude > BuildingConfig.MaxBuildDistance then
+		return
+	end
+
+	if isRepairHammerActive() then
+		if forceDemolish or getRemainingRaidBlockSeconds(hoveredModel) > 0 then
+			return
+		end
+		local hpAttr = hoveredModel:GetAttribute("Health") or hoveredModel:GetAttribute("Hp")
+		local maxHpAttr = hoveredModel:GetAttribute("MaxHealth") or hoveredModel:GetAttribute("MaxHp")
+		local hp = if typeof(hpAttr) == "number" then math.floor(hpAttr + 0.5) else 0
+		local maxHp = if typeof(maxHpAttr) == "number" then math.floor(maxHpAttr + 0.5) else 1
+		if hp < maxHp then
+			Net.GetEvent(Net.Events.BuildRepairRequest):FireServer(uid)
+		end
 		return
 	end
 
@@ -650,7 +693,8 @@ local function updateHammerHover()
 		return
 	end
 
-	local isOwner = hoveredModel:GetAttribute("OwnerUserId") == localPlayer.UserId
+	local isQaTarget = isRepairHammerActive() and hoveredModel:GetAttribute("IsQaRepairTarget") == true
+	local isOwner = isQaTarget or hoveredModel:GetAttribute("OwnerUserId") == localPlayer.UserId
 	local inRange = (hrp.Position - hoveredModel:GetPivot().Position).Magnitude <= BuildingConfig.MaxBuildDistance
 	local pieceCfg = BuildingConfig.Pieces[pieceType]
 	local pieceName = if pieceCfg then pieceCfg.Name else pieceType
@@ -669,6 +713,35 @@ local function updateHammerHover()
 			then string.format("%s | Not your structure", pieceName)
 			else string.format("%s | Too far (>%d studs)", pieceName, BuildingConfig.MaxBuildDistance)
 		hammerStatusValid = false
+		updateBuildUiVisuals()
+		return
+	end
+
+	if isRepairHammerActive() then
+		local raidBlockRemaining = getRemainingRaidBlockSeconds(hoveredModel)
+		if hp >= maxHp then
+			targetHighlight.OutlineColor = Color3.fromRGB(160, 160, 175)
+			targetHighlight.FillColor = Color3.fromRGB(120, 120, 135)
+			hammerStatusMessage = string.format("%s (%d/%d HP) | Целый", pieceName, hp, maxHp)
+			hammerStatusValid = true
+		elseif raidBlockRemaining > 0 then
+			targetHighlight.OutlineColor = Color3.fromRGB(255, 75, 75)
+			targetHighlight.FillColor = Color3.fromRGB(235, 65, 65)
+			hammerStatusMessage = string.format(
+				"%s (%d/%d HP) | Ремонт заблок.: %ds",
+				pieceName,
+				hp,
+				maxHp,
+				math.ceil(raidBlockRemaining)
+			)
+			hammerStatusValid = false
+		else
+			targetHighlight.OutlineColor = Color3.fromRGB(95, 235, 125)
+			targetHighlight.FillColor = Color3.fromRGB(70, 200, 110)
+			hammerStatusMessage =
+				string.format("Repair Hammer: %s (%d/%d HP) [LMB +25%% из TC]", pieceName, hp, maxHp)
+			hammerStatusValid = true
+		end
 		updateBuildUiVisuals()
 		return
 	end
@@ -901,6 +974,42 @@ local function updatePreviewAndHighlight()
 					reason = "Требуется ровный пол или фундамент"
 				end
 			end
+		elseif defCfg.AllowedMount == "Doorway" then
+			mountSurface = "Floor"
+			local bestDoorway: Model? = nil
+			local bestDist = 7.5
+			for _, pModel in playerModels do
+				local pTypeAttr = pModel:GetAttribute("PieceType")
+				if typeof(pTypeAttr) == "string" and BuildingGeometry.CanonicalPieceType(pTypeAttr) == "doorway" then
+					local d = (pModel:GetPivot().Position - aimPos).Magnitude
+					if d < bestDist then
+						bestDist = d
+						bestDoorway = pModel
+					end
+				end
+			end
+			if bestDoorway ~= nil then
+				targetCF = bestDoorway:GetPivot()
+				table.insert(overlapExcludes, bestDoorway)
+			else
+				local groundResult = result
+				if groundResult == nil then
+					local downOrigin = Vector3.new(aimPos.X, aimPos.Y + 2.5, aimPos.Z)
+					groundResult = Workspace:Raycast(downOrigin, Vector3.new(0, -5.5, 0), cachedPreviewRayParams)
+				end
+				if
+					groundResult ~= nil
+					and groundResult.Normal.Y >= 0.7
+					and not BuildingGeometry.IsNoBuildInstance(groundResult.Instance, false)
+				then
+					targetCF = CFrame.new(groundResult.Position) * CFrame.Angles(0, math.rad(currentYawDeg), 0)
+				else
+					hasValidTarget = false
+					if #reason == 0 then
+						reason = "Наведите на дверной проём (Doorway) или ровный пол"
+					end
+				end
+			end
 		else
 			if
 				result ~= nil
@@ -969,7 +1078,17 @@ local function updatePreviewAndHighlight()
 						local exCfg = BuildingConfig.Pieces[exType]
 						if exCfg ~= nil and exCfg.IsDefense == true then
 							local dist = (existing:GetPivot().Position - targetCF.Position).Magnitude
-							if canonicalSelected == "auto_turret" and exType == "auto_turret" then
+							local isLogicPiece = canonicalSelected == "hbhf_sensor"
+								or canonicalSelected == "smart_door"
+								or exType == "hbhf_sensor"
+								or exType == "smart_door"
+							if isLogicPiece then
+								if canonicalSelected == exType and dist < 1.2 then
+									hasValidTarget = false
+									reason = "Слишком близко к такому же модулю"
+									break
+								end
+							elseif canonicalSelected == "auto_turret" and exType == "auto_turret" then
 								if dist < Config.MIN_TURRET_DISTANCE then
 									hasValidTarget = false
 									reason =
@@ -1619,6 +1738,10 @@ local function syncModeFromEquippedTool()
 		toolMode = "Hammer"
 		upgradeModeToggle = true
 		demolishModeToggle = false
+	elseif itemId == "repair_hammer" then
+		toolMode = "RepairHammer"
+		upgradeModeToggle = false
+		demolishModeToggle = false
 	elseif Defenses.Get(itemId) ~= nil or itemId == "research_table" then
 		toolMode = "DefenseItem"
 		upgradeModeToggle = false
@@ -1683,7 +1806,7 @@ function BuildingController.SetBuildMode(enabled: boolean)
 		end
 		clearTargetHighlight()
 	else
-		if toolMode == "Hammer" then
+		if toolMode == "Hammer" or toolMode == "RepairHammer" then
 			toolMode = "None"
 		end
 		upgradeModeToggle = false
@@ -1800,6 +1923,7 @@ function BuildingController.Init()
 		elseif
 			input.UserInputType == Enum.UserInputType.MouseButton2
 			and isHammerModeActive()
+			and not isRepairHammerActive()
 			and not isAnyModalUiOpen()
 		then
 			handleHammerAction(true)

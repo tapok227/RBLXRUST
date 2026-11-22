@@ -160,6 +160,20 @@ local Entries: { [string]: RecycleEntry } = table.freeze({
 			table.freeze({ Id = "metal_ore", Count = 40 }),
 		}),
 	}),
+	hbhf_sensor = table.freeze({
+		BatchSize = 1,
+		Outputs = table.freeze({
+			table.freeze({ Id = "metal_ore", Count = 20 }),
+			table.freeze({ Id = "scrap", Count = 10 }),
+		}),
+	}),
+	smart_door = table.freeze({
+		BatchSize = 1,
+		Outputs = table.freeze({
+			table.freeze({ Id = "metal_ore", Count = 40 }),
+			table.freeze({ Id = "scrap", Count = 12 }),
+		}),
+	}),
 
 	-- Deployables
 	workbench_1 = table.freeze({

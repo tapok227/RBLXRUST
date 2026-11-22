@@ -285,6 +285,7 @@ local function isCombatBlockedByItem(): boolean
 			or Explosives[equippedItem.Id] ~= nil
 			or equippedItem.Id == "building_plan"
 			or equippedItem.Id == "hammer"
+			or equippedItem.Id == "repair_hammer"
 		)
 end
 

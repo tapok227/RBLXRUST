@@ -271,6 +271,8 @@ return table.freeze({
 			landmine = 10,
 			shotgun_trap = 15,
 			auto_turret = 25,
+			hbhf_sensor = 10,
+			smart_door = 5,
 		}),
 	}),
 })

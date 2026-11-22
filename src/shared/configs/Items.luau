@@ -185,6 +185,11 @@ local Items: { [string]: ItemConfig } = {
 		Type = "Tool",
 		MaxStack = 1,
 	},
+	repair_hammer = {
+		Name = "Repair Hammer",
+		Type = "Tool",
+		MaxStack = 1,
+	},
 	high_quality_metal = {
 		Name = "High Quality Metal",
 		Type = "Resource",
@@ -214,6 +219,16 @@ local Items: { [string]: ItemConfig } = {
 		Name = "Auto Turret",
 		Type = "Tool",
 		MaxStack = 2,
+	},
+	hbhf_sensor = {
+		Name = "HBHF Sensor",
+		Type = "Tool",
+		MaxStack = 3,
+	},
+	smart_door = {
+		Name = "Smart Door",
+		Type = "Tool",
+		MaxStack = 3,
 	},
 	research_table = {
 		Name = "Research Table",

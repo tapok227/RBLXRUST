@@ -226,6 +226,28 @@ local Pieces: { [BuildPieceType]: BuildPieceConfig } = table.freeze({
 		DefenseCost = Config.DefenseCapacity.Costs.auto_turret,
 		AllowedMount = "Floor",
 	}),
+	hbhf_sensor = table.freeze({
+		Name = "HBHF Sensor",
+		Category = "Deployable",
+		Shape = "Deployable",
+		Cost = table.freeze({ metal_ore = 40, tech_parts = 1, scrap = 20 }),
+		BaseHp = 100,
+		Upgradeable = false,
+		IsDefense = true,
+		DefenseCost = Config.DefenseCapacity.Costs.hbhf_sensor,
+		AllowedMount = "WallOrCeiling",
+	}),
+	smart_door = table.freeze({
+		Name = "Smart Door",
+		Category = "Deployable",
+		Shape = "Deployable",
+		Cost = table.freeze({ metal_ore = 80, scrap = 25 }),
+		BaseHp = 800,
+		Upgradeable = false,
+		IsDefense = true,
+		DefenseCost = Config.DefenseCapacity.Costs.smart_door,
+		AllowedMount = "Doorway",
+	}),
 })
 
 local CanonicalPieceMap: { [string]: BuildPieceType } = table.freeze({
@@ -255,6 +277,8 @@ local CanonicalPieceMap: { [string]: BuildPieceType } = table.freeze({
 	landmine = "landmine",
 	shotgun_trap = "shotgun_trap",
 	auto_turret = "auto_turret",
+	hbhf_sensor = "hbhf_sensor",
+	smart_door = "smart_door",
 })
 
 local Tiers: { [BuildTier]: BuildTierConfig } = table.freeze({
@@ -337,6 +361,8 @@ local PieceOrder: { BuildPieceType } = table.freeze({
 	"landmine",
 	"shotgun_trap",
 	"auto_turret",
+	"hbhf_sensor",
+	"smart_door",
 })
 
 local TierOrder: { BuildTier } = table.freeze({

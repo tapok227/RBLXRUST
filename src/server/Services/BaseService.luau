@@ -15,6 +15,7 @@ local Defenses = require(ReplicatedStorage.Shared.configs.Defenses)
 local Recipes = require(ReplicatedStorage.Shared.configs.Recipes)
 local BuildingGeometry = require(ReplicatedStorage.Shared.BuildingGeometry)
 local Net = require(ReplicatedStorage.Shared.Net)
+local BaseBlueprints = require(ServerScriptService.Server.Services.Base.BaseBlueprints)
 local BaseGhosts = require(ServerScriptService.Server.Services.Base.BaseGhosts)
 local BaseUpkeep = require(ServerScriptService.Server.Services.Base.BaseUpkeep)
 local BuildingValidator = require(ServerScriptService.Server.Services.BuildingValidator)
@@ -52,6 +53,12 @@ export type RaidHooks = {
 local STRUCTURES_FOLDER_NAME = "PlayerBaseStructures"
 local STUDIO_SIM_BANNER_DURATION = 4
 local BUILD_ACTION_COOLDOWN = 0.15
+local REPAIR_HAMMER_COOLDOWN = 0.45
+
+local UPKEEP_ALLOWED_SET: { [string]: boolean } = {}
+for _, resId in Config.Upkeep.AllowedResourceIds do
+	UPKEEP_ALLOWED_SET[resId] = true
+end
 
 local spawnedByPlayer: { [Player]: { [string]: LivePieceRecord } } = {}
 local recordsByUid: { [string]: LivePieceRecord } = {}
@@ -253,6 +260,7 @@ local function createPieceModel(owner: Player, piece: SavedBuildPiece): (Model, 
 	BuildingGeometry.ApplyTierVisuals(model, canonicalType, piece.Tier)
 
 	local maxHp = BuildingGeometry.ComputeMaxHp(canonicalType, piece.Tier)
+	BuildingGeometry.ApplyWearVisuals(model, canonicalType, piece.Tier, piece.Hp, maxHp)
 	model:SetAttribute("BuildUid", piece.Uid)
 	model:SetAttribute("PieceType", canonicalType)
 	model:SetAttribute("Tier", piece.Tier)
@@ -293,6 +301,7 @@ getUpkeepDeps = function(): BaseUpkeep.UpkeepDeps
 		RecalculateAndSyncBaseTier = recalculateAndSyncBaseTier,
 		SyncBaseState = syncBaseState,
 		SyncToolCupboardForPlayer = syncToolCupboardForPlayer,
+		BuildBlueprintsSummary = BaseBlueprints.BuildSummaries,
 	}
 end
 
@@ -400,6 +409,20 @@ local function spawnPieceForPlayer(player: Player, piece: SavedBuildPiece)
 		occupiedSockets,
 		occupiedWorldKeys
 	)
+end
+
+local function getBlueprintLoadDeps(): BaseBlueprints.BlueprintLoadDeps
+	return {
+		SpawnedByPlayer = spawnedByPlayer,
+		RecordsByUid = recordsByUid,
+		OccupiedSockets = occupiedSockets,
+		OccupiedWorldKeys = occupiedWorldKeys,
+		CleanupPieceRuntime = cleanupPieceRuntime,
+		SpawnPieceForPlayer = spawnPieceForPlayer,
+		RecalculateAndSyncBaseTier = recalculateAndSyncBaseTier,
+		SyncBaseState = syncBaseState,
+		SyncToolCupboardForPlayer = syncToolCupboardForPlayer,
+	}
 end
 
 function BaseService.BindRaidHooks(hooks: RaidHooks)
@@ -728,6 +751,7 @@ local function onBuildUpgradeRequest(player: Player, uidAny: any, targetTierAny:
 		targetPiece.Hp = maxHp
 
 		BuildingGeometry.ApplyTierVisuals(record.Model, targetPiece.PieceType, targetTier)
+		BuildingGeometry.ApplyWearVisuals(record.Model, targetPiece.PieceType, targetTier, maxHp, maxHp)
 		record.Model:SetAttribute("Tier", targetTier)
 		record.Model:SetAttribute("Health", maxHp)
 		record.Model:SetAttribute("Hp", maxHp)
@@ -870,6 +894,23 @@ local function onBuildDemolishRequest(player: Player, uidAny: any)
 	end)
 end
 
+local function findQaRepairTargetByUid(uid: string): Model?
+	local qaFolder = Workspace:FindFirstChild("QA_TestArena")
+	if qaFolder == nil then
+		return nil
+	end
+	for _, desc in qaFolder:GetDescendants() do
+		if
+			desc:IsA("Model")
+			and desc:GetAttribute("IsQaRepairTarget") == true
+			and desc:GetAttribute("BuildUid") == uid
+		then
+			return desc
+		end
+	end
+	return nil
+end
+
 local function onBuildRepairRequest(player: Player, uidAny: any)
 	if not SecurityService.CheckRateLimit(player, Net.Events.BuildRepairRequest) then
 		return
@@ -895,15 +936,61 @@ local function onBuildRepairRequest(player: Player, uidAny: any)
 			return
 		end
 
+		local equipped = InventoryService.GetEquippedItem(player)
+		local isRepairHammer = equipped ~= nil and equipped.Id == "repair_hammer"
+		local cooldown = if isRepairHammer then REPAIR_HAMMER_COOLDOWN else BUILD_ACTION_COOLDOWN
+
 		local now = os.clock()
 		local prevAction = lastBuildActionTime[player]
-		if prevAction ~= nil and (now - prevAction) < BUILD_ACTION_COOLDOWN then
+		if prevAction ~= nil and (now - prevAction) < cooldown then
 			return
 		end
 
 		local data = DataService.GetData(player)
 		local record = recordsByUid[uid]
-		if data == nil or record == nil or record.Owner ~= player or not record.Model.Parent then
+		if record == nil then
+			if isRepairHammer then
+				local qaModel = findQaRepairTargetByUid(uid)
+				if qaModel ~= nil and qaModel.Parent ~= nil then
+					if
+						(innerHrp.Position - qaModel:GetPivot().Position).Magnitude
+						> BuildingConfig.MaxBuildDistance + Types.PING_DISTANCE_TOLERANCE
+					then
+						return
+					end
+					local pTypeAttr = qaModel:GetAttribute("PieceType")
+					local tierAttr = qaModel:GetAttribute("Tier")
+					local hpAttr = qaModel:GetAttribute("Health") or qaModel:GetAttribute("Hp")
+					local maxHpAttr = qaModel:GetAttribute("MaxHealth") or qaModel:GetAttribute("MaxHp")
+					if
+						typeof(pTypeAttr) == "string"
+						and typeof(tierAttr) == "string"
+						and typeof(hpAttr) == "number"
+						and typeof(maxHpAttr) == "number"
+						and maxHpAttr > 0
+						and hpAttr < maxHpAttr
+					then
+						local canonicalQa = BuildingGeometry.CanonicalPieceType(pTypeAttr)
+						local tierQa = tierAttr :: BuildTier
+						local healAmt = math.max(1, math.ceil(maxHpAttr * 0.25))
+						local newHp = math.min(maxHpAttr, hpAttr + healAmt)
+						lastBuildActionTime[player] = now
+						qaModel:SetAttribute("Health", newHp)
+						qaModel:SetAttribute("Hp", newHp)
+						BuildingGeometry.ApplyWearVisuals(qaModel, canonicalQa, tierQa, newHp, maxHpAttr)
+						sendBuildFeedback(
+							player,
+							true,
+							string.format("QA стена отремонтирована (%d/%d HP)", newHp, maxHpAttr),
+							if data ~= nil then data.Base.BaseTier else 0
+						)
+					end
+				end
+			end
+			return
+		end
+
+		if data == nil or record.Owner ~= player or not record.Model.Parent then
 			return
 		end
 
@@ -935,7 +1022,77 @@ local function onBuildRepairRequest(player: Player, uidAny: any)
 			sendBuildFeedback(
 				player,
 				false,
-				"Нельзя чинить сразу после урона",
+				"Нельзя чинить сразу после урона (30 сек блок)",
+				data.Base.BaseTier
+			)
+			return
+		end
+
+		if isRepairHammer then
+			local tcPiece = BaseUpkeep.FindToolCupboardPiece(data.Base.Pieces)
+			if tcPiece == nil then
+				sendBuildFeedback(
+					player,
+					false,
+					"Для ремонта молотком нужен Шкаф (TC)",
+					data.Base.BaseTier
+				)
+				return
+			end
+
+			local healAmount = math.max(1, math.ceil(maxHp * 0.25))
+			local actualHeal = math.min(healAmount, maxHp - targetPiece.Hp)
+			local healRatio = math.clamp(actualHeal / math.max(1, maxHp), 0.01, 1.0)
+			local repairCostMap: { [string]: number } = {}
+			for resId, costCount in pieceConfig.Cost do
+				if UPKEEP_ALLOWED_SET[resId] then
+					local amt = math.max(1, math.ceil(costCount * healRatio))
+					repairCostMap[resId] = (repairCostMap[resId] or 0) + amt
+				end
+			end
+			local tierCfg = BuildingConfig.Tiers[targetPiece.Tier]
+			if tierCfg ~= nil and tierCfg.UpgradeCost ~= nil then
+				for resId, costCount in tierCfg.UpgradeCost do
+					if UPKEEP_ALLOWED_SET[resId] then
+						local amt = math.max(1, math.ceil(costCount * healRatio))
+						repairCostMap[resId] = (repairCostMap[resId] or 0) + amt
+					end
+				end
+			end
+			if next(repairCostMap) == nil then
+				local resByTier = Config.Upkeep.ResourceByBuildTier :: { [string]: string }
+				local fallbackRes = resByTier[targetPiece.Tier] or "metal_ore"
+				repairCostMap[fallbackRes] = math.max(1, math.ceil(10 * healRatio))
+			end
+
+			if not BaseUpkeep.ConsumeCostFromTcStorage(tcPiece, repairCostMap) then
+				sendBuildFeedback(
+					player,
+					false,
+					"Недостаточно ресурсов в шкафу (TC) для ремонта",
+					data.Base.BaseTier
+				)
+				return
+			end
+
+			lastBuildActionTime[player] = now
+			targetPiece.Hp = math.min(maxHp, targetPiece.Hp + actualHeal)
+			record.Model:SetAttribute("Health", targetPiece.Hp)
+			record.Model:SetAttribute("Hp", targetPiece.Hp)
+			DefenseService.UpdateDefenseHp(uid, targetPiece.Hp, maxHp)
+			BuildingGeometry.ApplyWearVisuals(
+				record.Model,
+				targetPiece.PieceType,
+				targetPiece.Tier,
+				targetPiece.Hp,
+				maxHp
+			)
+			syncBaseState(player)
+			syncToolCupboardForPlayer(player)
+			sendBuildFeedback(
+				player,
+				true,
+				string.format("%s: +%d HP (%d/%d)", pieceConfig.Name, actualHeal, targetPiece.Hp, maxHp),
 				data.Base.BaseTier
 			)
 			return
@@ -970,6 +1127,7 @@ local function onBuildRepairRequest(player: Player, uidAny: any)
 		record.Model:SetAttribute("Health", maxHp)
 		record.Model:SetAttribute("Hp", maxHp)
 		DefenseService.UpdateDefenseHp(uid, maxHp, maxHp)
+		BuildingGeometry.ApplyWearVisuals(record.Model, targetPiece.PieceType, targetPiece.Tier, maxHp, maxHp)
 		syncBaseState(player)
 		sendBuildFeedback(
 			player,
@@ -1132,6 +1290,22 @@ local function onToolCupboardAction(player: Player, actionAny: any, arg1Any: any
 			end
 			openTcByPlayer[player] = tcPiece.Uid
 			recalculateAndSyncBaseTier(player)
+		elseif action == "SaveBlueprint" then
+			if not SecurityService.IsValidInteger(arg1Any, 1, 2) then
+				return
+			end
+			local ok, msg = BaseBlueprints.SaveBlueprint(player, arg1Any :: number)
+			openTcByPlayer[player] = tcPiece.Uid
+			syncToolCupboardForPlayer(player)
+			sendBuildFeedback(player, ok, msg, data.Base.BaseTier)
+		elseif action == "LoadBlueprint" then
+			if not SecurityService.IsValidString(arg1Any, 1, 32) then
+				return
+			end
+			local ok, msg = BaseBlueprints.LoadBlueprint(player, arg1Any :: string, getBlueprintLoadDeps())
+			openTcByPlayer[player] = tcPiece.Uid
+			syncToolCupboardForPlayer(player)
+			sendBuildFeedback(player, ok, msg, data.Base.BaseTier)
 		end
 	end)
 
@@ -1330,6 +1504,8 @@ function BaseService.DamagePiece(
 	record.Model:SetAttribute("Health", record.Piece.Hp)
 	record.Model:SetAttribute("Hp", record.Piece.Hp)
 	DefenseService.UpdateDefenseHp(uid, record.Piece.Hp, nil)
+	local maxHp = BuildingGeometry.ComputeMaxHp(record.Piece.PieceType, record.Piece.Tier)
+	BuildingGeometry.ApplyWearVisuals(record.Model, record.Piece.PieceType, record.Piece.Tier, record.Piece.Hp, maxHp)
 	syncBaseState(record.Owner)
 	return true, false
 end

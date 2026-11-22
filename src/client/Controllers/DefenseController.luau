@@ -418,6 +418,11 @@ local function onDefenseEffect(effectKindAny: any, originAny: any, targetPositio
 		spawnWorldSound(origin, SOUND_BEEP, 0.4, 2.0)
 	elseif effectKind == "MineArm" then
 		spawnWorldSound(origin, SOUND_BEEP, 0.55, 2.4)
+	elseif effectKind == "SmartDoorSignal" then
+		spawnWorldSound(origin, SOUND_BEEP, 0.35, 2.9)
+		for _, doorPos in targets do
+			spawnBeamPart(origin, doorPos + Vector3.new(0, 3.5, 0), 0.08, Color3.fromRGB(85, 220, 255), 0.25)
+		end
 	elseif effectKind == "TurretEmp" then
 		spawnWorldSound(origin, SOUND_SHOT, 0.7, 2.6)
 		for i = 1, 6 do

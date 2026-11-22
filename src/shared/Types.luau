@@ -62,6 +62,8 @@ export type BuildPieceType =
 	| "landmine"
 	| "shotgun_trap"
 	| "auto_turret"
+	| "hbhf_sensor"
+	| "smart_door"
 	| "TriangleFoundation"
 	| "WindowWall"
 	| "TriangleFloor"
@@ -89,7 +91,7 @@ export type BuildOverlapBox = {
 
 export type DefenseMountSurface = "Floor" | "Wall" | "Ceiling"
 
-export type DefenseAllowedMount = "Floor" | "WallOrCeiling"
+export type DefenseAllowedMount = "Floor" | "WallOrCeiling" | "Doorway"
 
 export type DefenseConfig = {
 	Id: BuildPieceType,
@@ -116,6 +118,8 @@ export type DefenseConfig = {
 	AmmoSlots: number?,
 	ProjectileSpeed: number?,
 	ProjectileGravity: number?,
+	SignalRadius: number?,
+	OpenDuration: number?,
 }
 
 export type DefenseUiState = {
@@ -179,6 +183,34 @@ export type DefenseLogEntry = {
 	Summary: string,
 }
 
+export type BlueprintPieceEntry = {
+	PieceType: BuildPieceType,
+	Tier: BuildTier,
+	RelX: number,
+	RelY: number,
+	RelZ: number,
+	RelRotY: number,
+	MountSurface: DefenseMountSurface?,
+	IsTc: boolean?,
+}
+
+export type BaseBlueprintSlot = {
+	Id: string,
+	Name: string,
+	SavedAt: number,
+	Pieces: { BlueprintPieceEntry },
+}
+
+export type BaseBlueprintSummary = {
+	Id: string,
+	Name: string,
+	PieceCount: number,
+	SavedAt: number,
+	IsBuiltin: boolean,
+	HasData: boolean,
+	Cost: { [string]: number },
+}
+
 export type ToolCupboardState = {
 	Uid: string,
 	ContainerId: string,
@@ -192,6 +224,7 @@ export type ToolCupboardState = {
 	DefenseMax: number?,
 	Slots: Inventory,
 	DefenseLogs: { DefenseLogEntry }?,
+	Blueprints: { BaseBlueprintSummary }?,
 }
 
 export type BaseData = {
@@ -235,6 +268,7 @@ export type PlayerData = {
 	Base: BaseData,
 	UnlockedBlueprints: { [string]: boolean },
 	DefenseLogs: { DefenseLogEntry },
+	BaseBlueprints: { [string]: BaseBlueprintSlot },
 	LastStarterKitAt: number?,
 }
 
@@ -562,7 +596,7 @@ local Types = {
 	MAX_ATTACK_ORIGIN_OFFSET = 8,
 	MAX_EXPLOSIVE_PLACE_DISTANCE = 14,
 	RAID_DURATION = 300,
-	CURRENT_DATA_VERSION = 6,
+	CURRENT_DATA_VERSION = 7,
 	PING_DISTANCE_TOLERANCE = 2,
 	MAX_BUILD_DISTANCE = 20,
 	MAX_RAID_TERMINAL_DISTANCE = 24,

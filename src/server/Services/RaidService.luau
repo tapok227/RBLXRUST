@@ -257,6 +257,7 @@ local function createRaidPieceModel(piece: SavedBuildPiece, origin: Vector3): (M
 	BuildingGeometry.ApplyTierVisuals(model, canonicalType, piece.Tier)
 
 	local maxHp = BuildingGeometry.ComputeMaxHp(canonicalType, piece.Tier)
+	BuildingGeometry.ApplyWearVisuals(model, canonicalType, piece.Tier, piece.Hp, maxHp)
 
 	model:SetAttribute("RaidPieceUid", piece.Uid)
 	model:SetAttribute("BuildUid", piece.Uid)
@@ -1711,6 +1712,13 @@ function RaidService.DamageRaidPiece(
 				record.Model:SetAttribute("Health", record.Piece.Hp)
 				record.Model:SetAttribute("Hp", record.Piece.Hp)
 				DefenseService.UpdateDefenseHp(uid, record.Piece.Hp, nil)
+				BuildingGeometry.ApplyWearVisuals(
+					record.Model,
+					record.Piece.PieceType,
+					record.Piece.Tier,
+					record.Piece.Hp,
+					record.MaxHp
+				)
 				updatePieceDamageBillboard(record)
 				return true, false
 			end

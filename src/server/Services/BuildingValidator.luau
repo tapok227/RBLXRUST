@@ -557,7 +557,7 @@ function BuildingValidator.CheckMaxWallsToTC(
 		if canonical == "tool_cupboard" then
 			tcParentUid = record.Piece.ParentUid or record.Piece.AnchorUid
 			tcPos = record.CFrame.Position
-		elseif canonical == "wall" or canonical == "window_wall" then
+		elseif canonical == "wall" or canonical == "window_wall" or canonical == "smart_door" then
 			table.insert(edgeBarriers, { CFrame = record.CFrame, Cost = 1 })
 		elseif canonical == "doorway" then
 			local barrierCost = if record.Model:GetAttribute("HasDoor") == true then 1 else 0
@@ -1296,6 +1296,52 @@ local function validateDefensePlacement(
 		if hostEntry ~= nil then
 			resolvedParentUid = hostEntry.Piece.Uid
 		end
+	elseif defCfg.AllowedMount == "Doorway" then
+		local bestDoorway: LivePieceEntry? = nil
+		local bestDist = 7.5
+		for _, entry in input.PlayerRecords do
+			if
+				entry.Model.Parent ~= nil
+				and BuildingGeometry.CanonicalPieceType(entry.Piece.PieceType) == "doorway"
+			then
+				local d = (entry.CFrame.Position - input.RequestedCFrame.Position).Magnitude
+				if d < bestDist then
+					bestDist = d
+					bestDoorway = entry
+				end
+			end
+		end
+		if bestDoorway ~= nil then
+			authoritativeCF = bestDoorway.CFrame
+			resolvedMount = "Floor"
+			resolvedParentUid = bestDoorway.Piece.Uid
+			excludeOverlap = { bestDoorway.Model }
+		else
+			local hit = raycastDefenseSurface(
+				input.RequestedCFrame.Position + Vector3.new(0, 2.5, 0),
+				Vector3.new(0, -5.5, 0),
+				input.Character
+			)
+			if hit == nil or hit.Normal.Y < 0.7 then
+				return {
+					Allowed = false,
+					Reason = "Наведите на дверной проём (Doorway) или ровный пол",
+				}
+			end
+			if BuildingGeometry.IsNoBuildInstance(hit.Instance, false) then
+				return {
+					Allowed = false,
+					Reason = "Установка в запрещённой зоне невозможна",
+				}
+			end
+			local yawDeg = BuildingGeometry.QuantizeYaw30(BuildingGeometry.ExtractYawDegrees(input.RequestedCFrame))
+			authoritativeCF = CFrame.new(hit.Position) * CFrame.Angles(0, math.rad(yawDeg), 0)
+			resolvedMount = "Floor"
+			local hostEntry = findPlayerStructureEntryFromPart(hit.Instance, input.PlayerRecords)
+			if hostEntry ~= nil then
+				resolvedParentUid = hostEntry.Piece.Uid
+			end
+		end
 	else
 		local mountHint: DefenseMountSurface = if input.MountSurface == "Ceiling" then "Ceiling" else "Wall"
 		if mountHint == "Ceiling" then
@@ -1394,7 +1440,18 @@ local function validateDefensePlacement(
 		local existingCfg = BuildingConfig.Pieces[existingType]
 		if existingCfg ~= nil and existingCfg.IsDefense == true then
 			local dist = (existing.CFrame.Position - authoritativeCF.Position).Magnitude
-			if pieceType == "auto_turret" and existingType == "auto_turret" then
+			local isLogicPiece = pieceType == "hbhf_sensor"
+				or pieceType == "smart_door"
+				or existingType == "hbhf_sensor"
+				or existingType == "smart_door"
+			if isLogicPiece then
+				if pieceType == existingType and dist < 1.2 then
+					return {
+						Allowed = false,
+						Reason = "Слишком близко к такому же модулю",
+					}
+				end
+			elseif pieceType == "auto_turret" and existingType == "auto_turret" then
 				if dist < Config.MIN_TURRET_DISTANCE then
 					return {
 						Allowed = false,
