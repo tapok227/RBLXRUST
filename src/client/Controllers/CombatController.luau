@@ -18,6 +18,7 @@ local CraftingController = require(script.Parent.CraftingController)
 local LootController = require(script.Parent.LootController)
 local GatheringController = require(script.Parent.GatheringController)
 local BuildingController = require(script.Parent.BuildingController)
+local ProjectileController = require(script.Parent.ProjectileController)
 
 type WeaponConfig = Types.WeaponConfig
 
@@ -234,11 +235,11 @@ local function tryAttack()
 		return
 	end
 
-	if GatheringController.IsCursorOnActiveNode() then
+	local _, weapon = getEquippedWeapon()
+
+	if weapon.Category == "Melee" and GatheringController.IsCursorOnActiveNode() then
 		return
 	end
-
-	local _, weapon = getEquippedWeapon()
 
 	local now = os.clock()
 	if (now - lastLocalAttack) < weapon.Cooldown then
@@ -290,6 +291,9 @@ local function tryAttack()
 	local direction = if rawDir.Magnitude > 0.01 then rawDir.Unit else unitRay.Direction.Unit
 
 	lastLocalAttack = now
+	if weapon.ProjectileId ~= nil then
+		ProjectileController.SpawnLocalProjectile(weapon.ProjectileId, origin, direction, character)
+	end
 	Net.GetEvent(Net.Events.AttackRequest):FireServer(origin, direction, targetModel, isHeadshotHint)
 end
 

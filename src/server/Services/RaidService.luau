@@ -24,6 +24,8 @@ type SavedBuildPiece = Types.SavedBuildPiece
 type BaseData = Types.BaseData
 type RaidTargetInfo = Types.RaidTargetInfo
 type RaidHudState = Types.RaidHudState
+type ExplosionParams = Types.ExplosionParams
+type ExplosionResult = Types.ExplosionResult
 
 type RaidPieceRecord = {
 	Piece: SavedBuildPiece,
@@ -67,6 +69,9 @@ local RAID_DURATION = Types.RAID_DURATION
 local LIST_COOLDOWN = 1.0
 local EXPLOSIVE_PLACE_COOLDOWN = 0.5
 local MAX_HIT_SURFACE_OFFSET = 4.0
+local EXPLOSION_EFFECT_BROADCAST_RADIUS = 350
+local MAX_OCCLUSION_RAY_PASSES = 8
+local DEFAULT_MIN_FALLOFF_MULTIPLIER = 0.25
 
 local TIER_VISUALS: { [BuildTier]: { Material: Enum.Material, Color: Color3 } } = {
 	wood = {
@@ -827,6 +832,304 @@ local function createExplosiveVisual(position: Vector3, itemId: string): (Part, 
 	return part, label
 end
 
+local function findHumanoidCharacter(inst: Instance): (Model?, Humanoid?)
+	local current: Instance? = inst
+	while current ~= nil and current ~= Workspace do
+		if current:IsA("Model") then
+			local humanoid = current:FindFirstChildOfClass("Humanoid")
+			if humanoid ~= nil then
+				return current, humanoid
+			end
+		end
+		current = current.Parent
+	end
+	return nil, nil
+end
+
+local function getTargetControlPoints(targetModel: Model, isCharacterTarget: boolean): { Vector3 }
+	local points: { Vector3 } = {}
+	if isCharacterTarget then
+		local hrp = targetModel:FindFirstChild("HumanoidRootPart")
+		local head = targetModel:FindFirstChild("Head")
+		if hrp and hrp:IsA("BasePart") then
+			table.insert(points, hrp.Position)
+			if head and head:IsA("BasePart") then
+				table.insert(points, head.Position)
+			end
+			table.insert(points, hrp.Position - Vector3.new(0, 2.0, 0))
+			return points
+		end
+	else
+		if targetModel:GetAttribute("PieceType") == "doorway" then
+			for _, partName in { "LeftPillar", "RightPillar", "TopLintel" } do
+				local part = targetModel:FindFirstChild(partName)
+				if part and part:IsA("BasePart") then
+					table.insert(points, part.Position)
+				end
+			end
+			if #points > 0 then
+				return points
+			end
+		end
+	end
+
+	local cf, size = targetModel:GetBoundingBox()
+	if size.Y >= 3.0 then
+		table.insert(points, cf.Position)
+		table.insert(points, cf.Position + cf.UpVector * (size.Y * 0.35))
+		table.insert(points, cf.Position - cf.UpVector * (size.Y * 0.35))
+	elseif math.max(size.X, size.Z) >= 6.0 then
+		table.insert(points, cf.Position)
+		table.insert(points, cf.Position + cf.RightVector * (size.X * 0.3))
+		table.insert(points, cf.Position - cf.RightVector * (size.X * 0.3))
+	else
+		table.insert(points, cf.Position)
+		table.insert(points, cf.Position + Vector3.new(0, size.Y * 0.3, 0))
+		table.insert(points, cf.Position - Vector3.new(0, size.Y * 0.3, 0))
+	end
+
+	return points
+end
+
+local function computeBlastFalloff(distance: number, radius: number, minMultiplier: number): number
+	if distance <= 1.0 then
+		return 1.0
+	end
+	local t = math.clamp((distance - 1.0) / math.max(0.01, radius - 1.0), 0, 1)
+	local clampedMin = math.clamp(minMultiplier, 0, 1)
+	return 1.0 - t * (1.0 - clampedMin)
+end
+
+local function broadcastExplosionEffect(
+	origin: Vector3,
+	radius: number,
+	sourceId: string,
+	projectileId: string?,
+	attacker: Player?
+)
+	local effectEvent = Net.GetEvent(Net.Events.ExplosionEffect)
+	for _, other in Players:GetPlayers() do
+		if other == attacker then
+			effectEvent:FireClient(other, origin, radius, sourceId, projectileId)
+			continue
+		end
+		local char = other.Character
+		local hrp = if char then char:FindFirstChild("HumanoidRootPart") else nil
+		if hrp and hrp:IsA("BasePart") and (hrp.Position - origin).Magnitude <= EXPLOSION_EFFECT_BROADCAST_RADIUS then
+			effectEvent:FireClient(other, origin, radius, sourceId, projectileId)
+		end
+	end
+end
+
+function RaidService.HasExplosionLineOfSight(
+	blastOrigin: Vector3,
+	targetModel: Model,
+	excludeInstances: { Instance }?,
+	isCharacterTarget: boolean?
+): boolean
+	local controlPoints = getTargetControlPoints(targetModel, isCharacterTarget == true)
+
+	for _, targetPoint in controlPoints do
+		local delta = targetPoint - blastOrigin
+		if delta.Magnitude <= 0.1 then
+			return true
+		end
+
+		local excludeList: { Instance } = { targetModel }
+		if excludeInstances ~= nil then
+			for _, inst in excludeInstances do
+				table.insert(excludeList, inst)
+			end
+		end
+
+		local params = RaycastParams.new()
+		params.FilterType = Enum.RaycastFilterType.Exclude
+		params.IgnoreWater = true
+		params.FilterDescendantsInstances = excludeList
+
+		local blocked = false
+		for _ = 1, MAX_OCCLUSION_RAY_PASSES do
+			local result = Workspace:Raycast(blastOrigin, delta, params)
+			if result == nil then
+				return true
+			end
+
+			if result.Instance:IsDescendantOf(targetModel) then
+				return true
+			end
+
+			if result.Instance.CanCollide == false and not result.Instance:IsA("Terrain") then
+				table.insert(excludeList, result.Instance)
+				params.FilterDescendantsInstances = excludeList
+				continue
+			end
+
+			local hitChar = findHumanoidCharacter(result.Instance)
+			if hitChar ~= nil then
+				table.insert(excludeList, hitChar)
+				params.FilterDescendantsInstances = excludeList
+				continue
+			end
+
+			blocked = true
+			break
+		end
+
+		if not blocked then
+			return true
+		end
+	end
+
+	return false
+end
+
+function RaidService.TriggerExplosion(params: ExplosionParams): ExplosionResult
+	local summary: ExplosionResult = {
+		DamagedStructures = 0,
+		DestroyedStructures = 0,
+		DamagedHumanoids = 0,
+		OccludedStructures = 0,
+		OccludedHumanoids = 0,
+	}
+
+	if not SecurityService.IsValidVector3(params.Origin) then
+		return summary
+	end
+	if not SecurityService.IsFiniteNumber(params.Radius) or params.Radius <= 0 then
+		return summary
+	end
+
+	local origin = params.Origin
+	local radius = params.Radius
+	local minMult = params.MinFalloffMultiplier or DEFAULT_MIN_FALLOFF_MULTIPLIER
+
+	local baseExcludes: { Instance } = {}
+	if params.ExcludeInstances ~= nil then
+		for _, inst in params.ExcludeInstances do
+			table.insert(baseExcludes, inst)
+		end
+	end
+
+	-- Phase 1: Collect targets & evaluate Line-of-Sight BEFORE modifying/destroying walls
+	local pendingStructureHits: { { Session: RaidSession, Record: RaidPieceRecord, Damage: number } } = {}
+	if params.StructureDamage > 0 then
+		for _, session in activeSessions do
+			for _, record in session.Pieces do
+				if record.Model.Parent ~= nil then
+					local closest = closestPointOnModel(record.Model, origin)
+					local dist = (closest - origin).Magnitude
+					if dist <= radius then
+						if RaidService.HasExplosionLineOfSight(origin, record.Model, baseExcludes, false) then
+							local falloff = computeBlastFalloff(dist, radius, minMult)
+							local damage = math.floor(params.StructureDamage * falloff + 0.5)
+							if damage > 0 then
+								table.insert(pendingStructureHits, {
+									Session = session,
+									Record = record,
+									Damage = damage,
+								})
+							end
+						else
+							summary.OccludedStructures += 1
+						end
+					end
+				end
+			end
+		end
+	end
+
+	local pendingHumanoidHits: { { Model: Model, Humanoid: Humanoid, Damage: number } } = {}
+	if params.PlayerDamage > 0 then
+		local checkedModels: { [Model]: boolean } = {}
+		local candidateModels: { Model } = {}
+
+		for _, plr in Players:GetPlayers() do
+			local char = plr.Character
+			if char ~= nil then
+				table.insert(candidateModels, char)
+			end
+		end
+
+		local dummiesFolder = Workspace:FindFirstChild("TestDummies")
+		if dummiesFolder ~= nil then
+			for _, child in dummiesFolder:GetChildren() do
+				if child:IsA("Model") then
+					table.insert(candidateModels, child)
+				end
+			end
+		end
+
+		for _, charModel in candidateModels do
+			if checkedModels[charModel] or charModel.Parent == nil then
+				continue
+			end
+			checkedModels[charModel] = true
+
+			local humanoid = charModel:FindFirstChildOfClass("Humanoid")
+			local hrp = charModel:FindFirstChild("HumanoidRootPart")
+			if
+				humanoid == nil
+				or not SecurityService.IsFiniteNumber(humanoid.Health)
+				or humanoid.Health <= 0
+				or hrp == nil
+				or not hrp:IsA("BasePart")
+			then
+				continue
+			end
+
+			local hrpDist = (hrp.Position - origin).Magnitude
+			local closestDist = (closestPointOnModel(charModel, origin) - origin).Magnitude
+			local dist = math.min(hrpDist, closestDist)
+			if dist <= radius then
+				if RaidService.HasExplosionLineOfSight(origin, charModel, baseExcludes, true) then
+					local falloff = computeBlastFalloff(dist, radius, minMult)
+					local damage = params.PlayerDamage * falloff
+					if damage > 0 then
+						table.insert(pendingHumanoidHits, {
+							Model = charModel,
+							Humanoid = humanoid,
+							Damage = damage,
+						})
+					end
+				else
+					summary.OccludedHumanoids += 1
+				end
+			end
+		end
+	end
+
+	-- Phase 2: Apply structure and humanoid damage
+	for _, hit in pendingStructureHits do
+		local record = hit.Record
+		if hit.Session.Pieces[record.Piece.Uid] == record and record.Model.Parent ~= nil then
+			record.Piece.Hp -= hit.Damage
+			summary.DamagedStructures += 1
+			if record.Piece.Hp <= 0 then
+				destroyRaidPiece(hit.Session, record.Piece.Uid, true)
+				summary.DestroyedStructures += 1
+			else
+				record.Model:SetAttribute("Hp", record.Piece.Hp)
+				updatePieceDamageBillboard(record)
+			end
+		end
+	end
+
+	for _, hit in pendingHumanoidHits do
+		if hit.Model.Parent ~= nil and hit.Humanoid.Health > 0 then
+			if params.Attacker ~= nil and params.Attacker.Parent == Players then
+				hit.Model:SetAttribute("LastAttackerUserId", params.Attacker.UserId)
+			end
+			hit.Humanoid:TakeDamage(hit.Damage)
+			summary.DamagedHumanoids += 1
+		end
+	end
+
+	-- Phase 3: Replicate VFX & audio to clients
+	broadcastExplosionEffect(origin, radius, params.SourceId or "explosion", params.ProjectileId, params.Attacker)
+
+	return summary
+end
+
 local function detonateExplosive(
 	session: RaidSession,
 	explosiveRecord: ActiveExplosiveRecord,
@@ -842,7 +1145,9 @@ local function detonateExplosive(
 		return
 	end
 
+	local excludePart: { Instance } = {}
 	if explosiveRecord.Part.Parent then
+		table.insert(excludePart, explosiveRecord.Part)
 		explosiveRecord.Part:Destroy()
 	end
 
@@ -851,33 +1156,15 @@ local function detonateExplosive(
 		table.remove(session.ActiveExplosives, idx)
 	end
 
-	local explosion = Instance.new("Explosion")
-	explosion.Position = blastOrigin
-	explosion.BlastRadius = cfg.Radius
-	explosion.BlastPressure = 0
-	explosion.DestroyJointRadiusPercent = 0
-	explosion.ExplosionType = Enum.ExplosionType.NoCraters
-	explosion.Parent = Workspace
-
-	local hitList: { RaidPieceRecord } = {}
-	for _, record in session.Pieces do
-		if record.Model.Parent then
-			local closest = closestPointOnModel(record.Model, blastOrigin)
-			if (closest - blastOrigin).Magnitude <= cfg.Radius then
-				table.insert(hitList, record)
-			end
-		end
-	end
-
-	for _, record in hitList do
-		record.Piece.Hp -= cfg.StructureDamage
-		if record.Piece.Hp <= 0 then
-			destroyRaidPiece(session, record.Piece.Uid, true)
-		else
-			record.Model:SetAttribute("Hp", record.Piece.Hp)
-			updatePieceDamageBillboard(record)
-		end
-	end
+	RaidService.TriggerExplosion({
+		Origin = blastOrigin,
+		Radius = cfg.Radius,
+		StructureDamage = cfg.StructureDamage,
+		PlayerDamage = cfg.PlayerDamage,
+		Attacker = session.Raider,
+		SourceId = itemId,
+		ExcludeInstances = excludePart,
+	})
 end
 
 local function onRaidListRequest(player: Player)

@@ -62,6 +62,19 @@ local function serializeInventoryForNet(inv: Inventory): { [string]: Slot }
 	return raw
 end
 
+local function updateEquippedAttribute(player: Player)
+	if player.Parent ~= Players then
+		return
+	end
+	local data = DataService.GetData(player)
+	local slotIndex = equippedSlots[player] or 1
+	local slot = if data then data.Inventory[slotIndex] else nil
+	local equippedId = if slot ~= nil and slot.Count > 0 then slot.Id else ""
+	if player:GetAttribute("EquippedItemId") ~= equippedId then
+		player:SetAttribute("EquippedItemId", equippedId)
+	end
+end
+
 local function sendInventorySync(player: Player)
 	if player.Parent ~= Players then
 		return
@@ -70,6 +83,7 @@ local function sendInventorySync(player: Player)
 	if not data then
 		return
 	end
+	updateEquippedAttribute(player)
 	local syncEvent = Net.GetEvent(Net.Events.InventorySync)
 	syncEvent:FireClient(player, serializeInventoryForNet(data.Inventory))
 end
@@ -535,6 +549,7 @@ local function onHotbarSelect(player: Player, slotAny: any)
 	end
 
 	equippedSlots[player] = slotAny :: number
+	updateEquippedAttribute(player)
 end
 
 local function onPlayerDataLoaded(player: Player, data: Types.PlayerData)
@@ -548,8 +563,10 @@ local function onPlayerDataLoaded(player: Player, data: Types.PlayerData)
 				{ Id = "hatchet", Count = 1 },
 				{ Id = "pickaxe", Count = 1 },
 				{ Id = "hunting_bow", Count = 1 },
+				{ Id = "rocket_launcher", Count = 1 },
 				{ Id = "satchel_charge", Count = 3 },
 				{ Id = "arrow", Count = 20 },
+				{ Id = "rocket", Count = 6 },
 				{ Id = "wood", Count = 250 },
 				{ Id = "stone", Count = 150 },
 				{ Id = "bandage", Count = 5 },
@@ -569,11 +586,17 @@ local function onPlayerDataLoaded(player: Player, data: Types.PlayerData)
 			if InventoryService.GetItemCount(player, "hunting_bow") == 0 then
 				table.insert(topUp, { Id = "hunting_bow", Count = 1 })
 			end
+			if InventoryService.GetItemCount(player, "rocket_launcher") == 0 then
+				table.insert(topUp, { Id = "rocket_launcher", Count = 1 })
+			end
 			if InventoryService.GetItemCount(player, "satchel_charge") == 0 then
 				table.insert(topUp, { Id = "satchel_charge", Count = 3 })
 			end
 			if InventoryService.GetItemCount(player, "arrow") == 0 then
 				table.insert(topUp, { Id = "arrow", Count = 20 })
+			end
+			if InventoryService.GetItemCount(player, "rocket") == 0 then
+				table.insert(topUp, { Id = "rocket", Count = 6 })
 			end
 			if #topUp > 0 then
 				InventoryService.AddItems(player, topUp)

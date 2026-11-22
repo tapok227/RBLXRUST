@@ -33,6 +33,8 @@ local Events = table.freeze({
 	PlaceExplosiveRequest = "PlaceExplosiveRequest",
 	RaidHudSync = "RaidHudSync",
 	RaidExtractRequest = "RaidExtractRequest",
+	ProjectileSpawn = "ProjectileSpawn",
+	ExplosionEffect = "ExplosionEffect",
 })
 
 local Net = {

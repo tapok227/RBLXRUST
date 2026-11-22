@@ -12,6 +12,7 @@ local Nodes = require(ReplicatedStorage.Shared.configs.Nodes)
 local Tools = require(ReplicatedStorage.Shared.configs.Tools)
 local Consumables = require(ReplicatedStorage.Shared.configs.Consumables)
 local Explosives = require(ReplicatedStorage.Shared.configs.Explosives)
+local Weapons = require(ReplicatedStorage.Shared.configs.Weapons)
 local Net = require(ReplicatedStorage.Shared.Net)
 local HotbarController = require(script.Parent.HotbarController)
 local InventoryController = require(script.Parent.InventoryController)
@@ -324,6 +325,12 @@ local function tryGather()
 	local equippedItem = InventoryController.GetSlot(equippedSlot)
 	if equippedItem ~= nil and (Consumables[equippedItem.Id] ~= nil or Explosives[equippedItem.Id] ~= nil) then
 		return
+	end
+	if equippedItem ~= nil then
+		local weaponCfg = Weapons[equippedItem.Id]
+		if weaponCfg ~= nil and weaponCfg.Category == "Ranged" then
+			return
+		end
 	end
 
 	local model, nodeId, nodeType = raycastNodeFromCursor(Types.MAX_GATHER_DISTANCE_CLIENT)

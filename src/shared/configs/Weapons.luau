@@ -70,6 +70,15 @@ local Weapons: { [string]: WeaponConfig } = {
 		Cooldown = 0.45,
 		AmmoId = "pistol_ammo",
 	}),
+	rocket_launcher = table.freeze({
+		Category = "Ranged" :: Types.WeaponCategory,
+		Damage = 110,
+		HeadshotMultiplier = 1.0,
+		Range = 350,
+		Cooldown = 3.2,
+		AmmoId = "rocket",
+		ProjectileId = "rocket",
+	}),
 	FISTS = FISTS,
 }
 

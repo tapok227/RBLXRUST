@@ -148,6 +148,30 @@ local Recipes: { [string]: RecipeConfig } = {
 			{ Id = "metal_ore", Count = 50 },
 		},
 	},
+	craft_rocket_launcher = {
+		Id = "craft_rocket_launcher",
+		ResultId = "rocket_launcher",
+		ResultCount = 1,
+		CraftTime = 12,
+		Station = "workbench_1",
+		Ingredients = {
+			{ Id = "tech_parts", Count = 5 },
+			{ Id = "scrap", Count = 80 },
+			{ Id = "metal_ore", Count = 60 },
+		},
+	},
+	craft_rocket = {
+		Id = "craft_rocket",
+		ResultId = "rocket",
+		ResultCount = 1,
+		CraftTime = 5,
+		Station = "workbench_1",
+		Ingredients = {
+			{ Id = "scrap", Count = 20 },
+			{ Id = "metal_ore", Count = 30 },
+			{ Id = "cloth", Count = 5 },
+		},
+	},
 }
 
 return table.freeze(Recipes)

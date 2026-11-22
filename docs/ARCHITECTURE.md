@@ -45,12 +45,15 @@
 - `RecipeConfig = { Id: string, ResultId: string, ResultCount: number, CraftTime: number, Station: string?, Ingredients: { Ingredient } }`
 - `CraftingState = { RecipeId: string, StartTime: number, EndTime: number }`
 - `WeaponCategory = "Melee" | "Ranged"`
-- `WeaponConfig = { Category: WeaponCategory, Damage: number, HeadshotMultiplier: number, Range: number, Cooldown: number, AmmoId: string? }`
+- `WeaponConfig = { Category: WeaponCategory, Damage: number, HeadshotMultiplier: number, Range: number, Cooldown: number, AmmoId: string?, ProjectileId: string? }`
 - `LootDropEntry = { Id: string, Weight: number, MinCount: number, MaxCount: number }`
 - `LootTableConfig = { Rolls: number, RespawnTime: number, Items: { LootDropEntry } }`
 - `WorldEventPayload = { EventType: string, Title: string, Position: Vector3, Duration: number }`
 - `ExtractionState = { Active: boolean, ZoneName: string, TimeLeft: number, TotalTime: number, StatusText: string? }`
-- `ExplosiveConfig = { StructureDamage: number, Radius: number, FuseTime: number }`
+- `ExplosiveConfig = { StructureDamage: number, PlayerDamage: number, Radius: number, FuseTime: number }`
+- `ProjectileConfig = { Id: string, Speed: number, Gravity: number, MaxLifetime: number, BlastRadius: number, StructureDamage: number, PlayerDamage: number, MinFalloffMultiplier: number }`
+- `ExplosionParams = { Origin: Vector3, Radius: number, StructureDamage: number, PlayerDamage: number, Attacker: Player?, SourceId: string?, ProjectileId: string?, ExcludeInstances: { Instance }?, MinFalloffMultiplier: number? }`
+- `ExplosionResult = { DamagedStructures: number, DestroyedStructures: number, DamagedHumanoids: number, OccludedStructures: number, OccludedHumanoids: number }`
 - `RaidTargetInfo = { UserId: number, DisplayName: string, PieceCount: number }`
 - `RaidHudState = { Active: boolean, TargetName: string, TimeLeft: number, StatusText: string? }`
 
@@ -66,6 +69,7 @@
 - `MAX_EXPLOSIVE_PLACE_DISTANCE = 14`, `RAID_DURATION = 300`
 - `CURRENT_DATA_VERSION = 1`, `PING_DISTANCE_TOLERANCE = 2`
 - `MAX_BUILD_DISTANCE = 72`, `MAX_RAID_TERMINAL_DISTANCE = 24`
+- `MAX_PROJECTILE_LIFETIME = 10`, `MAX_ACTIVE_PROJECTILES_PER_PLAYER = 3`
 
 ### `Signal` (`src/shared/Signal.luau`)
 - `Signal.new<T...>(): Signal<T...>`
@@ -80,6 +84,15 @@
   - `:Add<T>(item: T, methodName: string?): T` — регистрирует `RBXScriptConnection`, `Instance`, `function` или таблицу-объект.
   - `:Cleanup()` — очищает все добавленные ресурсы в обратном порядке (LIFO).
   - `:Destroy()` — вызывает `:Cleanup()`.
+
+### `Ballistics` (`src/shared/Ballistics.luau`)
+Общий детерминированный симулятор баллистической траектории (используется сервером для авторитетного полёта/попаданий и клиентом для визуализации):
+- `Ballistics.ComputePosition(origin: Vector3, initialVelocity: Vector3, gravity: Vector3, elapsed: number): Vector3` — кинематика `p0 + v*t + 0.5*g*t^2`.
+- `Ballistics.ComputeVelocity(initialVelocity: Vector3, gravity: Vector3, elapsed: number): Vector3` — мгновенная скорость `v0 + g*t`.
+- `Ballistics.ComputeCFrame(position: Vector3, velocity: Vector3): CFrame` — ориентация снаряда по вектору скорости (`CFrame.lookAt`).
+- `Ballistics.Spawn(options: SpawnOptions): string` — запускает снаряд с ленивой подпиской на `RunService.Heartbeat` (шаг `<= 0.1` сек, пошаговый сегментный `Workspace:Raycast` между предыдущей и следующей позицией с пропуском `CanCollide == false` не-террейн деталей и вызовом `OnStep` / `OnHit` / `OnExpire`). При опустошении списка активных снарядов `Heartbeat` отключается.
+- `Ballistics.Cancel(projectileId: string): boolean` — досрочно отменяет симуляцию снаряда.
+- `Ballistics.GetActiveCount(): number` — возвращает текущее количество активных снарядов.
 
 ### `Net` (`src/shared/Net.luau`)
 Хранилище `RemoteEvent` в `ReplicatedStorage.Remotes`:
@@ -112,18 +125,21 @@
   - `PlaceExplosiveRequest` (Client -> Server): `(targetUid: string, hitPosition: Vector3)`
   - `RaidHudSync` (Server -> Client): `(state: Types.RaidHudState)`
   - `RaidExtractRequest` (Client -> Server): `()`
+  - `ProjectileSpawn` (Server -> Client): `(projectileId: string, shooter: Player, projectileConfigId: string, origin: Vector3, velocity: Vector3, gravity: number)`
+  - `ExplosionEffect` (Server -> Client): `(origin: Vector3, radius: number, sourceId: string, projectileId: string?)`
 - `Net.InitServer()` — создаёт папку `Remotes`, все события и прогревает кэш ссылок `RemoteEvent`.
 - `Net.GetEvent(eventName: string): RemoteEvent` — возвращает кэшированный `RemoteEvent` (при промахе кэша находит/создаёт на сервере или ожидает через `WaitForChild` на клиенте).
 
 ### Конфиги (`src/shared/configs/`)
-- `Items` (`Items.luau`): словарь `itemId -> Types.ItemConfig` (`wood`, `stone`, `metal_ore`, `cloth`, `hatchet`, `pickaxe`, `bandage`, `cooked_meat`, `water_bottle`, `workbench_1`, `spear`, `metal_hatchet`, `wooden_spear`, `hunting_bow`, `arrow`, `pipe_pistol`, `pistol_ammo`, `scrap`, `tech_parts`, `satchel_charge`, `c4_charge`).
+- `Items` (`Items.luau`): словарь `itemId -> Types.ItemConfig` (`wood`, `stone`, `metal_ore`, `cloth`, `hatchet`, `pickaxe`, `bandage`, `cooked_meat`, `water_bottle`, `workbench_1`, `spear`, `metal_hatchet`, `wooden_spear`, `hunting_bow`, `arrow`, `pipe_pistol`, `pistol_ammo`, `scrap`, `tech_parts`, `satchel_charge`, `c4_charge`, `rocket_launcher`, `rocket`).
 - `Consumables` (`Consumables.luau`): словарь `itemId -> Types.ConsumableConfig` (`bandage`, `cooked_meat`, `water_bottle`).
 - `Tools` (`Tools.luau`): словарь `itemId -> Types.ToolConfig` (`hatchet`, `pickaxe`, `metal_hatchet`).
 - `Nodes` (`Nodes.luau`): словарь `nodeType -> Types.NodeConfig` (`tree`, `stone_node`, `metal_node`).
-- `Recipes` (`Recipes.luau`): словарь `recipeId -> Types.RecipeConfig` (`craft_bandage`, `craft_water_bottle`, `craft_hatchet`, `craft_pickaxe`, `craft_workbench_1`, `craft_spear`, `craft_metal_hatchet`, `craft_hunting_bow`, `craft_arrow`, `craft_pipe_pistol`, `craft_pistol_ammo`, `craft_satchel_charge`, `craft_c4_charge`).
-- `Weapons` (`Weapons.luau`): словарь `itemId -> Types.WeaponConfig` (`wooden_spear`, `spear`, `hatchet`, `metal_hatchet`, `pickaxe`, `hunting_bow`, `pipe_pistol`, а также константа `FISTS`).
-- `Explosives` (`Explosives.luau`): словарь `itemId -> Types.ExplosiveConfig` (`satchel_charge`, `c4_charge`).
-- `LootTables` (`LootTables.luau`): словарь `tableId -> Types.LootTableConfig` (`wooden_crate`, `military_crate`, `airdrop`).
+- `Recipes` (`Recipes.luau`): словарь `recipeId -> Types.RecipeConfig` (`craft_bandage`, `craft_water_bottle`, `craft_hatchet`, `craft_pickaxe`, `craft_workbench_1`, `craft_spear`, `craft_metal_hatchet`, `craft_hunting_bow`, `craft_arrow`, `craft_pipe_pistol`, `craft_pistol_ammo`, `craft_satchel_charge`, `craft_c4_charge`, `craft_rocket_launcher`, `craft_rocket`).
+- `Weapons` (`Weapons.luau`): словарь `itemId -> Types.WeaponConfig` (`wooden_spear`, `spear`, `hatchet`, `metal_hatchet`, `pickaxe`, `hunting_bow`, `pipe_pistol`, `rocket_launcher`, а также константа `FISTS`).
+- `Projectiles` (`Projectiles.luau`): словарь `projectileId -> Types.ProjectileConfig` (`rocket`: `Speed = 110`, `Gravity = 28`, `MaxLifetime = 10`, `BlastRadius = 15`, `StructureDamage = 300`, `PlayerDamage = 110`, `MinFalloffMultiplier = 0.25`).
+- `Explosives` (`Explosives.luau`): словарь `itemId -> Types.ExplosiveConfig` (`satchel_charge`, `c4_charge`, с параметрами `StructureDamage`, `PlayerDamage`, `Radius`, `FuseTime`).
+- `LootTables` (`LootTables.luau`): словарь `tableId -> Types.LootTableConfig` (`wooden_crate`, `military_crate`, `airdrop`, включая `rocket` и `rocket_launcher` в `airdrop`).
 - `BuildingConfig` (`BuildingConfig.luau`): константы сетки (`GridSize = 12`, `WallHeight = 10`, `GridMinXZ = -10`, `GridMaxXZ = 10`, `GridMinY = 0`, `GridMaxY = 4`, `MaxPiecesPerBase = 200`, `ValidRotations`, `PieceOrder`, `TierOrder`), словарь `Pieces` (`foundation`, `wall`, `doorway`, `roof`, `storage_box`, `workbench_1`) и словарь `Tiers` (`wood`, `stone`, `metal`).
 
 ---
@@ -176,7 +192,7 @@
 - `InventoryService.RemoveItems(player: Player, items: { Types.ItemBatchEntry }): boolean` — транзакционное списание набора предметов (с откатом по снимку при сбое) + одна отправка `InventorySync`.
 - `InventoryService.ConsumeSlot(player: Player, slotIndex: number, count: number): boolean` — списывает `count` единиц из конкретного слота `1..30`, удаляет слот при `<= 0` и отправляет `InventorySync`.
 - `InventoryService.ClearInventory(player: Player): Types.Inventory` — очищает все 30 слотов игрока, отправляет `InventorySync` и возвращает копию изъятых предметов.
-- `InventoryService.Init()` — инициализирует `Net`, слушает `InventoryMove` (`1..30`, под Rate Limiter, блокировками `SecurityService`, проверкой жизни и дистанции открытого контейнера, атомарное списание-зачисление) и `HotbarSelect` (`1..6`, проверка жизни и блокировки телепорта), безопасно пропускает `InventorySync` для выходящих игроков (`player.Parent ~= Players`), очищает `equippedSlots` в `PlayerRemoving` и выдаёт стартовый набор в Studio.
+- `InventoryService.Init()` — инициализирует `Net`, слушает `InventoryMove` (`1..30`, под Rate Limiter, блокировками `SecurityService`, проверкой жизни и дистанции открытого контейнера, атомарное списание-зачисление) и `HotbarSelect` (`1..6`, проверка жизни и блокировки телепорта), синхронизирует атрибут `Player.EquippedItemId` при смене слота/обновлении инвентаря для 3D-визуализации экипированного оружия, безопасно пропускает `InventorySync` для выходящих игроков (`player.Parent ~= Players`), очищает `equippedSlots` в `PlayerRemoving` и выдаёт стартовый набор в Studio (включая `rocket_launcher` и `rocket`).
 
 ### `ResourceService` (`src/server/Services/ResourceService.luau`)
 - `ResourceService.Init()` — сканирует `Workspace.ResourceNodes`, обрабатывает `HitNode` (Rate Limiter, строгая проверка типа/длины строки, блокировок `SecurityService`, жизни, дистанции `<= 14`, серверного кулдауна `os.clock()`, атомарное обновление под `RunLocked`) и рассылает `NodeUpdated` ближайшим игрокам в радиусе `120` studs (и всем при истощении/респавне).
@@ -214,7 +230,7 @@
 
 ### `CombatService` (`src/server/Services/CombatService.luau`)
 - `CombatService.GetEquippedWeapon(player: Player): (string, Types.WeaponConfig)` — возвращает `weaponId` и конфиг активного оружия игрока (или `"fists", Weapons.FISTS`).
-- `CombatService.Init()` — инициализирует `Net`, подписывается на `AttackRequest` (Rate Limiter, валидация `Vector3` на `NaN`/бесконечность/длину/ограничение координат, проверка блокировок `SecurityService`, жизни атакующего и дистанции `origin` от `HumanoidRootPart` `<= 8` studs, серверный кулдаун `os.clock()` и атомарное списание `AmmoId` под `RunLocked`, авторитетный серверный `Workspace:Raycast` с кэшированием `Workspace.LootContainers`, множитель хэдшота по `Head`, запись атрибута `LastAttackerUserId`, таргетированная рассылка `AttackEffect`) и обновляет `HpLabel` манекенов в `Workspace.TestDummies`.
+- `CombatService.Init()` — инициализирует `Net`, подписывается на `AttackRequest` (Rate Limiter, валидация `Vector3` на `NaN`/бесконечность/длину/ограничение координат, проверка блокировок `SecurityService`, жизни атакующего и дистанции `origin` от `HumanoidRootPart` `<= 8` studs, серверный кулдаун `os.clock()` и атомарное списание `AmmoId` под `RunLocked`). Для хитскан/ближнего оружия выполняет авторитетный серверный `Workspace:Raycast` с множителем хэдшота по `Head`, записью `LastAttackerUserId` и рассылкой `AttackEffect`. Для баллистического оружия с `ProjectileId` (например, `rocket_launcher`) дополнительно проверяет LoS от головы до `origin` (анти-прострел сквозь стены) и лимит активных снарядов (`<= MAX_ACTIVE_PROJECTILES_PER_PLAYER = 3`), рассылает `ProjectileSpawn` в радиусе `400` studs и запускает серверную симуляцию через `Ballistics.Spawn` (при попадании вызывает `RaidService.TriggerExplosion` со смещением по нормали `+0.25`, максимальное время жизни ограничено `MAX_PROJECTILE_LIFETIME = 10` сек). Также обновляет `HpLabel` манекенов в `Workspace.TestDummies`.
 
 ### `ExtractionService` (`src/server/Services/ExtractionService.luau`)
 - `ExtractionService.GetExtractionState(player: Player): Types.ExtractionState?` — возвращает текущее состояние активного экстракшена игрока или `nil`.
@@ -229,10 +245,15 @@
 - `BaseService.Init()` — в режиме базы (игнорируя подключения с `TeleportData.Mode == "Raid"`) спавнит постройки из `data.Base.Pieces` в `Workspace.PlayerBaseStructures` (с регистрацией `storage_box` в `LootService` и `workbench_1` в `CraftingService`), обрабатывает `BuildPlaceRequest`, `BuildUpgradeRequest`, `BuildDemolishRequest` (Rate Limiter, проверка жизни, дистанции `<= MAX_BUILD_DISTANCE + PING_DISTANCE_TOLERANCE`, серверного кулдауна `0.15` сек, сетки/коллизий/ресурсов под `RunLocked`) и `RequestReturnToMap` (Rate Limiter, закрытие контейнеров, блокировка через `SecurityService.SetTeleportLock`, освобождение профиля через `DataService.ReleaseForTeleport`, возврат на `Config.Places.MainMap` и разблокировка при сбое через `DataService.RestoreAfterFailedTeleport`).
 
 ### `RaidService` (`src/server/Services/RaidService.luau`)
+- `RaidService.HasExplosionLineOfSight(blastOrigin: Vector3, targetModel: Model, excludeInstances: { Instance }?, isCharacterTarget: boolean?): boolean` — проверяет прямую видимость (`Workspace:Raycast` с `FilterType.Exclude`) от эпицентра взрыва до контрольных точек цели (до 3 точек: центр/верх/низ или стороны у широких элементов, стойки/перемычка у `doorway`, HRP/голова/ноги у персонажей). Исключает только саму цель, переданные `excludeInstances`, `CanCollide == false` не-террейн детали и модели персонажей; другие строительные блоки и `Terrain` блокируют урон.
+- `RaidService.TriggerExplosion(params: Types.ExplosionParams): Types.ExplosionResult` — единый серверный расчёт AoE-взрывов (используется как для C4/Satchel, так и для ракет):
+  - **Фаза 1 (до разрушения построек):** собирает постройки в `activeSessions` и живых гуманоидов (`Players` + `Workspace.TestDummies`) в радиусе `Radius`, проверяет `HasExplosionLineOfSight` (цель за неразрушенной стеной получает `0` урона даже при разрушении самой стены этим взрывом) и рассчитывает дистанционное затухание (`1.0` до `1` stud, линейное падение до `MinFalloffMultiplier`).
+  - **Фаза 2:** применяет урон постройкам (с дропом мешка лута при разрушении `storage_box`) и гуманоидам (`LastAttackerUserId` + `Humanoid:TakeDamage`).
+  - **Фаза 3:** рассылает `ExplosionEffect` клиентам в радиусе `350` studs (и атакующему).
 - `RaidService.EnterStudioMockRaid(player: Player, targetUserId: number): boolean` — запускает локальный мок-рейд в Studio, спавнит копию базы цели (или готовую тестовую базу с укреплёнными стенами и сундуком) в `Workspace.RaidTargetStructures` и запускает 300-секундный таймер.
 - `RaidService.IsPlayerInRaid(player: Player): boolean` — возвращает `true`, если игрок находится в активной рейд-сессии.
 - `RaidService.GetActiveSessionInfo(player: Player): Types.RaidHudState?` — возвращает состояние активной рейд-сессии игрока или `nil`.
-- `RaidService.Init()` — в режиме `MainMap` обрабатывает `RaidListRequest` и `StartRaidRequest` (Rate Limiter, проверка жизни и близости к `Workspace.RaidTerminal` `<= 24 + 2` studs, `SecurityService.SetTeleportLock`, `DataService.ReleaseForTeleport` + `ReserveServer` + `TeleportAsync` с `ReservedServerAccessCode` или Studio Mock Raid, восстановление через `RestoreAfterFailedTeleport` при ошибке); в режиме рейда спавнит копию базы цели по `LoadBaseSnapshot` без записи в профиль цели, обновляет таймер (`RaidHudSync`), обрабатывает `PlaceExplosiveRequest` (Rate Limiter, проверка предмета из `Explosives`, дистанции `<= 14 + 2` studs, серверного кулдауна `0.5` сек и атомарного списания под `RunLocked`, визуальный заряд с `FuseTime`, урон по постройкам в `Radius`, выпадение мешка с лутом в `Workspace.LootContainers` при разрушении `storage_box`) и эвакуирует игрока на `MainMap` (или из мок-рейда) по `RaidExtractRequest` (с Rate Limiter и проверкой жизни) или истечении таймера.
+- `RaidService.Init()` — в режиме `MainMap` обрабатывает `RaidListRequest` и `StartRaidRequest` (Rate Limiter, проверка жизни и близости к `Workspace.RaidTerminal` `<= 24 + 2` studs, `SecurityService.SetTeleportLock`, `DataService.ReleaseForTeleport` + `ReserveServer` + `TeleportAsync` с `ReservedServerAccessCode` или Studio Mock Raid, восстановление через `RestoreAfterFailedTeleport` при ошибке); в режиме рейда спавнит копию базы цели по `LoadBaseSnapshot` без записи в профиль цели, обновляет таймер (`RaidHudSync`), обрабатывает `PlaceExplosiveRequest` (Rate Limiter, проверка предмета из `Explosives`, дистанции `<= 14 + 2` studs, серверного кулдауна `0.5` сек и атомарного списания под `RunLocked`, визуальный заряд с `FuseTime`, вызов `RaidService.TriggerExplosion` при детонации с окклюзией стенами) и эвакуирует игрока на `MainMap` (или из мок-рейда) по `RaidExtractRequest` (с Rate Limiter и проверкой жизни) или истечении таймера.
 
 ---
 
@@ -268,7 +289,7 @@
 ### `GatheringController` (`src/client/Controllers/GatheringController.luau`)
 - `GatheringController.GetNodeState(nodeId: string): NodeClientState?`
 - `GatheringController.IsCursorOnActiveNode(): boolean` — проверяет, наведён ли курсор на неистощённую ноду ресурсов в радиусе добычи (`MAX_GATHER_DISTANCE_CLIENT`).
-- `GatheringController.Init()` — строит `GatherHudGui`, выполняет raycast от курсора (блокируется при активном `BuildingController.IsBuildMode()`, открытых `InventoryUIController`, `CraftingController`, `LootController` или экипированном расходнике из `Consumables`; при наведении приоритетно читает атрибут `Hp` модели), отправляет `HitNode`, слушает `NodeUpdated` и проигрывает визуальный отклик.
+- `GatheringController.Init()` — строит `GatherHudGui`, выполняет raycast от курсора (блокируется при активном `BuildingController.IsBuildMode()`, открытых `InventoryUIController`, `CraftingController`, `LootController`, экипированном расходнике из `Consumables` или дальнобойном оружии из `Weapons`; при наведении приоритетно читает атрибут `Hp` модели), отправляет `HitNode`, слушает `NodeUpdated` и проигрывает визуальный отклик.
 
 ### `SurvivalHudController` (`src/client/Controllers/SurvivalHudController.luau`)
 - `SurvivalHudController.Init()` — строит `SurvivalHudGui` (полоски `Health`, `Hunger`, `Thirst` в левом нижнем углу), читает `Humanoid.Health` и атрибуты `Hunger` / `Thirst` у `LocalPlayer`, подсвечивает/пульсирует полоску при `<= 15`.
@@ -286,7 +307,12 @@
 - `LootController.Init()` — строит `LootGui` (динамическая сетка до 30 слотов, 18 слотов и парное расположение рядом с `InventoryGui` для сундуков базы), открывается/обновляется по `OpenContainer`, закрывается по `CloseContainer` или кнопке `X`, по клику на слот отправляет `LootTakeSlot`.
 
 ### `CombatController` (`src/client/Controllers/CombatController.luau`)
-- `CombatController.Init()` — строит минималистичный прицел `CrosshairGui` по центру экрана (крестик + вспышка хитмаркера на `0.15s`, красная при хэдшоте), по ЛКМ (если не активен `BuildingController.IsBuildMode()`, закрыты UI-окна, нет фокуса в `TextBox`, в руках не предмет из `Consumables` и `GatheringController.IsCursorOnActiveNode() == false`) вычисляет `origin` от головы/`HumanoidRootPart` и `direction` в точку прицеливания курсора, проверяет локальный кулдаун и боеприпасы и отправляет `AttackRequest`, а по `AttackEffect` отрисовывает трассер для дальнобойного оружия (`0.12s`).
+- `CombatController.Init()` — строит минималистичный прицел `CrosshairGui` по центру экрана (крестик + вспышка хитмаркера на `0.15s`, красная при хэдшоте), по ЛКМ (если не активен `BuildingController.IsBuildMode()`, закрыты UI-окна, нет фокуса в `TextBox`, в руках не предмет из `Consumables`/`Explosives`, а для `Melee` также `GatheringController.IsCursorOnActiveNode() == false`) вычисляет `origin` от головы/`HumanoidRootPart` и `direction` в точку прицеливания курсора, проверяет локальный кулдаун и боеприпасы, для оружия с `ProjectileId` сразу запускает клиентскую баллистическую визуализацию через `ProjectileController.SpawnLocalProjectile` и отправляет `AttackRequest`, а по `AttackEffect` отрисовывает трассер для хитскан-оружия (`0.12s`).
+
+### `ProjectileController` (`src/client/Controllers/ProjectileController.luau`)
+- `ProjectileController.SpawnLocalProjectile(projectileConfigId: string, origin: Vector3, direction: Vector3, shooterCharacter: Model): string` — мгновенно спавнит локально предсказанный визуальный снаряд `Rocket` (из `ReplicatedStorage.Assets.Projectiles.Rocket` или встроенного примитивного фолбэка) с `Trail` и `ParticleEmitter` дыма, симулирует дугу полёта через `Ballistics.Spawn`, проигрывает 3D-звук выстрела и ставит запись в очередь сопоставления с серверным `ProjectileSpawn`.
+- `ProjectileController.GetActiveVisualCount(): number` — возвращает число активных визуальных снарядов на клиенте.
+- `ProjectileController.Init()` — отслеживает атрибут `EquippedItemId` у всех игроков и при экипировке `rocket_launcher` крепит примитивную модель ракетницы (`ReplicatedStorage.Assets.Weapons.RocketLauncher`) к `RightHand` / `Right Arm` через `Motor6D` (`WeaponGripMotor`); слушает `ProjectileSpawn` (без дублирования локально предсказанной ракеты) и `ExplosionEffect` (очищает снаряд и спавнит `Explosion`, расширяющуюся неоновую сферу и 3D-звук взрыва в `Workspace.ClientProjectileVfx`).
 
 ### `WorldEventController` (`src/client/Controllers/WorldEventController.luau`)
 - `WorldEventController.IsBannerVisible(): boolean` — возвращает, отображается ли сейчас верхний HUD-баннер мирового события.

@@ -110,6 +110,16 @@ local Items: { [string]: ItemConfig } = {
 		Type = "Tool",
 		MaxStack = 5,
 	},
+	rocket_launcher = {
+		Name = "Rocket Launcher",
+		Type = "Tool",
+		MaxStack = 1,
+	},
+	rocket = {
+		Name = "Rocket",
+		Type = "Resource",
+		MaxStack = 10,
+	},
 }
 
 return table.freeze(Items)

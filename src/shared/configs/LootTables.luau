@@ -40,6 +40,8 @@ local LootTables: { [string]: LootTableConfig } = {
 			{ Id = "pistol_ammo", Weight = 35, MinCount = 16, MaxCount = 32 },
 			{ Id = "hunting_bow", Weight = 20, MinCount = 1, MaxCount = 1 },
 			{ Id = "cooked_meat", Weight = 25, MinCount = 3, MaxCount = 6 },
+			{ Id = "rocket", Weight = 15, MinCount = 1, MaxCount = 3 },
+			{ Id = "rocket_launcher", Weight = 8, MinCount = 1, MaxCount = 1 },
 		},
 	},
 }

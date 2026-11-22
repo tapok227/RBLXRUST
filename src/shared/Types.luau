@@ -138,6 +138,7 @@ export type WeaponConfig = {
 	Range: number,
 	Cooldown: number,
 	AmmoId: string?,
+	ProjectileId: string?,
 }
 
 export type LootDropEntry = {
@@ -170,8 +171,40 @@ export type ExtractionState = {
 
 export type ExplosiveConfig = {
 	StructureDamage: number,
+	PlayerDamage: number,
 	Radius: number,
 	FuseTime: number,
+}
+
+export type ProjectileConfig = {
+	Id: string,
+	Speed: number,
+	Gravity: number,
+	MaxLifetime: number,
+	BlastRadius: number,
+	StructureDamage: number,
+	PlayerDamage: number,
+	MinFalloffMultiplier: number,
+}
+
+export type ExplosionParams = {
+	Origin: Vector3,
+	Radius: number,
+	StructureDamage: number,
+	PlayerDamage: number,
+	Attacker: Player?,
+	SourceId: string?,
+	ProjectileId: string?,
+	ExcludeInstances: { Instance }?,
+	MinFalloffMultiplier: number?,
+}
+
+export type ExplosionResult = {
+	DamagedStructures: number,
+	DestroyedStructures: number,
+	DamagedHumanoids: number,
+	OccludedStructures: number,
+	OccludedHumanoids: number,
 }
 
 export type RaidTargetInfo = {
@@ -212,6 +245,8 @@ local Types = {
 	PING_DISTANCE_TOLERANCE = 2,
 	MAX_BUILD_DISTANCE = 72,
 	MAX_RAID_TERMINAL_DISTANCE = 24,
+	MAX_PROJECTILE_LIFETIME = 10,
+	MAX_ACTIVE_PROJECTILES_PER_PLAYER = 3,
 }
 
 return Types
