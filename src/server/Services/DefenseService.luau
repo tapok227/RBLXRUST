@@ -7,6 +7,7 @@ local Workspace = game:GetService("Workspace")
 
 local Ballistics = require(ReplicatedStorage.Shared.Ballistics)
 local BuildingGeometry = require(ReplicatedStorage.Shared.BuildingGeometry)
+local Config = require(ReplicatedStorage.Shared.Config)
 local Defenses = require(ReplicatedStorage.Shared.configs.Defenses)
 local Net = require(ReplicatedStorage.Shared.Net)
 local Types = require(ReplicatedStorage.Shared.Types)
@@ -483,7 +484,12 @@ end
 
 local function applySlowToHumanoid(humanoid: Humanoid, multiplier: number, duration: number)
 	local existing = slowStates[humanoid]
-	local baseSpeed = if existing ~= nil then existing.BaseSpeed else humanoid.WalkSpeed
+	local targetModel = humanoid.Parent
+	local player = if targetModel and targetModel:IsA("Model") then Players:GetPlayerFromCharacter(targetModel) else nil
+	local baseSpeed = if player ~= nil
+		then (if player:GetAttribute("IsSprinting") == true then Config.SPRINT_WALK_SPEED else Config.BASE_WALK_SPEED)
+		elseif existing ~= nil then existing.BaseSpeed
+		else humanoid.WalkSpeed
 	nextSlowToken += 1
 	local token = nextSlowToken
 
@@ -491,14 +497,22 @@ local function applySlowToHumanoid(humanoid: Humanoid, multiplier: number, durat
 		BaseSpeed = baseSpeed,
 		Token = token,
 	}
+	humanoid:SetAttribute("SlowMultiplier", multiplier)
 	humanoid.WalkSpeed = math.max(2, baseSpeed * multiplier)
 
 	task.delay(duration, function()
 		local current = slowStates[humanoid]
 		if current ~= nil and current.Token == token then
 			slowStates[humanoid] = nil
+			humanoid:SetAttribute("SlowMultiplier", nil)
 			if humanoid.Parent ~= nil and humanoid.Health > 0 then
-				humanoid.WalkSpeed = current.BaseSpeed
+				if player ~= nil then
+					humanoid.WalkSpeed = if player:GetAttribute("IsSprinting") == true
+						then Config.SPRINT_WALK_SPEED
+						else Config.BASE_WALK_SPEED
+				else
+					humanoid.WalkSpeed = current.BaseSpeed
+				end
 			end
 		end
 	end)

@@ -14,6 +14,7 @@ local Events = table.freeze({
 	CraftCancel = "CraftCancel",
 	CraftStateSync = "CraftStateSync",
 	UseConsumable = "UseConsumable",
+	SprintStateRequest = "SprintStateRequest",
 	OpenContainer = "OpenContainer",
 	CloseContainer = "CloseContainer",
 	LootTakeSlot = "LootTakeSlot",

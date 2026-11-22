@@ -25,6 +25,7 @@ export type ConsumableConfig = {
 	Health: number,
 	Hunger: number,
 	Thirst: number,
+	Stamina: number?,
 	UseCooldown: number,
 }
 

@@ -3,6 +3,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
+local Config = require(ReplicatedStorage.Shared.Config)
 local Types = require(ReplicatedStorage.Shared.Types)
 local Janitor = require(ReplicatedStorage.Shared.Janitor)
 
@@ -15,16 +16,22 @@ type BarUI = {
 local LOW_WARNING_THRESHOLD = 15
 local DEFAULT_STROKE_COLOR = Color3.fromRGB(55, 55, 65)
 local WARNING_STROKE_COLOR = Color3.fromRGB(255, 85, 85)
+local STAMINA_COLOR = Color3.fromRGB(235, 200, 55)
+local STAMINA_EXHAUSTED_COLOR = Color3.fromRGB(180, 110, 55)
 
 local healthBar: BarUI? = nil
 local hungerBar: BarUI? = nil
 local thirstBar: BarUI? = nil
+local staminaBar: BarUI? = nil
 local bleedingBadge: TextLabel? = nil
 
 local currentHealth = Types.MAX_HEALTH
 local currentMaxHealth = Types.MAX_HEALTH
 local currentHunger = Types.MAX_HUNGER
 local currentThirst = Types.MAX_THIRST
+local currentStamina = Config.MAX_STAMINA
+local staminaExhausted = false
+local isWellFed = false
 local isBleeding = false
 
 local characterJanitor = Janitor.new()
@@ -112,7 +119,7 @@ local function createSurvivalHudGui()
 	container.Name = "Container"
 	container.AnchorPoint = Vector2.new(0, 1)
 	container.Position = UDim2.new(0, 16, 1, -16)
-	container.Size = UDim2.fromOffset(220, 96)
+	container.Size = UDim2.fromOffset(220, 123)
 	container.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
 	container.BackgroundTransparency = 0.25
 	container.BorderSizePixel = 0
@@ -143,11 +150,12 @@ local function createSurvivalHudGui()
 	healthBar = createStatBar(container, "HealthBar", "HP: 100 / 100", Color3.fromRGB(215, 65, 65), 1)
 	hungerBar = createStatBar(container, "HungerBar", "Hunger: 100%", Color3.fromRGB(230, 145, 50), 2)
 	thirstBar = createStatBar(container, "ThirstBar", "Thirst: 100%", Color3.fromRGB(65, 175, 235), 3)
+	staminaBar = createStatBar(container, "StaminaBar", "Stamina: 100%", STAMINA_COLOR, 4)
 
 	local bleedBadge = Instance.new("TextLabel")
 	bleedBadge.Name = "BleedingBadge"
 	bleedBadge.AnchorPoint = Vector2.new(0, 1)
-	bleedBadge.Position = UDim2.new(0, 16, 1, -118)
+	bleedBadge.Position = UDim2.new(0, 16, 1, -145)
 	bleedBadge.Size = UDim2.fromOffset(220, 26)
 	bleedBadge.BackgroundColor3 = Color3.fromRGB(165, 32, 32)
 	bleedBadge.BackgroundTransparency = 0.1
@@ -180,7 +188,11 @@ local function updateHealthDisplay()
 	local maxHp = math.max(1, currentMaxHealth)
 	local ratio = math.clamp(currentHealth / maxHp, 0, 1)
 	healthBar.Fill.Size = UDim2.fromScale(ratio, 1)
-	healthBar.ValueLabel.Text = string.format("HP: %d / %d", math.ceil(currentHealth), math.ceil(maxHp))
+	if isWellFed then
+		healthBar.ValueLabel.Text = string.format("HP: %d / %d (Well Fed)", math.ceil(currentHealth), math.ceil(maxHp))
+	else
+		healthBar.ValueLabel.Text = string.format("HP: %d / %d", math.ceil(currentHealth), math.ceil(maxHp))
+	end
 end
 
 local function updateHungerDisplay()
@@ -199,6 +211,16 @@ local function updateThirstDisplay()
 	local ratio = math.clamp(currentThirst / Types.MAX_THIRST, 0, 1)
 	thirstBar.Fill.Size = UDim2.fromScale(ratio, 1)
 	thirstBar.ValueLabel.Text = string.format("Thirst: %d%%", math.floor(currentThirst + 0.5))
+end
+
+local function updateStaminaDisplay()
+	if not staminaBar then
+		return
+	end
+	local ratio = math.clamp(currentStamina / Config.MAX_STAMINA, 0, 1)
+	staminaBar.Fill.Size = UDim2.fromScale(ratio, 1)
+	staminaBar.Fill.BackgroundColor3 = if staminaExhausted then STAMINA_EXHAUSTED_COLOR else STAMINA_COLOR
+	staminaBar.ValueLabel.Text = string.format("Stamina: %d%%", math.floor(currentStamina + 0.5))
 end
 
 local function applyBarPulse(bar: BarUI?, value: number, alpha: number)
@@ -257,13 +279,23 @@ local function readAttributesFromPlayer(localPlayer: Player)
 		then math.clamp(thirstAttr, 0, Types.MAX_THIRST)
 		else Types.MAX_THIRST
 
+	local staminaAttr = localPlayer:GetAttribute("Stamina")
+	currentStamina = if typeof(staminaAttr) == "number"
+		then math.clamp(staminaAttr, 0, Config.MAX_STAMINA)
+		else Config.MAX_STAMINA
+
+	staminaExhausted = localPlayer:GetAttribute("StaminaExhausted") == true
+	isWellFed = localPlayer:GetAttribute("WellFed") == true
+
 	isBleeding = localPlayer:GetAttribute("Bleeding") == true
 	if bleedingBadge then
 		bleedingBadge.Visible = isBleeding
 	end
 
+	updateHealthDisplay()
 	updateHungerDisplay()
 	updateThirstDisplay()
+	updateStaminaDisplay()
 end
 
 function SurvivalHudController.Init()
@@ -295,6 +327,24 @@ function SurvivalHudController.Init()
 			currentThirst = math.clamp(val, 0, Types.MAX_THIRST)
 			updateThirstDisplay()
 		end
+	end)
+
+	localPlayer:GetAttributeChangedSignal("Stamina"):Connect(function()
+		local val = localPlayer:GetAttribute("Stamina")
+		if typeof(val) == "number" then
+			currentStamina = math.clamp(val, 0, Config.MAX_STAMINA)
+			updateStaminaDisplay()
+		end
+	end)
+
+	localPlayer:GetAttributeChangedSignal("StaminaExhausted"):Connect(function()
+		staminaExhausted = localPlayer:GetAttribute("StaminaExhausted") == true
+		updateStaminaDisplay()
+	end)
+
+	localPlayer:GetAttributeChangedSignal("WellFed"):Connect(function()
+		isWellFed = localPlayer:GetAttribute("WellFed") == true
+		updateHealthDisplay()
 	end)
 
 	localPlayer:GetAttributeChangedSignal("Bleeding"):Connect(function()

@@ -1,14 +1,17 @@
 --!strict
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local ServerScriptService = game:GetService("ServerScriptService")
 local Workspace = game:GetService("Workspace")
 
+local Config = require(ReplicatedStorage.Shared.Config)
 local Types = require(ReplicatedStorage.Shared.Types)
 local Items = require(ReplicatedStorage.Shared.configs.Items)
 local Consumables = require(ReplicatedStorage.Shared.configs.Consumables)
 local Net = require(ReplicatedStorage.Shared.Net)
 local Janitor = require(ReplicatedStorage.Shared.Janitor)
+local BaseService = require(ServerScriptService.Server.Services.BaseService)
 local DataService = require(ServerScriptService.Server.Services.DataService)
 local InventoryService = require(ServerScriptService.Server.Services.InventoryService)
 local LootService = require(ServerScriptService.Server.Services.LootService)
@@ -25,11 +28,22 @@ type BleedState = {
 	Dps: number,
 }
 
+type StaminaState = {
+	Stamina: number,
+	WantsSprint: boolean,
+	IsSprinting: boolean,
+	Exhausted: boolean,
+	LastSyncAt: number,
+	LastSyncedStamina: number,
+}
+
 local HUNGER_LOSS_PER_TICK = 0.35
 local THIRST_LOSS_PER_TICK = 0.5
-local PASSIVE_REGEN_THRESHOLD = 70
-local PASSIVE_REGEN_PER_TICK = 1.5
-local STARVE_DAMAGE_PER_TICK = 1.5
+local DAMAGE_EPSILON = 0.01
+local MOVE_DIRECTION_THRESHOLD = 0.1
+local STAMINA_SYNC_INTERVAL = 0.1
+local STAMINA_SYNC_DELTA = 0.5
+local MAX_HEARTBEAT_DT = 0.25
 
 local playerJanitors: { [Player]: Janitor.Janitor } = {}
 local characterJanitors: { [Player]: Janitor.Janitor } = {}
@@ -37,6 +51,9 @@ local appliedCharacters: { [Model]: boolean } = {}
 local activeBleeds: { [Player]: BleedState } = {}
 local nextConsumeTime: { [Player]: number } = {}
 local pendingRespawnReset: { [Player]: boolean } = {}
+local staminaStates: { [Player]: StaminaState } = {}
+local lastDamageAt: { [Player]: number } = {}
+local hpRegenAccum: { [Player]: number } = {}
 local nextBagId = 0
 local isInitialized = false
 
@@ -67,6 +84,14 @@ local function getOrCreateLootFolder(): Folder
 	return folder
 end
 
+local function isWellFed(stats: SurvivalStats): boolean
+	return stats.Hunger >= Config.WELL_FED_THRESHOLD and stats.Thirst >= Config.WELL_FED_THRESHOLD
+end
+
+local function isHungerDrainFrozen(player: Player): boolean
+	return BaseService.IsBaseMode() and player:GetAttribute("InRaid") ~= true
+end
+
 local function setAttributeIfChanged(player: Player, name: string, value: any)
 	if player:GetAttribute(name) ~= value then
 		player:SetAttribute(name, value)
@@ -78,6 +103,59 @@ local function syncPlayerAttributes(player: Player, stats: SurvivalStats)
 	setAttributeIfChanged(player, "Thirst", roundStat(stats.Thirst))
 	setAttributeIfChanged(player, "Starving", stats.Hunger <= 0)
 	setAttributeIfChanged(player, "Dehydrated", stats.Thirst <= 0)
+	setAttributeIfChanged(player, "WellFed", isWellFed(stats))
+end
+
+local function getOrCreateStaminaState(player: Player): StaminaState
+	local existing = staminaStates[player]
+	if existing ~= nil then
+		return existing
+	end
+	local created: StaminaState = {
+		Stamina = Config.MAX_STAMINA,
+		WantsSprint = false,
+		IsSprinting = false,
+		Exhausted = false,
+		LastSyncAt = 0,
+		LastSyncedStamina = -1,
+	}
+	staminaStates[player] = created
+	return created
+end
+
+local function syncStaminaAttributes(player: Player, state: StaminaState, force: boolean)
+	if player.Parent ~= Players then
+		return
+	end
+	setAttributeIfChanged(player, "IsSprinting", state.IsSprinting)
+	setAttributeIfChanged(player, "StaminaExhausted", state.Exhausted)
+
+	local now = os.clock()
+	local rounded = math.floor(state.Stamina * 10 + 0.5) / 10
+	local shouldSyncStamina = force
+		or state.Stamina <= 0
+		or state.Stamina >= Config.MAX_STAMINA
+		or math.abs(rounded - state.LastSyncedStamina) >= STAMINA_SYNC_DELTA
+		or (now - state.LastSyncAt) >= STAMINA_SYNC_INTERVAL
+
+	if shouldSyncStamina then
+		setAttributeIfChanged(player, "Stamina", rounded)
+		state.LastSyncAt = now
+		state.LastSyncedStamina = rounded
+	end
+end
+
+local function applyCharacterWalkSpeed(humanoid: Humanoid, isSprinting: boolean)
+	local baseSpeed = if isSprinting then Config.SPRINT_WALK_SPEED else Config.BASE_WALK_SPEED
+	local slowAttr = humanoid:GetAttribute("SlowMultiplier")
+	local targetSpeed = if typeof(slowAttr) == "number"
+			and slowAttr > 0
+			and slowAttr < 1
+		then math.max(2, baseSpeed * slowAttr)
+		else baseSpeed
+	if math.abs(humanoid.WalkSpeed - targetSpeed) > 0.01 then
+		humanoid.WalkSpeed = targetSpeed
+	end
 end
 
 local function getAliveCharacterParts(player: Player): (Model?, BasePart?, Humanoid?)
@@ -177,12 +255,15 @@ local function applyStatsToCharacter(player: Player, character: Model, data: Pla
 		data.Stats.Health = Types.RESPAWN_HEALTH
 		data.Stats.Hunger = Types.RESPAWN_HUNGER
 		data.Stats.Thirst = Types.RESPAWN_THIRST
+		lastDamageAt[player] = 0
 		SurvivalService.ClearBleeding(player)
 	end
 
-	appliedCharacters[character] = true
 	humanoid.Health = math.clamp(data.Stats.Health, 1, humanoid.MaxHealth)
 	data.Stats.Health = humanoid.Health
+	appliedCharacters[character] = true
+	hpRegenAccum[player] = 0
+	SurvivalService.ResetSprintState(player, true)
 	syncPlayerAttributes(player, data.Stats)
 end
 
@@ -217,11 +298,21 @@ local function bindCharacter(player: Player, character: Model)
 	local data = DataService.GetData(player)
 	if data ~= nil then
 		applyStatsToCharacter(player, character, data)
+	else
+		SurvivalService.ResetSprintState(player, true)
 	end
 
+	local lastHealth = humanoid.Health
+
 	charJanitor:Add(humanoid.HealthChanged:Connect(function(newHealth: number)
+		local prevHealth = lastHealth
+		lastHealth = newHealth
 		if not appliedCharacters[character] then
 			return
+		end
+		if newHealth < prevHealth - DAMAGE_EPSILON then
+			lastDamageAt[player] = os.clock()
+			hpRegenAccum[player] = 0
 		end
 		local currentData = DataService.GetData(player)
 		if currentData ~= nil then
@@ -237,6 +328,8 @@ local function bindCharacter(player: Player, character: Model)
 		appliedCharacters[character] = nil
 
 		pendingRespawnReset[player] = true
+		hpRegenAccum[player] = 0
+		SurvivalService.ResetSprintState(player, false)
 		SurvivalService.ClearBleeding(player)
 		LootService.CloseContainerForPlayer(player, true)
 
@@ -274,12 +367,20 @@ local function bindPlayer(player: Player)
 	local janitor = Janitor.new()
 	playerJanitors[player] = janitor
 
+	syncStaminaAttributes(player, getOrCreateStaminaState(player), true)
+
+	janitor:Add(player:GetAttributeChangedSignal("InRaid"):Connect(function()
+		SurvivalService.ResetSprintState(player, true)
+	end))
+
 	janitor:Add(player.CharacterAdded:Connect(function(character: Model)
 		task.spawn(bindCharacter, player, character)
 	end))
 
 	janitor:Add(player.CharacterRemoving:Connect(function(character: Model)
 		appliedCharacters[character] = nil
+		hpRegenAccum[player] = 0
+		SurvivalService.ResetSprintState(player, false)
 		local existingCharJanitor = characterJanitors[player]
 		if existingCharJanitor then
 			existingCharJanitor:Cleanup()
@@ -363,30 +464,108 @@ local function onUseConsumable(player: Player, slotIndexAny: any)
 
 		data.Stats.Hunger = math.clamp(data.Stats.Hunger + consumableConfig.Hunger, 0, Types.MAX_HUNGER)
 		data.Stats.Thirst = math.clamp(data.Stats.Thirst + consumableConfig.Thirst, 0, Types.MAX_THIRST)
+		if consumableConfig.Stamina ~= nil and consumableConfig.Stamina ~= 0 then
+			SurvivalService.AddStamina(player, consumableConfig.Stamina)
+		end
 		syncPlayerAttributes(player, data.Stats)
 	end)
+end
+
+local function onSprintStateRequest(player: Player, wantsSprintAny: any)
+	if not SecurityService.CheckRateLimit(player, Net.Events.SprintStateRequest) then
+		return
+	end
+	if typeof(wantsSprintAny) ~= "boolean" then
+		SecurityService.LogSuspicious(player, Net.Events.SprintStateRequest, "invalid sprint flag")
+		return
+	end
+	if DataService.IsTeleporting(player) or SecurityService.IsTeleportLocked(player) then
+		SurvivalService.ResetSprintState(player, false)
+		return
+	end
+
+	local state = getOrCreateStaminaState(player)
+	local wantsSprint = wantsSprintAny :: boolean
+	state.WantsSprint = wantsSprint
+
+	if not wantsSprint and state.IsSprinting then
+		state.IsSprinting = false
+		local _, _, humanoid = getAliveCharacterParts(player)
+		if humanoid ~= nil then
+			applyCharacterWalkSpeed(humanoid, false)
+		end
+		syncStaminaAttributes(player, state, true)
+	end
+end
+
+local function stepStamina(dt: number)
+	local clampedDt = math.min(dt, MAX_HEARTBEAT_DT)
+	if clampedDt <= 0 then
+		return
+	end
+
+	for _, player in Players:GetPlayers() do
+		local state = getOrCreateStaminaState(player)
+		local _, _, humanoid = getAliveCharacterParts(player)
+		if humanoid == nil or DataService.IsTeleporting(player) or SecurityService.IsTeleportLocked(player) then
+			if state.IsSprinting or state.WantsSprint then
+				SurvivalService.ResetSprintState(player, false)
+			end
+			continue
+		end
+
+		local isMoving = humanoid.MoveDirection.Magnitude > MOVE_DIRECTION_THRESHOLD
+		local canStart = (not state.Exhausted) and (state.Stamina >= Config.STAMINA_MIN_TO_SPRINT)
+		local canContinue = state.IsSprinting and not state.Exhausted and (state.Stamina > 0)
+		local shouldSprint = state.WantsSprint and isMoving and (canContinue or canStart)
+		local stateChanged = (shouldSprint ~= state.IsSprinting)
+
+		if shouldSprint then
+			state.IsSprinting = true
+			state.Stamina = math.max(0, state.Stamina - Config.STAMINA_DRAIN_PER_SEC * clampedDt)
+			if state.Stamina <= 0 then
+				state.Stamina = 0
+				state.IsSprinting = false
+				state.Exhausted = true
+				stateChanged = true
+			end
+		else
+			state.IsSprinting = false
+			local regenRate = Config.STAMINA_REGEN_BASE
+			local data = DataService.GetData(player)
+			if data ~= nil then
+				if data.Stats.Hunger <= 0 or data.Stats.Thirst <= 0 then
+					regenRate = Config.STAMINA_REGEN_STARVING
+				elseif isWellFed(data.Stats) then
+					regenRate = Config.STAMINA_REGEN_WELL_FED
+				end
+			end
+			state.Stamina = math.min(Config.MAX_STAMINA, state.Stamina + regenRate * clampedDt)
+			if state.Exhausted and state.Stamina >= Config.STAMINA_MIN_TO_SPRINT then
+				state.Exhausted = false
+				stateChanged = true
+			end
+		end
+
+		applyCharacterWalkSpeed(humanoid, state.IsSprinting)
+		syncStaminaAttributes(player, state, stateChanged)
+	end
 end
 
 local function stepSurvivalLoop()
 	local now = os.clock()
 	for _, player in Players:GetPlayers() do
+		if DataService.IsTeleporting(player) or SecurityService.IsTeleportLocked(player) then
+			continue
+		end
+
 		local data = DataService.GetData(player)
 		local _, _, humanoid = getAliveCharacterParts(player)
 		if data ~= nil and humanoid ~= nil then
 			local stats = data.Stats
-			stats.Hunger = math.clamp(stats.Hunger - HUNGER_LOSS_PER_TICK, 0, Types.MAX_HUNGER)
-			stats.Thirst = math.clamp(stats.Thirst - THIRST_LOSS_PER_TICK, 0, Types.MAX_THIRST)
-
-			if
-				stats.Hunger > PASSIVE_REGEN_THRESHOLD
-				and stats.Thirst > PASSIVE_REGEN_THRESHOLD
-				and humanoid.Health < humanoid.MaxHealth
-			then
-				humanoid.Health = math.min(humanoid.MaxHealth, humanoid.Health + PASSIVE_REGEN_PER_TICK)
-			end
-
-			if stats.Hunger <= 0 or stats.Thirst <= 0 then
-				humanoid.Health = math.max(0, humanoid.Health - STARVE_DAMAGE_PER_TICK)
+			if not isHungerDrainFrozen(player) then
+				stats.Hunger = math.clamp(stats.Hunger - HUNGER_LOSS_PER_TICK, 0, Types.MAX_HUNGER)
+				stats.Thirst = math.clamp(stats.Thirst - THIRST_LOSS_PER_TICK, 0, Types.MAX_THIRST)
 			end
 
 			local bleed = activeBleeds[player]
@@ -396,8 +575,28 @@ local function stepSurvivalLoop()
 				else
 					local bleedDamage = bleed.Dps * Types.SURVIVAL_TICK_INTERVAL
 					humanoid.Health = math.max(0, humanoid.Health - bleedDamage)
+					lastDamageAt[player] = now
+					hpRegenAccum[player] = 0
 					setAttributeIfChanged(player, "Bleeding", true)
 				end
+			end
+
+			local lastDmg = lastDamageAt[player] or 0
+			local canRegenHp = isWellFed(stats)
+				and activeBleeds[player] == nil
+				and (now - lastDmg) >= Config.COMBAT_REGEN_COOLDOWN
+				and humanoid.Health > 0
+				and humanoid.Health < humanoid.MaxHealth
+
+			if canRegenHp then
+				local accum = (hpRegenAccum[player] or 0) + Types.SURVIVAL_TICK_INTERVAL
+				while accum >= Config.WELL_FED_HP_INTERVAL and humanoid.Health < humanoid.MaxHealth do
+					accum -= Config.WELL_FED_HP_INTERVAL
+					humanoid.Health = math.min(humanoid.MaxHealth, humanoid.Health + Config.WELL_FED_HP_REGEN)
+				end
+				hpRegenAccum[player] = accum
+			else
+				hpRegenAccum[player] = 0
 			end
 
 			stats.Health = math.clamp(humanoid.Health, 0, humanoid.MaxHealth)
@@ -441,6 +640,45 @@ function SurvivalService.ClearBleeding(player: Player)
 	end
 end
 
+function SurvivalService.GetStamina(player: Player): number
+	local state = staminaStates[player]
+	if state ~= nil then
+		return state.Stamina
+	end
+	return Config.MAX_STAMINA
+end
+
+function SurvivalService.AddStamina(player: Player, amount: number)
+	if player.Parent ~= Players then
+		return
+	end
+	if not SecurityService.IsFiniteNumber(amount) then
+		return
+	end
+	local state = getOrCreateStaminaState(player)
+	state.Stamina = math.clamp(state.Stamina + amount, 0, Config.MAX_STAMINA)
+	if state.Exhausted and state.Stamina >= Config.STAMINA_MIN_TO_SPRINT then
+		state.Exhausted = false
+	end
+	syncStaminaAttributes(player, state, true)
+end
+
+function SurvivalService.ResetSprintState(player: Player, refillStamina: boolean)
+	local state = getOrCreateStaminaState(player)
+	state.WantsSprint = false
+	state.IsSprinting = false
+	state.Exhausted = false
+	if refillStamina then
+		state.Stamina = Config.MAX_STAMINA
+	end
+	local character = player.Character
+	local humanoid = if character then character:FindFirstChildOfClass("Humanoid") else nil
+	if humanoid and humanoid.Health > 0 then
+		applyCharacterWalkSpeed(humanoid, false)
+	end
+	syncStaminaAttributes(player, state, true)
+end
+
 function SurvivalService.GetStats(player: Player): SurvivalStats?
 	local data = DataService.GetData(player)
 	if not data then
@@ -467,6 +705,7 @@ function SurvivalService.Init()
 	getOrCreateLootFolder()
 
 	Net.GetEvent(Net.Events.UseConsumable).OnServerEvent:Connect(onUseConsumable)
+	Net.GetEvent(Net.Events.SprintStateRequest).OnServerEvent:Connect(onSprintStateRequest)
 
 	Players.PlayerAdded:Connect(bindPlayer)
 	for _, player in Players:GetPlayers() do
@@ -478,6 +717,9 @@ function SurvivalService.Init()
 		activeBleeds[player] = nil
 		nextConsumeTime[player] = nil
 		pendingRespawnReset[player] = nil
+		staminaStates[player] = nil
+		lastDamageAt[player] = nil
+		hpRegenAccum[player] = nil
 
 		local charJanitor = characterJanitors[player]
 		if charJanitor then
@@ -493,6 +735,7 @@ function SurvivalService.Init()
 	end)
 
 	DataService.OnBeforeUnload(function(player: Player, data: PlayerData)
+		SurvivalService.ResetSprintState(player, false)
 		local character = player.Character
 		local humanoid = if character then character:FindFirstChildOfClass("Humanoid") else nil
 		if humanoid then
@@ -501,6 +744,8 @@ function SurvivalService.Init()
 	end)
 
 	DataService.OnDataLoaded(onPlayerDataLoaded)
+
+	RunService.Heartbeat:Connect(stepStamina)
 
 	task.spawn(function()
 		while true do

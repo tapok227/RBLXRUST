@@ -41,6 +41,9 @@ local RATE_LIMIT_RULES: { [string]: RateLimitRule } = table.freeze({
 	[Net.Events.HitNode] = table.freeze({ Capacity = 5, RefillPerSec = 4, Category = "Combat" }),
 	[Net.Events.PlaceExplosiveRequest] = table.freeze({ Capacity = 3, RefillPerSec = 1.5, Category = "Combat" }),
 
+	-- Movement
+	[Net.Events.SprintStateRequest] = table.freeze({ Capacity = 10, RefillPerSec = 8, Category = "Movement" }),
+
 	-- Inventory
 	[Net.Events.InventoryMove] = table.freeze({ Capacity = 12, RefillPerSec = 8, Category = "Inventory" }),
 	[Net.Events.HotbarSelect] = table.freeze({ Capacity = 15, RefillPerSec = 12, Category = "Inventory" }),
