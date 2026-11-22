@@ -231,7 +231,15 @@ local function tryAttack()
 
 	local selectedSlot = HotbarController.GetSelectedSlot()
 	local equippedItem = InventoryController.GetSlot(selectedSlot)
-	if equippedItem ~= nil and (Consumables[equippedItem.Id] ~= nil or Explosives[equippedItem.Id] ~= nil) then
+	if
+		equippedItem ~= nil
+		and (
+			Consumables[equippedItem.Id] ~= nil
+			or Explosives[equippedItem.Id] ~= nil
+			or equippedItem.Id == "building_plan"
+			or equippedItem.Id == "hammer"
+		)
+	then
 		return
 	end
 

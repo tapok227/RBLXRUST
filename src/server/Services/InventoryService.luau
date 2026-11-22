@@ -560,6 +560,8 @@ local function onPlayerDataLoaded(player: Player, data: Types.PlayerData)
 	if RunService:IsStudio() then
 		if isInventoryEmpty(data.Inventory) then
 			InventoryService.AddItems(player, {
+				{ Id = "building_plan", Count = 1 },
+				{ Id = "hammer", Count = 1 },
 				{ Id = "hatchet", Count = 1 },
 				{ Id = "pickaxe", Count = 1 },
 				{ Id = "hunting_bow", Count = 1 },
@@ -567,8 +569,11 @@ local function onPlayerDataLoaded(player: Player, data: Types.PlayerData)
 				{ Id = "satchel_charge", Count = 3 },
 				{ Id = "arrow", Count = 20 },
 				{ Id = "rocket", Count = 6 },
-				{ Id = "wood", Count = 250 },
-				{ Id = "stone", Count = 150 },
+				{ Id = "wood", Count = 500 },
+				{ Id = "stone", Count = 300 },
+				{ Id = "metal_ore", Count = 300 },
+				{ Id = "tech_parts", Count = 20 },
+				{ Id = "high_quality_metal", Count = 60 },
 				{ Id = "bandage", Count = 5 },
 				{ Id = "cooked_meat", Count = 3 },
 				{ Id = "water_bottle", Count = 3 },
@@ -577,6 +582,27 @@ local function onPlayerDataLoaded(player: Player, data: Types.PlayerData)
 			return
 		else
 			local topUp: { ItemBatchEntry } = {}
+			if InventoryService.GetItemCount(player, "building_plan") == 0 then
+				table.insert(topUp, { Id = "building_plan", Count = 1 })
+			end
+			if InventoryService.GetItemCount(player, "hammer") == 0 then
+				table.insert(topUp, { Id = "hammer", Count = 1 })
+			end
+			if InventoryService.GetItemCount(player, "wood") < 300 then
+				table.insert(topUp, { Id = "wood", Count = 500 })
+			end
+			if InventoryService.GetItemCount(player, "stone") < 200 then
+				table.insert(topUp, { Id = "stone", Count = 300 })
+			end
+			if InventoryService.GetItemCount(player, "tech_parts") < 10 then
+				table.insert(topUp, { Id = "tech_parts", Count = 20 })
+			end
+			if InventoryService.GetItemCount(player, "high_quality_metal") < 30 then
+				table.insert(topUp, { Id = "high_quality_metal", Count = 60 })
+			end
+			if InventoryService.GetItemCount(player, "metal_ore") < 200 then
+				table.insert(topUp, { Id = "metal_ore", Count = 300 })
+			end
 			if InventoryService.GetItemCount(player, "cloth") == 0 then
 				table.insert(topUp, { Id = "cloth", Count = 20 })
 			end

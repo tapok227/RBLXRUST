@@ -9,6 +9,7 @@ local Weapons = require(ReplicatedStorage.Shared.configs.Weapons)
 local Projectiles = require(ReplicatedStorage.Shared.configs.Projectiles)
 local Ballistics = require(ReplicatedStorage.Shared.Ballistics)
 local Net = require(ReplicatedStorage.Shared.Net)
+local BaseService = require(ServerScriptService.Server.Services.BaseService)
 local DataService = require(ServerScriptService.Server.Services.DataService)
 local InventoryService = require(ServerScriptService.Server.Services.InventoryService)
 local RaidService = require(ServerScriptService.Server.Services.RaidService)
@@ -52,6 +53,24 @@ local function findTargetCharacter(inst: Instance): (Model?, Humanoid?)
 		current = current.Parent
 	end
 	return nil, nil
+end
+
+local function findBuildPieceUid(inst: Instance): string?
+	local folder = Workspace:FindFirstChild("PlayerBaseStructures")
+	if folder == nil or not inst:IsDescendantOf(folder) then
+		return nil
+	end
+	local current: Instance? = inst
+	while current ~= nil and current.Parent ~= folder do
+		current = current.Parent
+	end
+	if current ~= nil and current:IsA("Model") then
+		local uid = current:GetAttribute("BuildUid")
+		if typeof(uid) == "string" and #uid > 0 then
+			return uid
+		end
+	end
+	return nil
 end
 
 local function performServerRaycast(
@@ -400,6 +419,15 @@ local function onAttackRequest(
 			local finalDamage = weapon.Damage * multiplier
 			targetModel:SetAttribute("LastAttackerUserId", player.UserId)
 			targetHumanoid:TakeDamage(finalDamage)
+		else
+			local buildUid = findBuildPieceUid(hitResult.Instance)
+			if buildUid ~= nil then
+				local damageKind: BaseService.DamageKind = if weapon.Category == "Melee" then "Tool" else "Bullet"
+				local hitPiece = BaseService.DamagePiece(buildUid, weapon.Damage, damageKind, player)
+				if hitPiece then
+					didHit = true
+				end
+			end
 		end
 	end
 

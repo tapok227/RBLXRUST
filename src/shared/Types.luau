@@ -35,20 +35,60 @@ export type LootContainerState = {
 	ExpiresAt: number,
 }
 
-export type BuildPieceType = "foundation" | "wall" | "doorway" | "roof" | "storage_box" | "workbench_1"
+export type BuildPieceType =
+	"foundation"
+	| "triangle_foundation"
+	| "wall"
+	| "doorway"
+	| "window_wall"
+	| "roof"
+	| "triangle_floor"
+	| "square_stairs"
+	| "triangle_stairs"
+	| "storage_box"
+	| "workbench_1"
+	| "TriangleFoundation"
+	| "WindowWall"
+	| "TriangleFloor"
+	| "SquareStairs"
+	| "TriangleStairs"
 
-export type BuildTier = "wood" | "stone" | "metal"
+export type BuildTier = "wood" | "stone" | "metal" | "armored"
+
+export type BuildPieceCategory = "Foundation" | "Floor" | "Wall" | "Stairs" | "Deployable"
+
+export type BuildPieceShape = "Square" | "Triangle" | "Edge" | "Deployable"
+
+export type BuildSocketKind = "Edge" | "Top" | "Center" | "WallTop"
+
+export type BuildSocketDef = {
+	Id: string,
+	Kind: BuildSocketKind,
+	LocalCFrame: CFrame,
+}
+
+export type BuildOverlapBox = {
+	CFrame: CFrame,
+	Size: Vector3,
+}
 
 export type SavedBuildPiece = {
 	Uid: string,
 	PieceType: BuildPieceType,
 	Tier: BuildTier,
-	GridX: number,
-	GridY: number,
-	GridZ: number,
+	PosX: number,
+	PosY: number,
+	PosZ: number,
 	RotY: number,
+	ParentUid: string?,
+	AnchorUid: string?,
+	SocketId: string?,
 	Hp: number,
+	LastDamagedAt: number?,
 	Storage: { [string]: Slot }?,
+	GridX: number?,
+	GridY: number?,
+	GridZ: number?,
 }
 
 export type BaseData = {
@@ -57,6 +97,8 @@ export type BaseData = {
 
 export type BuildPieceConfig = {
 	Name: string,
+	Category: BuildPieceCategory,
+	Shape: BuildPieceShape,
 	Cost: { [string]: number },
 	BaseHp: number,
 	Upgradeable: boolean,
@@ -64,8 +106,13 @@ export type BuildPieceConfig = {
 }
 
 export type BuildTierConfig = {
+	Rank: number,
 	Name: string,
 	HpMultiplier: number,
+	ExplosionResistance: number,
+	ToolDamageMultiplier: number,
+	Material: Enum.Material,
+	Color: Color3,
 	UpgradeCost: { [string]: number }?,
 }
 
@@ -82,7 +129,7 @@ export type ItemBatchEntry = {
 	Count: number,
 }
 
-export type ToolCategory = "Tree" | "Rock" | "Ore"
+export type ToolCategory = "Tree" | "Rock" | "Ore" | "Build"
 
 export type ToolConfig = {
 	Power: number,
@@ -241,9 +288,9 @@ local Types = {
 	MAX_ATTACK_ORIGIN_OFFSET = 8,
 	MAX_EXPLOSIVE_PLACE_DISTANCE = 14,
 	RAID_DURATION = 300,
-	CURRENT_DATA_VERSION = 1,
+	CURRENT_DATA_VERSION = 2,
 	PING_DISTANCE_TOLERANCE = 2,
-	MAX_BUILD_DISTANCE = 72,
+	MAX_BUILD_DISTANCE = 20,
 	MAX_RAID_TERMINAL_DISTANCE = 24,
 	MAX_PROJECTILE_LIFETIME = 10,
 	MAX_ACTIVE_PROJECTILES_PER_PLAYER = 3,

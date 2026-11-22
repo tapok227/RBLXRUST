@@ -172,6 +172,37 @@ local Recipes: { [string]: RecipeConfig } = {
 			{ Id = "cloth", Count = 5 },
 		},
 	},
+	craft_building_plan = {
+		Id = "craft_building_plan",
+		ResultId = "building_plan",
+		ResultCount = 1,
+		CraftTime = 2,
+		Station = nil,
+		Ingredients = {
+			{ Id = "wood", Count = 20 },
+		},
+	},
+	craft_hammer = {
+		Id = "craft_hammer",
+		ResultId = "hammer",
+		ResultCount = 1,
+		CraftTime = 3,
+		Station = nil,
+		Ingredients = {
+			{ Id = "wood", Count = 40 },
+		},
+	},
+	craft_high_quality_metal = {
+		Id = "craft_high_quality_metal",
+		ResultId = "high_quality_metal",
+		ResultCount = 5,
+		CraftTime = 6,
+		Station = "workbench_1",
+		Ingredients = {
+			{ Id = "metal_ore", Count = 20 },
+			{ Id = "scrap", Count = 10 },
+		},
+	},
 }
 
 return table.freeze(Recipes)

@@ -23,6 +23,18 @@ local Tools: { [string]: ToolConfig } = {
 		PreferredNodeType = "Tree",
 		BonusMultiplier = 2.0,
 	},
+	building_plan = {
+		Power = 5,
+		Cooldown = 0.25,
+		PreferredNodeType = "Build",
+		BonusMultiplier = 1.0,
+	},
+	hammer = {
+		Power = 5,
+		Cooldown = 0.25,
+		PreferredNodeType = "Build",
+		BonusMultiplier = 1.0,
+	},
 }
 
 return table.freeze(Tools)

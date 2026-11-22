@@ -206,6 +206,25 @@ function SecurityService.IsValidVector3(val: any, maxCoordAbs: number?): boolean
 		and math.abs(vec.Z) <= limit
 end
 
+function SecurityService.IsValidCFrame(val: any, maxCoordAbs: number?): boolean
+	if typeof(val) ~= "CFrame" then
+		return false
+	end
+	local cf = val :: CFrame
+	if not SecurityService.IsValidVector3(cf.Position, maxCoordAbs) then
+		return false
+	end
+	local r = cf.RightVector
+	local u = cf.UpVector
+	local l = cf.LookVector
+	return SecurityService.IsValidVector3(r, 2)
+		and SecurityService.IsValidVector3(u, 2)
+		and SecurityService.IsValidVector3(l, 2)
+		and r.Magnitude > 0.5
+		and u.Magnitude > 0.5
+		and l.Magnitude > 0.5
+end
+
 function SecurityService.GetAliveCharacterRoot(player: Player): (Model?, BasePart?, Humanoid?)
 	if player.Parent ~= Players then
 		return nil, nil, nil

@@ -8,6 +8,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local Types = require(ReplicatedStorage.Shared.Types)
 local Signal = require(ReplicatedStorage.Shared.Signal)
 local BuildingConfig = require(ReplicatedStorage.Shared.configs.BuildingConfig)
+local BuildingGeometry = require(ReplicatedStorage.Shared.BuildingGeometry)
 local ProfileStore = require(ServerScriptService.Server.Vendor.ProfileStore)
 local SecurityService = require(ServerScriptService.Server.Services.SecurityService)
 
@@ -222,15 +223,16 @@ local function deserializeBase(rawBase: any): BaseData
 		end
 
 		local uid = rawPiece.Uid
-		local pieceType = rawPiece.PieceType
+		local rawPieceType = rawPiece.PieceType
 		if type(uid) ~= "string" or #uid == 0 or #uid > 64 or seenUids[uid] then
 			continue
 		end
-		if type(pieceType) ~= "string" then
+		if type(rawPieceType) ~= "string" then
 			continue
 		end
 
-		local pieceConfig = BuildingConfig.Pieces[pieceType :: BuildPieceType]
+		local pieceType = BuildingGeometry.CanonicalPieceType(rawPieceType)
+		local pieceConfig = BuildingConfig.Pieces[pieceType]
 		if pieceConfig == nil then
 			continue
 		end
@@ -245,25 +247,71 @@ local function deserializeBase(rawBase: any): BaseData
 		end
 
 		local tierConfig = BuildingConfig.Tiers[tier]
-		local gridX = rawPiece.GridX
-		local gridY = rawPiece.GridY
-		local gridZ = rawPiece.GridZ
-		local rotY = rawPiece.RotY
+		local posX: number
+		local posY: number
+		local posZ: number
+		local rotY: number
+
 		if
-			not isValidFiniteInteger(gridX)
-			or gridX < BuildingConfig.GridMinXZ
-			or gridX > BuildingConfig.GridMaxXZ
-			or not isValidFiniteInteger(gridY)
-			or gridY < BuildingConfig.GridMinY
-			or gridY > BuildingConfig.GridMaxY
-			or not isValidFiniteInteger(gridZ)
-			or gridZ < BuildingConfig.GridMinXZ
-			or gridZ > BuildingConfig.GridMaxXZ
-			or not isValidFiniteInteger(rotY)
-			or BuildingConfig.ValidRotations[rotY] ~= true
+			SecurityService.IsFiniteNumber(rawPiece.PosX)
+			and SecurityService.IsFiniteNumber(rawPiece.PosY)
+			and SecurityService.IsFiniteNumber(rawPiece.PosZ)
+			and SecurityService.IsFiniteNumber(rawPiece.RotY)
 		then
-			continue
+			local rx = rawPiece.PosX :: number
+			local ry = rawPiece.PosY :: number
+			local rz = rawPiece.PosZ :: number
+			if math.abs(rx) > 2000 or math.abs(rz) > 2000 or ry < -50 or ry > 500 then
+				continue
+			end
+			posX = rx
+			posY = ry
+			posZ = rz
+			rotY = BuildingGeometry.QuantizeYaw30(rawPiece.RotY :: number)
+		else
+			local gridX = rawPiece.GridX
+			local gridY = rawPiece.GridY
+			local gridZ = rawPiece.GridZ
+			local legacyRotY = rawPiece.RotY
+			if
+				not isValidFiniteInteger(gridX)
+				or gridX < BuildingConfig.GridMinXZ
+				or gridX > BuildingConfig.GridMaxXZ
+				or not isValidFiniteInteger(gridY)
+				or gridY < BuildingConfig.GridMinY
+				or gridY > BuildingConfig.GridMaxY
+				or not isValidFiniteInteger(gridZ)
+				or gridZ < BuildingConfig.GridMinXZ
+				or gridZ > BuildingConfig.GridMaxXZ
+				or not isValidFiniteInteger(legacyRotY)
+				or BuildingConfig.ValidRotations[legacyRotY] ~= true
+			then
+				continue
+			end
+			local legacyCF = BuildingGeometry.ConvertLegacyGridPiece(
+				pieceType,
+				gridX :: number,
+				gridY :: number,
+				gridZ :: number,
+				legacyRotY :: number
+			)
+			posX = legacyCF.Position.X
+			posY = legacyCF.Position.Y
+			posZ = legacyCF.Position.Z
+			rotY = BuildingGeometry.QuantizeYaw30(BuildingGeometry.ExtractYawDegrees(legacyCF))
 		end
+
+		local rawParent = if SecurityService.IsValidString(rawPiece.ParentUid, 1, 64)
+			then rawPiece.ParentUid :: string
+			elseif SecurityService.IsValidString(rawPiece.AnchorUid, 1, 64) then rawPiece.AnchorUid :: string
+			else nil
+		local socketId: string? = if SecurityService.IsValidString(rawPiece.SocketId, 1, 32)
+			then rawPiece.SocketId :: string
+			else nil
+		local lastDamagedAt: number? = if SecurityService.IsFiniteNumber(rawPiece.LastDamagedAt)
+				and (rawPiece.LastDamagedAt :: number) >= 0
+			then rawPiece.LastDamagedAt :: number
+			else nil
 
 		local maxHp = math.floor(pieceConfig.BaseHp * tierConfig.HpMultiplier + 0.5)
 		local rawHp = rawPiece.Hp
@@ -281,13 +329,17 @@ local function deserializeBase(rawBase: any): BaseData
 		seenUids[uid] = true
 		table.insert(pieces, {
 			Uid = uid,
-			PieceType = pieceType :: BuildPieceType,
+			PieceType = pieceType,
 			Tier = tier,
-			GridX = gridX,
-			GridY = gridY,
-			GridZ = gridZ,
+			PosX = posX,
+			PosY = posY,
+			PosZ = posZ,
 			RotY = rotY,
+			ParentUid = rawParent,
+			AnchorUid = rawParent,
+			SocketId = socketId,
 			Hp = hp,
+			LastDamagedAt = lastDamagedAt,
 			Storage = storage,
 		})
 	end
@@ -304,20 +356,26 @@ local function serializeBase(baseData: BaseData): BaseData
 	end
 
 	for _, piece in baseData.Pieces do
-		local pieceConfig = BuildingConfig.Pieces[piece.PieceType]
+		local canonicalType = BuildingGeometry.CanonicalPieceType(piece.PieceType)
+		local pieceConfig = BuildingConfig.Pieces[canonicalType]
 		if pieceConfig == nil then
 			continue
 		end
 
+		local parentUid = piece.ParentUid or piece.AnchorUid
 		local serializedPiece: SavedBuildPiece = {
 			Uid = piece.Uid,
-			PieceType = piece.PieceType,
+			PieceType = canonicalType,
 			Tier = piece.Tier,
-			GridX = piece.GridX,
-			GridY = piece.GridY,
-			GridZ = piece.GridZ,
-			RotY = piece.RotY,
+			PosX = piece.PosX,
+			PosY = piece.PosY,
+			PosZ = piece.PosZ,
+			RotY = BuildingGeometry.QuantizeYaw30(piece.RotY),
+			ParentUid = parentUid,
+			AnchorUid = parentUid,
+			SocketId = piece.SocketId,
 			Hp = piece.Hp,
+			LastDamagedAt = piece.LastDamagedAt,
 			Storage = if pieceConfig.StorageSlots ~= nil
 				then serializeStorage(piece.Storage, pieceConfig.StorageSlots)
 				else nil,
@@ -386,8 +444,48 @@ function DataService.MigrateProfileData(rawData: { [string]: any }): { [string]:
 		data.DataVersion = 1
 	end
 
-	-- Step 2: scaffold for future schema updates (v1 -> v2)
+	-- Step 2: migrate GridX/GridY/GridZ -> PosX/PosY/PosZ, RotY 30-deg step, ParentUid, canonical piece types (v1 -> v2)
 	if Types.CURRENT_DATA_VERSION >= 2 and data.DataVersion < 2 then
+		if type(data.Base) == "table" and type(data.Base.Pieces) == "table" then
+			for _, rawPiece in data.Base.Pieces do
+				if type(rawPiece) == "table" and type(rawPiece.PieceType) == "string" then
+					local canonicalType = BuildingGeometry.CanonicalPieceType(rawPiece.PieceType)
+					rawPiece.PieceType = canonicalType
+
+					local hasPos = SecurityService.IsFiniteNumber(rawPiece.PosX)
+						and SecurityService.IsFiniteNumber(rawPiece.PosY)
+						and SecurityService.IsFiniteNumber(rawPiece.PosZ)
+					if not hasPos then
+						local gx = if isValidFiniteInteger(rawPiece.GridX) then rawPiece.GridX :: number else 0
+						local gy = if isValidFiniteInteger(rawPiece.GridY) then rawPiece.GridY :: number else 0
+						local gz = if isValidFiniteInteger(rawPiece.GridZ) then rawPiece.GridZ :: number else 0
+						local legacyRot = if SecurityService.IsFiniteNumber(rawPiece.RotY)
+							then rawPiece.RotY :: number
+							else 0
+						local legacyCF = BuildingGeometry.ConvertLegacyGridPiece(canonicalType, gx, gy, gz, legacyRot)
+						rawPiece.PosX = legacyCF.Position.X
+						rawPiece.PosY = legacyCF.Position.Y
+						rawPiece.PosZ = legacyCF.Position.Z
+						rawPiece.RotY = BuildingGeometry.QuantizeYaw30(BuildingGeometry.ExtractYawDegrees(legacyCF))
+					else
+						local curRot = if SecurityService.IsFiniteNumber(rawPiece.RotY)
+							then rawPiece.RotY :: number
+							else 0
+						rawPiece.RotY = BuildingGeometry.QuantizeYaw30(curRot)
+					end
+
+					rawPiece.GridX = nil
+					rawPiece.GridY = nil
+					rawPiece.GridZ = nil
+
+					if rawPiece.ParentUid == nil and type(rawPiece.AnchorUid) == "string" then
+						rawPiece.ParentUid = rawPiece.AnchorUid
+					elseif rawPiece.AnchorUid == nil and type(rawPiece.ParentUid) == "string" then
+						rawPiece.AnchorUid = rawPiece.ParentUid
+					end
+				end
+			end
+		end
 		data.DataVersion = 2
 	end
 

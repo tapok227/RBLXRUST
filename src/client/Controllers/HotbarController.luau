@@ -6,6 +6,7 @@ local UserInputService = game:GetService("UserInputService")
 local Types = require(ReplicatedStorage.Shared.Types)
 local Items = require(ReplicatedStorage.Shared.configs.Items)
 local Net = require(ReplicatedStorage.Shared.Net)
+local Signal = require(ReplicatedStorage.Shared.Signal)
 local InventoryController = require(script.Parent.InventoryController)
 
 type Inventory = Types.Inventory
@@ -36,7 +37,9 @@ local selectedSlot: number = 1
 local slotUIs: { [number]: SlotUI } = {}
 local isInitialized = false
 
-local HotbarController = {}
+local HotbarController = {
+	SelectionChanged = Signal.new() :: Signal.Signal<number>,
+}
 
 local function updateSelectionVisuals()
 	for i = 1, Types.HOTBAR_SIZE do
@@ -191,6 +194,7 @@ function HotbarController.SelectSlot(slotIndex: number)
 	selectedSlot = slotIndex
 	updateSelectionVisuals()
 	Net.GetEvent(Net.Events.HotbarSelect):FireServer(slotIndex)
+	HotbarController.SelectionChanged:Fire(slotIndex)
 end
 
 function HotbarController.GetSelectedSlot(): number
@@ -206,6 +210,7 @@ function HotbarController.Init()
 	createHotbarGui()
 	updateSelectionVisuals()
 	Net.GetEvent(Net.Events.HotbarSelect):FireServer(selectedSlot)
+	HotbarController.SelectionChanged:Fire(selectedSlot)
 
 	InventoryController.OnChanged(function(inv: Inventory)
 		updateSlotsContent(inv)

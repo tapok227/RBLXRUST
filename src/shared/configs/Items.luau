@@ -120,6 +120,21 @@ local Items: { [string]: ItemConfig } = {
 		Type = "Resource",
 		MaxStack = 10,
 	},
+	building_plan = {
+		Name = "Building Plan",
+		Type = "Tool",
+		MaxStack = 1,
+	},
+	hammer = {
+		Name = "Hammer",
+		Type = "Tool",
+		MaxStack = 1,
+	},
+	high_quality_metal = {
+		Name = "High Quality Metal",
+		Type = "Resource",
+		MaxStack = 100,
+	},
 }
 
 return table.freeze(Items)

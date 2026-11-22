@@ -10,7 +10,9 @@ local Workspace = game:GetService("Workspace")
 local Config = require(ReplicatedStorage.Shared.Config)
 local Types = require(ReplicatedStorage.Shared.Types)
 local BuildingConfig = require(ReplicatedStorage.Shared.configs.BuildingConfig)
+local BuildingGeometry = require(ReplicatedStorage.Shared.BuildingGeometry)
 local Net = require(ReplicatedStorage.Shared.Net)
+local BuildingValidator = require(ServerScriptService.Server.Services.BuildingValidator)
 local DataService = require(ServerScriptService.Server.Services.DataService)
 local InventoryService = require(ServerScriptService.Server.Services.InventoryService)
 local LootService = require(ServerScriptService.Server.Services.LootService)
@@ -24,46 +26,31 @@ type BuildPieceType = Types.BuildPieceType
 type BuildTier = Types.BuildTier
 type SavedBuildPiece = Types.SavedBuildPiece
 
-type SpawnedPieceRecord = {
+export type LivePieceRecord = {
+	Owner: Player,
 	Piece: SavedBuildPiece,
 	Model: Model,
+	CFrame: CFrame,
 	ContainerId: string?,
+	LastDamagedAt: number,
 }
+
+export type DamageKind = "Explosion" | "Tool" | "Bullet"
 
 local STRUCTURES_FOLDER_NAME = "PlayerBaseStructures"
 local STUDIO_SIM_BANNER_DURATION = 4
 local BUILD_ACTION_COOLDOWN = 0.15
 
-local TIER_VISUALS: { [BuildTier]: { Material: Enum.Material, Color: Color3 } } = {
-	wood = {
-		Material = Enum.Material.WoodPlanks,
-		Color = Color3.fromRGB(165, 118, 72),
-	},
-	stone = {
-		Material = Enum.Material.Cobblestone,
-		Color = Color3.fromRGB(140, 140, 145),
-	},
-	metal = {
-		Material = Enum.Material.DiamondPlate,
-		Color = Color3.fromRGB(95, 108, 122),
-	},
-}
-
-local spawnedByPlayer: { [Player]: { [string]: SpawnedPieceRecord } } = {}
+local spawnedByPlayer: { [Player]: { [string]: LivePieceRecord } } = {}
+local recordsByUid: { [string]: LivePieceRecord } = {}
+local occupiedSockets: { [string]: { [string]: string } } = {}
+local occupiedWorldKeys: { [string]: string } = {}
 local lastBuildActionTime: { [Player]: number } = {}
 local teleportInProgress: { [Player]: boolean } = {}
 local pendingTeleports: { [Player]: boolean } = {}
 local isInitialized = false
 
 local BaseService = {}
-
-local function getPieceWorldPosition(gridX: number, gridY: number, gridZ: number): Vector3
-	return Vector3.new(
-		gridX * BuildingConfig.GridSize,
-		gridY * BuildingConfig.WallHeight,
-		gridZ * BuildingConfig.GridSize
-	)
-end
 
 local function getOrCreateStructuresFolder(): Folder
 	local existing = Workspace:FindFirstChild(STRUCTURES_FOLDER_NAME)
@@ -76,138 +63,26 @@ local function getOrCreateStructuresFolder(): Folder
 	return folder
 end
 
-local function createPiecePart(parent: Instance, name: string, size: Vector3, cframe: CFrame): Part
-	local part = Instance.new("Part")
-	part.Name = name
-	part.Size = size
-	part.CFrame = cframe
-	part.Anchored = true
-	part.CanCollide = true
-	part.TopSurface = Enum.SurfaceType.Smooth
-	part.BottomSurface = Enum.SurfaceType.Smooth
-	part.Parent = parent
-	return part
-end
-
-local function applyTierVisuals(model: Model, pieceType: BuildPieceType, tier: BuildTier)
-	if pieceType == "storage_box" then
-		for _, child in model:GetDescendants() do
-			if child:IsA("BasePart") then
-				child.Material = Enum.Material.Wood
-				if child.Name == "ChestLid" then
-					child.Color = Color3.fromRGB(95, 62, 32)
-				else
-					child.Color = Color3.fromRGB(130, 88, 48)
-				end
-			end
-		end
-		return
-	end
-
-	if pieceType == "workbench_1" then
-		for _, child in model:GetDescendants() do
-			if child:IsA("BasePart") then
-				if child.Name == "TableTop" then
-					child.Material = Enum.Material.WoodPlanks
-					child.Color = Color3.fromRGB(150, 105, 65)
-				else
-					child.Material = Enum.Material.Metal
-					child.Color = Color3.fromRGB(70, 74, 80)
-				end
-			end
-		end
-		return
-	end
-
-	local visual = TIER_VISUALS[tier] or TIER_VISUALS.wood
-	for _, child in model:GetDescendants() do
-		if child:IsA("BasePart") then
-			child.Material = visual.Material
-			child.Color = visual.Color
-		end
-	end
-end
-
-local function createPieceModel(owner: Player, piece: SavedBuildPiece): Model
-	local model = Instance.new("Model")
-	model.Name = string.format("%s_%s", piece.PieceType, string.sub(piece.Uid, 1, 8))
-
-	local gridSize = BuildingConfig.GridSize
-	local wallHeight = BuildingConfig.WallHeight
-	local baseCF = CFrame.new(piece.GridX * gridSize, piece.GridY * wallHeight, piece.GridZ * gridSize)
-		* CFrame.Angles(0, math.rad(piece.RotY), 0)
-
-	if piece.PieceType == "foundation" then
-		local basePart = createPiecePart(model, "Base", Vector3.new(12, 1, 12), baseCF * CFrame.new(0, 0.5, 0))
-		model.PrimaryPart = basePart
-	elseif piece.PieceType == "wall" then
-		local wallPart = createPiecePart(model, "Wall", Vector3.new(12, 10, 1), baseCF * CFrame.new(0, 5, -5.5))
-		model.PrimaryPart = wallPart
-	elseif piece.PieceType == "doorway" then
-		createPiecePart(model, "LeftPillar", Vector3.new(4, 10, 1), baseCF * CFrame.new(-4, 5, -5.5))
-		createPiecePart(model, "RightPillar", Vector3.new(4, 10, 1), baseCF * CFrame.new(4, 5, -5.5))
-		local lintel = createPiecePart(model, "TopLintel", Vector3.new(4, 2.5, 1), baseCF * CFrame.new(0, 8.75, -5.5))
-		model.PrimaryPart = lintel
-	elseif piece.PieceType == "roof" then
-		local roofPart = createPiecePart(model, "Roof", Vector3.new(12, 0.8, 12), baseCF * CFrame.new(0, 10.4, 0))
-		model.PrimaryPart = roofPart
-	elseif piece.PieceType == "storage_box" then
-		local body = createPiecePart(model, "ChestBody", Vector3.new(4, 2.4, 2.5), baseCF * CFrame.new(0, 2.2, 0))
-		createPiecePart(model, "ChestLid", Vector3.new(4.2, 0.4, 2.7), baseCF * CFrame.new(0, 3.6, 0))
-		model.PrimaryPart = body
-	elseif piece.PieceType == "workbench_1" then
-		local top = createPiecePart(model, "TableTop", Vector3.new(5, 0.6, 3), baseCF * CFrame.new(0, 3.3, 0))
-		createPiecePart(model, "LeftLeg", Vector3.new(0.6, 2.0, 2.6), baseCF * CFrame.new(-2.0, 2.0, 0))
-		createPiecePart(model, "RightLeg", Vector3.new(0.6, 2.0, 2.6), baseCF * CFrame.new(2.0, 2.0, 0))
-		model.PrimaryPart = top
-		model:SetAttribute("StationType", "workbench_1")
-	end
-
-	applyTierVisuals(model, piece.PieceType, piece.Tier)
-
-	local pieceConfig = BuildingConfig.Pieces[piece.PieceType]
-	local tierConfig = BuildingConfig.Tiers[piece.Tier]
-	local maxHp = math.floor(pieceConfig.BaseHp * tierConfig.HpMultiplier + 0.5)
-
-	model:SetAttribute("BuildUid", piece.Uid)
-	model:SetAttribute("PieceType", piece.PieceType)
-	model:SetAttribute("Tier", piece.Tier)
-	model:SetAttribute("OwnerUserId", owner.UserId)
-	model:SetAttribute("GridX", piece.GridX)
-	model:SetAttribute("GridY", piece.GridY)
-	model:SetAttribute("GridZ", piece.GridZ)
-	model:SetAttribute("RotY", piece.RotY)
-	model:SetAttribute("Hp", piece.Hp)
-	model:SetAttribute("MaxHp", maxHp)
-
-	return model
-end
-
 local function storageMapToInventory(storage: { [string]: Slot }?, maxSlots: number): Inventory
 	local inv: Inventory = {}
 	if type(storage) ~= "table" then
 		return inv
 	end
-
 	for k, v in storage do
-		local slotIndex = tonumber(k)
+		local idx = tonumber(k)
 		if
-			slotIndex ~= nil
-			and slotIndex >= 1
-			and slotIndex <= maxSlots
-			and slotIndex % 1 == 0
+			idx
+			and idx >= 1
+			and idx <= maxSlots
+			and idx % 1 == 0
 			and type(v) == "table"
 			and type(v.Id) == "string"
 			and type(v.Count) == "number"
 			and v.Count > 0
 		then
-			inv[slotIndex] = {
-				Id = v.Id,
-				Count = math.floor(v.Count),
-			}
+			inv[idx] = { Id = v.Id, Count = math.floor(v.Count) }
 		end
 	end
-
 	return inv
 end
 
@@ -216,25 +91,50 @@ local function inventoryToStorageMap(slots: Inventory, maxSlots: number): { [str
 	for i = 1, maxSlots do
 		local slot = slots[i]
 		if slot ~= nil and slot.Count > 0 then
-			map[tostring(i)] = {
-				Id = slot.Id,
-				Count = slot.Count,
-			}
+			map[tostring(i)] = { Id = slot.Id, Count = slot.Count }
 		end
 	end
 	return map
 end
 
-local function cleanupPieceRuntime(record: SpawnedPieceRecord)
+local function cleanupPieceRuntime(record: LivePieceRecord)
+	recordsByUid[record.Piece.Uid] = nil
+	BuildingValidator.UnregisterSocketsForPiece(record.Piece.Uid, occupiedSockets, occupiedWorldKeys)
 	if record.ContainerId ~= nil then
 		LootService.UnregisterContainer(record.ContainerId)
 	end
-	if record.Piece.PieceType == "workbench_1" then
+	if BuildingGeometry.CanonicalPieceType(record.Piece.PieceType) == "workbench_1" then
 		CraftingService.UnregisterStation(record.Piece.Uid)
 	end
 	if record.Model.Parent then
 		record.Model:Destroy()
 	end
+end
+
+local function createPieceModel(owner: Player, piece: SavedBuildPiece): (Model, CFrame)
+	local canonicalType = BuildingGeometry.CanonicalPieceType(piece.PieceType)
+	piece.PieceType = canonicalType
+	local worldCF = BuildingGeometry.GetPieceWorldCFrame(piece)
+	local modelName = string.format("%s_%s", canonicalType, string.sub(piece.Uid, 1, 8))
+	local model = BuildingGeometry.CreateModel(canonicalType, worldCF, false, modelName)
+	BuildingGeometry.ApplyTierVisuals(model, canonicalType, piece.Tier)
+
+	local maxHp = BuildingGeometry.ComputeMaxHp(canonicalType, piece.Tier)
+	model:SetAttribute("BuildUid", piece.Uid)
+	model:SetAttribute("PieceType", canonicalType)
+	model:SetAttribute("Tier", piece.Tier)
+	model:SetAttribute("OwnerUserId", owner.UserId)
+	model:SetAttribute("PosX", piece.PosX)
+	model:SetAttribute("PosY", piece.PosY)
+	model:SetAttribute("PosZ", piece.PosZ)
+	model:SetAttribute("RotY", piece.RotY)
+	model:SetAttribute("Health", piece.Hp)
+	model:SetAttribute("Hp", piece.Hp)
+	model:SetAttribute("MaxHealth", maxHp)
+	model:SetAttribute("MaxHp", maxHp)
+	model:SetAttribute("LastDamagedAt", piece.LastDamagedAt or 0)
+	model:SetAttribute("LastDamagedServerTime", 0)
+	return model, worldCF
 end
 
 local function spawnPieceForPlayer(player: Player, piece: SavedBuildPiece)
@@ -243,31 +143,26 @@ local function spawnPieceForPlayer(player: Player, piece: SavedBuildPiece)
 		playerRecords = {}
 		spawnedByPlayer[player] = playerRecords
 	end
-
-	local existing = playerRecords[piece.Uid]
-	if existing ~= nil then
-		cleanupPieceRuntime(existing)
+	if playerRecords[piece.Uid] ~= nil then
+		cleanupPieceRuntime(playerRecords[piece.Uid])
 		playerRecords[piece.Uid] = nil
 	end
 
-	local folder = getOrCreateStructuresFolder()
-	local model = createPieceModel(player, piece)
-	model.Parent = folder
+	local model, worldCF = createPieceModel(player, piece)
+	model.Parent = getOrCreateStructuresFolder()
 
 	local containerId: string? = nil
-	local pieceConfig = BuildingConfig.Pieces[piece.PieceType]
-	if piece.PieceType == "storage_box" then
+	local canonicalType = BuildingGeometry.CanonicalPieceType(piece.PieceType)
+	local pieceConfig = BuildingConfig.Pieces[canonicalType]
+	if canonicalType == "storage_box" then
 		local storageSlots = (if pieceConfig then pieceConfig.StorageSlots else nil) or 18
-		if piece.Storage == nil then
-			piece.Storage = {}
-		end
-		local initialSlots = storageMapToInventory(piece.Storage, storageSlots)
+		piece.Storage = piece.Storage or {}
 		local registeredId = LootService.RegisterStorageContainer(
 			model,
 			"Storage Box",
 			player.UserId,
 			storageSlots,
-			initialSlots,
+			storageMapToInventory(piece.Storage, storageSlots),
 			function(updatedSlots: Inventory)
 				piece.Storage = inventoryToStorageMap(updatedSlots, storageSlots)
 			end
@@ -275,15 +170,26 @@ local function spawnPieceForPlayer(player: Player, piece: SavedBuildPiece)
 		if #registeredId > 0 then
 			containerId = registeredId
 		end
-	elseif piece.PieceType == "workbench_1" and model.PrimaryPart then
+	elseif canonicalType == "workbench_1" and model.PrimaryPart then
 		CraftingService.RegisterStation(piece.Uid, "workbench_1", model.PrimaryPart.Position)
 	end
 
-	playerRecords[piece.Uid] = {
+	local record: LivePieceRecord = {
+		Owner = player,
 		Piece = piece,
 		Model = model,
+		CFrame = worldCF,
 		ContainerId = containerId,
+		LastDamagedAt = piece.LastDamagedAt or 0,
 	}
+	playerRecords[piece.Uid] = record
+	recordsByUid[piece.Uid] = record
+	BuildingValidator.RegisterOccupationsForRecord(
+		(record :: any) :: BuildingValidator.LivePieceEntry,
+		(playerRecords :: any) :: { [string]: BuildingValidator.LivePieceEntry },
+		occupiedSockets,
+		occupiedWorldKeys
+	)
 end
 
 local function despawnBaseForPlayer(player: Player)
@@ -292,7 +198,6 @@ local function despawnBaseForPlayer(player: Player)
 		return
 	end
 	spawnedByPlayer[player] = nil
-
 	for _, record in playerRecords do
 		cleanupPieceRuntime(record)
 	end
@@ -303,10 +208,9 @@ local function syncBaseState(player: Player)
 		return
 	end
 	local data = DataService.GetData(player)
-	if data == nil then
-		return
+	if data ~= nil then
+		Net.GetEvent(Net.Events.BaseStateSync):FireClient(player, data.Base.Pieces)
 	end
-	Net.GetEvent(Net.Events.BaseStateSync):FireClient(player, data.Base.Pieces)
 end
 
 local function spawnBaseForPlayer(player: Player, data: Types.PlayerData)
@@ -321,86 +225,59 @@ local function costMapToBatch(costMap: { [string]: number }): { ItemBatchEntry }
 	local entries: { ItemBatchEntry } = {}
 	for itemId, count in costMap do
 		if count > 0 then
-			table.insert(entries, {
-				Id = itemId,
-				Count = count,
-			})
+			table.insert(entries, { Id = itemId, Count = count })
 		end
 	end
 	return entries
 end
 
-local function hasPlacementCollision(
-	pieces: { SavedBuildPiece },
-	pieceType: BuildPieceType,
-	gridX: number,
-	gridY: number,
-	gridZ: number,
-	rotY: number
-): boolean
-	for _, existing in pieces do
-		if existing.GridX == gridX and existing.GridY == gridY and existing.GridZ == gridZ then
-			if existing.PieceType == pieceType then
-				return true
-			end
-			if (pieceType == "wall" or pieceType == "doorway") and existing.RotY == rotY then
-				if existing.PieceType == "wall" or existing.PieceType == "doorway" then
-					return true
-				end
-			end
-			if pieceType == "storage_box" or pieceType == "workbench_1" then
-				if existing.PieceType == "storage_box" or existing.PieceType == "workbench_1" then
-					return true
-				end
-			end
-		end
-	end
-	return false
-end
-
 local function onBuildPlaceRequest(
 	player: Player,
 	pieceTypeAny: any,
-	gridXAny: any,
-	gridYAny: any,
-	gridZAny: any,
-	rotYAny: any
+	targetCFrameAny: any,
+	parentUidAny: any,
+	socketIdAny: any,
+	rotStepAny: any
 )
 	if not SecurityService.CheckRateLimit(player, Net.Events.BuildPlaceRequest) then
 		return
 	end
-	if not BaseService.IsBaseMode() then
-		return
-	end
-	if DataService.IsTeleporting(player) or SecurityService.IsTransactionLocked(player) then
-		return
-	end
-
-	if not SecurityService.IsValidString(pieceTypeAny, 1, 32) then
-		return
-	end
-	local pieceConfig = BuildingConfig.Pieces[pieceTypeAny :: BuildPieceType]
-	if pieceConfig == nil then
-		return
-	end
-	local pieceType = pieceTypeAny :: BuildPieceType
-
 	if
-		not SecurityService.IsValidInteger(gridXAny, BuildingConfig.GridMinXZ, BuildingConfig.GridMaxXZ)
-		or not SecurityService.IsValidInteger(gridYAny, BuildingConfig.GridMinY, BuildingConfig.GridMaxY)
-		or not SecurityService.IsValidInteger(gridZAny, BuildingConfig.GridMinXZ, BuildingConfig.GridMaxXZ)
-		or not SecurityService.IsValidInteger(rotYAny)
+		not BaseService.CanBuild(player)
+		or DataService.IsTeleporting(player)
+		or SecurityService.IsTransactionLocked(player)
 	then
 		return
 	end
-
-	local gridX = gridXAny :: number
-	local gridY = gridYAny :: number
-	local gridZ = gridZAny :: number
-	local rotY = rotYAny :: number
-
-	if BuildingConfig.ValidRotations[rotY] ~= true then
+	if not SecurityService.IsValidString(pieceTypeAny, 1, 32) then
 		return
+	end
+	local pieceType = BuildingGeometry.CanonicalPieceType(pieceTypeAny :: string)
+	local pieceConfig = BuildingConfig.Pieces[pieceType]
+	if pieceConfig == nil or not SecurityService.IsValidCFrame(targetCFrameAny, 2000) then
+		return
+	end
+	local requestedCF = targetCFrameAny :: CFrame
+
+	local parentUid: string? = nil
+	local socketId: string? = nil
+	if parentUidAny ~= nil or socketIdAny ~= nil then
+		if
+			not SecurityService.IsValidString(parentUidAny, 1, 64)
+			or not SecurityService.IsValidString(socketIdAny, 1, 32)
+		then
+			return
+		end
+		parentUid = parentUidAny :: string
+		socketId = socketIdAny :: string
+	end
+
+	local explicitRotStep: number? = nil
+	if rotStepAny ~= nil then
+		if not SecurityService.IsValidInteger(rotStepAny, 0, 32) then
+			return
+		end
+		explicitRotStep = rotStepAny :: number
 	end
 
 	local _, hrp = SecurityService.GetAliveCharacterRoot(player)
@@ -408,17 +285,12 @@ local function onBuildPlaceRequest(
 		return
 	end
 
-	local targetPos = getPieceWorldPosition(gridX, gridY, gridZ)
-	if (hrp.Position - targetPos).Magnitude > Types.MAX_BUILD_DISTANCE + Types.PING_DISTANCE_TOLERANCE then
-		return
-	end
-
 	SecurityService.RunLocked(player, "BuildPlace", function()
-		local _, innerHrp = SecurityService.GetAliveCharacterRoot(player)
-		if
-			not innerHrp
-			or (innerHrp.Position - targetPos).Magnitude > Types.MAX_BUILD_DISTANCE + Types.PING_DISTANCE_TOLERANCE
-		then
+		if not BaseService.CanBuild(player) then
+			return
+		end
+		local character, innerHrp = SecurityService.GetAliveCharacterRoot(player)
+		if not innerHrp then
 			return
 		end
 
@@ -429,34 +301,58 @@ local function onBuildPlaceRequest(
 		end
 
 		local data = DataService.GetData(player)
-		if data == nil then
+		if data == nil or #data.Base.Pieces >= BuildingConfig.MaxPiecesPerBase then
 			return
 		end
 
-		if #data.Base.Pieces >= BuildingConfig.MaxPiecesPerBase then
+		local playerRecords = spawnedByPlayer[player]
+		if playerRecords == nil then
+			playerRecords = {}
+			spawnedByPlayer[player] = playerRecords
+		end
+
+		local validation = BuildingValidator.ValidatePlacement({
+			Player = player,
+			Character = character,
+			HrpPosition = innerHrp.Position,
+			PieceType = pieceType,
+			RequestedCFrame = requestedCF,
+			ParentUid = parentUid,
+			SocketId = socketId,
+			ExplicitRotStep = explicitRotStep,
+			PlayerRecords = (playerRecords :: any) :: { [string]: BuildingValidator.LivePieceEntry },
+			AllRecordsByUid = (recordsByUid :: any) :: { [string]: BuildingValidator.LivePieceEntry },
+			OccupiedSockets = occupiedSockets,
+			OccupiedWorldKeys = occupiedWorldKeys,
+			BasePieces = data.Base.Pieces,
+		})
+
+		if not validation.Allowed or validation.AuthoritativeCFrame == nil then
 			return
 		end
 
-		if hasPlacementCollision(data.Base.Pieces, pieceType, gridX, gridY, gridZ, rotY) then
-			return
-		end
-
-		local costBatch = costMapToBatch(pieceConfig.Cost)
-		if not InventoryService.RemoveItems(player, costBatch) then
+		if not InventoryService.RemoveItems(player, costMapToBatch(pieceConfig.Cost)) then
 			return
 		end
 
 		lastBuildActionTime[player] = now
+		local pos = validation.AuthoritativeCFrame.Position
+		local rotY = validation.RotY
+			or BuildingGeometry.QuantizeYaw30(BuildingGeometry.ExtractYawDegrees(validation.AuthoritativeCFrame))
 
 		local newPiece: SavedBuildPiece = {
 			Uid = HttpService:GenerateGUID(false),
 			PieceType = pieceType,
 			Tier = "wood",
-			GridX = gridX,
-			GridY = gridY,
-			GridZ = gridZ,
+			PosX = pos.X,
+			PosY = pos.Y,
+			PosZ = pos.Z,
 			RotY = rotY,
+			ParentUid = validation.ResolvedParentUid,
+			AnchorUid = validation.ResolvedParentUid,
+			SocketId = validation.ResolvedSocketId,
 			Hp = pieceConfig.BaseHp,
+			LastDamagedAt = 0,
 			Storage = if pieceConfig.StorageSlots ~= nil then {} else nil,
 		}
 
@@ -470,28 +366,30 @@ local function onBuildUpgradeRequest(player: Player, uidAny: any, targetTierAny:
 	if not SecurityService.CheckRateLimit(player, Net.Events.BuildUpgradeRequest) then
 		return
 	end
-	if not BaseService.IsBaseMode() then
+	if
+		not BaseService.CanBuild(player)
+		or DataService.IsTeleporting(player)
+		or SecurityService.IsTransactionLocked(player)
+	then
 		return
 	end
-	if DataService.IsTeleporting(player) or SecurityService.IsTransactionLocked(player) then
+	if not SecurityService.IsValidString(uidAny, 1, 64) or not SecurityService.IsValidString(targetTierAny, 1, 32) then
 		return
 	end
-
-	if not SecurityService.IsValidString(uidAny, 1, 64) then
-		return
-	end
-	if targetTierAny ~= "stone" and targetTierAny ~= "metal" then
+	local targetTier = targetTierAny :: BuildTier
+	local targetTierConfig = BuildingConfig.Tiers[targetTier]
+	if targetTierConfig == nil then
 		return
 	end
 	local uid = uidAny :: string
-	local targetTier = targetTierAny :: BuildTier
-
-	local _, hrp = SecurityService.GetAliveCharacterRoot(player)
-	if not hrp then
+	if SecurityService.GetAliveCharacterRoot(player) == nil then
 		return
 	end
 
 	SecurityService.RunLocked(player, "BuildUpgrade", function()
+		if not BaseService.CanBuild(player) then
+			return
+		end
 		local _, innerHrp = SecurityService.GetAliveCharacterRoot(player)
 		if not innerHrp then
 			return
@@ -504,63 +402,60 @@ local function onBuildUpgradeRequest(player: Player, uidAny: any, targetTierAny:
 		end
 
 		local data = DataService.GetData(player)
-		if data == nil then
+		local record = recordsByUid[uid]
+		if data == nil or record == nil or record.Owner ~= player or not record.Model.Parent then
 			return
 		end
 
-		local targetPiece: SavedBuildPiece? = nil
-		for _, piece in data.Base.Pieces do
-			if piece.Uid == uid then
-				targetPiece = piece
-				break
-			end
-		end
-		if targetPiece == nil then
+		if
+			(innerHrp.Position - record.CFrame.Position).Magnitude
+			> BuildingConfig.MaxBuildDistance + Types.PING_DISTANCE_TOLERANCE
+		then
 			return
 		end
 
-		local piecePos = getPieceWorldPosition(targetPiece.GridX, targetPiece.GridY, targetPiece.GridZ)
-		if (innerHrp.Position - piecePos).Magnitude > Types.MAX_BUILD_DISTANCE + Types.PING_DISTANCE_TOLERANCE then
-			return
-		end
-
+		local targetPiece = record.Piece
 		local pieceConfig = BuildingConfig.Pieces[targetPiece.PieceType]
-		if pieceConfig == nil or not pieceConfig.Upgradeable then
+		local currentTierConfig = BuildingConfig.Tiers[targetPiece.Tier]
+		if pieceConfig == nil or not pieceConfig.Upgradeable or currentTierConfig == nil then
 			return
 		end
 
-		local expectedNextTier: BuildTier? = if targetPiece.Tier == "wood"
-			then "stone"
-			elseif targetPiece.Tier == "stone" then "metal"
-			else nil
-		if expectedNextTier ~= targetTier then
+		if
+			targetTierConfig.Rank <= currentTierConfig.Rank
+			or BuildingConfig.GetNextTier(targetPiece.Tier) ~= targetTier
+		then
 			return
 		end
 
-		local tierConfig = BuildingConfig.Tiers[targetTier]
-		if tierConfig == nil or tierConfig.UpgradeCost == nil then
+		local attrDamaged = record.Model:GetAttribute("LastDamagedAt")
+		local lastDamagedAt = math.max(
+			targetPiece.LastDamagedAt or 0,
+			record.LastDamagedAt or 0,
+			if typeof(attrDamaged) == "number" then attrDamaged else 0
+		)
+		if lastDamagedAt > 0 and (now - lastDamagedAt) < BuildingConfig.UpgradeRaidBlockSeconds then
 			return
 		end
 
-		local costBatch = costMapToBatch(tierConfig.UpgradeCost)
-		if not InventoryService.RemoveItems(player, costBatch) then
+		if
+			targetTierConfig.UpgradeCost == nil
+			or not InventoryService.RemoveItems(player, costMapToBatch(targetTierConfig.UpgradeCost))
+		then
 			return
 		end
 
 		lastBuildActionTime[player] = now
-
-		local maxHp = math.floor(pieceConfig.BaseHp * tierConfig.HpMultiplier + 0.5)
+		local maxHp = BuildingGeometry.ComputeMaxHp(targetPiece.PieceType, targetTier)
 		targetPiece.Tier = targetTier
 		targetPiece.Hp = maxHp
 
-		local playerRecords = spawnedByPlayer[player]
-		local record = if playerRecords then playerRecords[targetPiece.Uid] else nil
-		if record ~= nil and record.Model.Parent then
-			applyTierVisuals(record.Model, targetPiece.PieceType, targetTier)
-			record.Model:SetAttribute("Tier", targetTier)
-			record.Model:SetAttribute("Hp", maxHp)
-			record.Model:SetAttribute("MaxHp", maxHp)
-		end
+		BuildingGeometry.ApplyTierVisuals(record.Model, targetPiece.PieceType, targetTier)
+		record.Model:SetAttribute("Tier", targetTier)
+		record.Model:SetAttribute("Health", maxHp)
+		record.Model:SetAttribute("Hp", maxHp)
+		record.Model:SetAttribute("MaxHealth", maxHp)
+		record.Model:SetAttribute("MaxHp", maxHp)
 
 		syncBaseState(player)
 	end)
@@ -570,24 +465,22 @@ local function onBuildDemolishRequest(player: Player, uidAny: any)
 	if not SecurityService.CheckRateLimit(player, Net.Events.BuildDemolishRequest) then
 		return
 	end
-	if not BaseService.IsBaseMode() then
+	if
+		not BaseService.CanBuild(player)
+		or DataService.IsTeleporting(player)
+		or SecurityService.IsTransactionLocked(player)
+	then
 		return
 	end
-	if DataService.IsTeleporting(player) or SecurityService.IsTransactionLocked(player) then
-		return
-	end
-
-	if not SecurityService.IsValidString(uidAny, 1, 64) then
+	if not SecurityService.IsValidString(uidAny, 1, 64) or SecurityService.GetAliveCharacterRoot(player) == nil then
 		return
 	end
 	local uid = uidAny :: string
 
-	local _, hrp = SecurityService.GetAliveCharacterRoot(player)
-	if not hrp then
-		return
-	end
-
 	SecurityService.RunLocked(player, "BuildDemolish", function()
+		if not BaseService.CanBuild(player) then
+			return
+		end
 		local _, innerHrp = SecurityService.GetAliveCharacterRoot(player)
 		if not innerHrp then
 			return
@@ -600,62 +493,53 @@ local function onBuildDemolishRequest(player: Player, uidAny: any)
 		end
 
 		local data = DataService.GetData(player)
-		if data == nil then
+		local record = recordsByUid[uid]
+		if data == nil or record == nil or record.Owner ~= player then
+			return
+		end
+		if
+			(innerHrp.Position - record.CFrame.Position).Magnitude
+			> BuildingConfig.MaxBuildDistance + Types.PING_DISTANCE_TOLERANCE
+		then
 			return
 		end
 
 		local targetIndex: number? = nil
-		local targetPiece: SavedBuildPiece? = nil
 		for index, piece in data.Base.Pieces do
 			if piece.Uid == uid then
 				targetIndex = index
-				targetPiece = piece
 				break
 			end
 		end
-		if targetIndex == nil or targetPiece == nil then
-			return
-		end
-
-		local piecePos = getPieceWorldPosition(targetPiece.GridX, targetPiece.GridY, targetPiece.GridZ)
-		if (innerHrp.Position - piecePos).Magnitude > Types.MAX_BUILD_DISTANCE + Types.PING_DISTANCE_TOLERANCE then
+		if targetIndex == nil then
 			return
 		end
 
 		lastBuildActionTime[player] = now
-
 		local playerRecords = spawnedByPlayer[player]
 		if playerRecords ~= nil then
-			local record = playerRecords[uid]
-			if record ~= nil then
-				cleanupPieceRuntime(record)
-				playerRecords[uid] = nil
-			end
+			playerRecords[uid] = nil
 		end
-
+		cleanupPieceRuntime(record)
 		table.remove(data.Base.Pieces, targetIndex)
 		syncBaseState(player)
 	end)
 end
 
 local function sendReturnBanner(player: Player, active: boolean, statusText: string?)
-	if player.Parent ~= Players then
-		return
+	if player.Parent == Players then
+		Net.GetEvent(Net.Events.ExtractionStateSync):FireClient(player, {
+			Active = active,
+			ZoneName = "Base Portal",
+			TimeLeft = 0,
+			TotalTime = 1,
+			StatusText = statusText,
+		})
 	end
-	Net.GetEvent(Net.Events.ExtractionStateSync):FireClient(player, {
-		Active = active,
-		ZoneName = "Base Portal",
-		TimeLeft = 0,
-		TotalTime = 1,
-		StatusText = statusText,
-	})
 end
 
 local function onRequestReturnToMap(player: Player)
-	if not SecurityService.CheckRateLimit(player, Net.Events.RequestReturnToMap) then
-		return
-	end
-	if not BaseService.IsBaseMode() then
+	if not SecurityService.CheckRateLimit(player, Net.Events.RequestReturnToMap) or not BaseService.IsBaseMode() then
 		return
 	end
 	if teleportInProgress[player] or SecurityService.IsTeleportLocked(player) or DataService.GetData(player) == nil then
@@ -670,17 +554,8 @@ local function onRequestReturnToMap(player: Player)
 	LootService.CloseContainerForPlayer(player, true)
 
 	if RunService:IsStudio() then
-		local released = DataService.ReleaseForTeleport(player)
-		print(
-			string.format(
-				"[BaseService] Studio mock teleport to MainMap (%d) for %s (ProfileReleased=%s)",
-				Config.Places.MainMap,
-				player.Name,
-				tostring(released)
-			)
-		)
+		DataService.ReleaseForTeleport(player)
 		sendReturnBanner(player, true, "Returning to PvP Map (Studio Simulation)")
-
 		task.delay(STUDIO_SIM_BANNER_DURATION, function()
 			if player.Parent == Players and pendingTeleports[player] == nil then
 				sendReturnBanner(player, false, nil)
@@ -691,16 +566,12 @@ local function onRequestReturnToMap(player: Player)
 
 	task.spawn(function()
 		sendReturnBanner(player, true, "Saving base & deploying to PvP Map...")
-
-		local released = DataService.ReleaseForTeleport(player)
-		if not released then
-			warn(string.format("[BaseService] Failed to release profile before teleport for %s", player.Name))
+		if not DataService.ReleaseForTeleport(player) then
 			DataService.RestoreAfterFailedTeleport(player)
 			teleportInProgress[player] = nil
 			sendReturnBanner(player, false, nil)
 			return
 		end
-
 		if player.Parent ~= Players then
 			teleportInProgress[player] = nil
 			SecurityService.SetTeleportLock(player, false)
@@ -708,18 +579,12 @@ local function onRequestReturnToMap(player: Player)
 		end
 
 		local options = Instance.new("TeleportOptions")
-		options:SetTeleportData({
-			FromPlaceId = game.PlaceId,
-			OwnerUserId = player.UserId,
-			Mode = "Raid",
-		})
-
+		options:SetTeleportData({ FromPlaceId = game.PlaceId, OwnerUserId = player.UserId, Mode = "Raid" })
 		pendingTeleports[player] = true
-		local ok, err = pcall(function()
+		local ok = pcall(function()
 			TeleportService:TeleportAsync(Config.Places.MainMap, { player }, options)
 		end)
 		if not ok then
-			warn(string.format("[BaseService] TeleportAsync error for %s: %s", player.Name, tostring(err)))
 			pendingTeleports[player] = nil
 			teleportInProgress[player] = nil
 			DataService.RestoreAfterFailedTeleport(player)
@@ -728,43 +593,12 @@ local function onRequestReturnToMap(player: Player)
 	end)
 end
 
-local function onTeleportInitFailed(
-	player: Player,
-	teleportResult: Enum.TeleportResult,
-	errorMessage: string,
-	_placeId: number,
-	_teleportOptions: TeleportOptions
-)
-	if not pendingTeleports[player] then
-		return
-	end
-	pendingTeleports[player] = nil
-	teleportInProgress[player] = nil
-	warn(
-		string.format(
-			"[BaseService] TeleportInitFailed for %s (%s): %s",
-			player.Name,
-			tostring(teleportResult),
-			errorMessage
-		)
-	)
-	DataService.RestoreAfterFailedTeleport(player)
-	sendReturnBanner(player, false, nil)
-end
-
-local function onForceBaseModeChanged()
-	if BaseService.IsBaseMode() then
-		getOrCreateStructuresFolder()
-		for _, player in Players:GetPlayers() do
-			local data = DataService.GetData(player)
-			if data ~= nil then
-				spawnBaseForPlayer(player, data)
-			end
-		end
-	else
-		for _, player in Players:GetPlayers() do
-			despawnBaseForPlayer(player)
-		end
+local function onTeleportInitFailed(player: Player)
+	if pendingTeleports[player] then
+		pendingTeleports[player] = nil
+		teleportInProgress[player] = nil
+		DataService.RestoreAfterFailedTeleport(player)
+		sendReturnBanner(player, false, nil)
 	end
 end
 
@@ -779,24 +613,91 @@ function BaseService.IsBaseMode(): boolean
 		or (RunService:IsStudio() and Workspace:GetAttribute("ForceBaseMode") == true)
 end
 
+function BaseService.CanBuild(player: Player): boolean
+	if player.Parent ~= Players then
+		return false
+	end
+	if Workspace:GetAttribute("RaidServerMode") == true or player:GetAttribute("InRaid") == true then
+		return false
+	end
+	return not DataService.IsTeleporting(player) and not SecurityService.IsTeleportLocked(player)
+end
+
+function BaseService.DamagePiece(
+	uid: string,
+	rawDamage: number,
+	damageKind: DamageKind,
+	_attacker: Player?
+): (boolean, boolean)
+	if not SecurityService.IsFiniteNumber(rawDamage) or rawDamage <= 0 then
+		return false, false
+	end
+	local record = recordsByUid[uid]
+	if record == nil or record.Model.Parent == nil then
+		return false, false
+	end
+
+	local tierCfg = BuildingConfig.Tiers[record.Piece.Tier] or BuildingConfig.Tiers.wood
+	local mult = if damageKind == "Explosion"
+		then math.max(0.05, 1.0 - tierCfg.ExplosionResistance)
+		else tierCfg.ToolDamageMultiplier
+	local finalDamage = math.max(1, math.floor(rawDamage * mult + 0.5))
+
+	local nowClock = os.clock()
+	record.LastDamagedAt = nowClock
+	record.Piece.LastDamagedAt = nowClock
+	record.Model:SetAttribute("LastDamagedAt", nowClock)
+	record.Model:SetAttribute("LastDamagedServerTime", Workspace:GetServerTimeNow())
+
+	record.Piece.Hp -= finalDamage
+	if record.Piece.Hp <= 0 then
+		local owner = record.Owner
+		local data = DataService.GetData(owner)
+		local playerRecords = spawnedByPlayer[owner]
+		if playerRecords ~= nil then
+			playerRecords[uid] = nil
+		end
+		cleanupPieceRuntime(record)
+		if data ~= nil then
+			for index, piece in data.Base.Pieces do
+				if piece.Uid == uid then
+					table.remove(data.Base.Pieces, index)
+					break
+				end
+			end
+			syncBaseState(owner)
+		end
+		return true, true
+	end
+
+	record.Model:SetAttribute("Health", record.Piece.Hp)
+	record.Model:SetAttribute("Hp", record.Piece.Hp)
+	syncBaseState(record.Owner)
+	return true, false
+end
+
+function BaseService.GetLivePieceModelsInRadius(origin: Vector3, radius: number): { { Uid: string, Model: Model } }
+	local result: { { Uid: string, Model: Model } } = {}
+	for uid, record in recordsByUid do
+		if
+			record.Model.Parent ~= nil
+			and (record.CFrame.Position - origin).Magnitude <= radius + BuildingConfig.GridSize
+		then
+			table.insert(result, { Uid = uid, Model = record.Model })
+		end
+	end
+	return result
+end
+
 function BaseService.GetPlayerPieces(player: Player): { SavedBuildPiece }
 	local data = DataService.GetData(player)
-	if data == nil then
-		return {}
-	end
-	return table.clone(data.Base.Pieces)
+	return if data ~= nil then table.clone(data.Base.Pieces) else {}
 end
 
 function BaseService.GetStorageContainerId(player: Player, uid: string): string?
 	local playerRecords = spawnedByPlayer[player]
-	if playerRecords == nil then
-		return nil
-	end
-	local record = playerRecords[uid]
-	if record == nil then
-		return nil
-	end
-	return record.ContainerId
+	local record = if playerRecords ~= nil then playerRecords[uid] else nil
+	return if record ~= nil then record.ContainerId else nil
 end
 
 function BaseService.Init()
@@ -806,10 +707,7 @@ function BaseService.Init()
 	isInitialized = true
 
 	Net.InitServer()
-
-	if BaseService.IsBaseMode() then
-		getOrCreateStructuresFolder()
-	end
+	getOrCreateStructuresFolder()
 
 	Net.GetEvent(Net.Events.BuildPlaceRequest).OnServerEvent:Connect(onBuildPlaceRequest)
 	Net.GetEvent(Net.Events.BuildUpgradeRequest).OnServerEvent:Connect(onBuildUpgradeRequest)
@@ -822,18 +720,39 @@ function BaseService.Init()
 		local ok, joinData = pcall(function()
 			return player:GetJoinData()
 		end)
-		if ok and type(joinData) == "table" and type(joinData.TeleportData) == "table" then
-			if joinData.TeleportData.Mode == "Raid" then
-				isRaidJoin = true
-			end
+		if
+			ok
+			and type(joinData) == "table"
+			and type(joinData.TeleportData) == "table"
+			and joinData.TeleportData.Mode == "Raid"
+		then
+			isRaidJoin = true
 		end
-		if not isRaidJoin and BaseService.IsBaseMode() then
+		local canSpawn = not isRaidJoin
+			and Workspace:GetAttribute("RaidServerMode") ~= true
+			and player:GetAttribute("InRaid") ~= true
+			and (BaseService.IsBaseMode() or RunService:IsStudio())
+		if canSpawn then
 			spawnBaseForPlayer(player, data)
 		end
 	end)
 
 	if RunService:IsStudio() then
-		Workspace:GetAttributeChangedSignal("ForceBaseMode"):Connect(onForceBaseModeChanged)
+		Workspace:GetAttributeChangedSignal("ForceBaseMode"):Connect(function()
+			if BaseService.IsBaseMode() or RunService:IsStudio() then
+				getOrCreateStructuresFolder()
+				for _, player in Players:GetPlayers() do
+					local data = DataService.GetData(player)
+					if data ~= nil and spawnedByPlayer[player] == nil then
+						spawnBaseForPlayer(player, data)
+					end
+				end
+			else
+				for _, player in Players:GetPlayers() do
+					despawnBaseForPlayer(player)
+				end
+			end
+		end)
 	end
 
 	Players.PlayerRemoving:Connect(function(player: Player)

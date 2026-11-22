@@ -9,7 +9,9 @@ local Config = require(ReplicatedStorage.Shared.Config)
 local Types = require(ReplicatedStorage.Shared.Types)
 local Items = require(ReplicatedStorage.Shared.configs.Items)
 local BuildingConfig = require(ReplicatedStorage.Shared.configs.BuildingConfig)
+local BuildingGeometry = require(ReplicatedStorage.Shared.BuildingGeometry)
 local Net = require(ReplicatedStorage.Shared.Net)
+local HotbarController = require(script.Parent.HotbarController)
 local InventoryController = require(script.Parent.InventoryController)
 local InventoryUIController = require(script.Parent.InventoryUIController)
 local CraftingController = require(script.Parent.CraftingController)
@@ -17,6 +19,7 @@ local LootController = require(script.Parent.LootController)
 
 type BuildPieceType = Types.BuildPieceType
 type BuildTier = Types.BuildTier
+type BuildSocketDef = Types.BuildSocketDef
 type SavedBuildPiece = Types.SavedBuildPiece
 
 type PieceButtonUI = {
@@ -26,8 +29,9 @@ type PieceButtonUI = {
 	CostLabel: TextLabel,
 }
 
-local COLOR_GHOST_VALID = Color3.fromRGB(70, 225, 110)
-local COLOR_GHOST_INVALID = Color3.fromRGB(235, 75, 75)
+local COLOR_GHOST_VALID_GRID = Color3.fromRGB(65, 220, 115)
+local COLOR_GHOST_VALID_SOCKET = Color3.fromRGB(65, 155, 255)
+local COLOR_GHOST_INVALID = Color3.fromRGB(235, 70, 70)
 local COLOR_BTN_DEFAULT = Color3.fromRGB(36, 36, 44)
 local COLOR_BTN_SELECTED = Color3.fromRGB(56, 86, 62)
 local COLOR_STROKE_DEFAULT = Color3.fromRGB(80, 80, 92)
@@ -36,22 +40,33 @@ local COLOR_ACTION_ACTIVE = Color3.fromRGB(185, 135, 45)
 local COLOR_DEMOLISH_ACTIVE = Color3.fromRGB(175, 55, 55)
 local COLOR_ACTION_IDLE = Color3.fromRGB(52, 52, 62)
 
-local PLACE_RAY_DISTANCE = 60
+local PLACE_RAY_DISTANCE = 64
+local SOCKET_SEARCH_RADIUS_FOUNDATION = 8.0
+local SOCKET_SEARCH_RADIUS_OTHER = 10.5
+local SOCKET_OCCUPY_EPSILON = 0.55
 
 local savedPieces: { SavedBuildPiece } = {}
 local selectedPieceIndex = 1
-local currentRotY = 0
-local isBuildMode = false
+local currentRotStep = 0
+local currentYawDeg = 0
+local manualBuildMode = false
+local toolMode: "None" | "Build" | "Hammer" = "None"
 local upgradeModeToggle = false
 local demolishModeToggle = false
-local previewGridX = 0
-local previewGridY = 0
-local previewGridZ = 0
-local hasValidPreview = false
+
+local previewCFrame: CFrame? = nil
+local previewParentUid: string? = nil
+local previewSocketId: string? = nil
+local previewRotStep = 0
+local previewPlaceable = false
+local previewStatusMessage = ""
+local hammerStatusMessage = ""
+local hammerStatusValid = true
 local isInitialized = false
 
 local baseActionBar: Frame? = nil
 local buildToggleBtn: TextButton? = nil
+local deployToMapBtn: TextButton? = nil
 local buildMenuFrame: Frame? = nil
 local statusInfoLabel: TextLabel? = nil
 local rotButton: TextButton? = nil
@@ -63,7 +78,29 @@ local ghostModel: Model? = nil
 local ghostPieceType: BuildPieceType? = nil
 local targetHighlight: Highlight? = nil
 
+-- Cached RaycastParams (updated only on character change or ghostModel recreation)
+local cachedPreviewRayParams = RaycastParams.new()
+cachedPreviewRayParams.FilterType = Enum.RaycastFilterType.Exclude
+cachedPreviewRayParams.IgnoreWater = true
+local cachedPreviewExcludes: { Instance } = {}
+
+local cachedHammerRayParams = RaycastParams.new()
+cachedHammerRayParams.FilterType = Enum.RaycastFilterType.Include
+
 local BuildingController = {}
+
+local function refreshPreviewRaycastFilter()
+	local excludeList: { Instance } = {}
+	local localPlayer = Players.LocalPlayer
+	if localPlayer and localPlayer.Character then
+		table.insert(excludeList, localPlayer.Character)
+	end
+	if ghostModel then
+		table.insert(excludeList, ghostModel)
+	end
+	cachedPreviewExcludes = excludeList
+	cachedPreviewRayParams.FilterDescendantsInstances = excludeList
+end
 
 local function isAnyModalUiOpen(): boolean
 	return InventoryUIController.IsOpen() or CraftingController.IsOpen() or LootController.IsOpen()
@@ -73,20 +110,19 @@ local function getSelectedPieceType(): BuildPieceType
 	return BuildingConfig.PieceOrder[selectedPieceIndex] or "foundation"
 end
 
-local function isUpgradeSubModeActive(): boolean
-	return upgradeModeToggle or UserInputService:IsKeyDown(Enum.KeyCode.G)
+local function isHammerModeActive(): boolean
+	return toolMode == "Hammer" or upgradeModeToggle or demolishModeToggle or UserInputService:IsKeyDown(Enum.KeyCode.G)
 end
 
 local function isDemolishSubModeActive(): boolean
-	return demolishModeToggle and not isUpgradeSubModeActive()
+	return demolishModeToggle and not UserInputService:IsKeyDown(Enum.KeyCode.G)
 end
 
 local function formatCostText(costMap: { [string]: number }): string
 	local parts: { string } = {}
 	for itemId, count in costMap do
 		local itemCfg = Items[itemId]
-		local itemName = if itemCfg then itemCfg.Name else itemId
-		table.insert(parts, string.format("%d %s", count, itemName))
+		table.insert(parts, string.format("%d %s", count, if itemCfg then itemCfg.Name else itemId))
 	end
 	table.sort(parts)
 	return table.concat(parts, ", ")
@@ -113,96 +149,33 @@ local function canAffordCost(costMap: { [string]: number }): boolean
 	return true
 end
 
-local function hasLocalCollision(
-	pieceType: BuildPieceType,
-	gridX: number,
-	gridY: number,
-	gridZ: number,
-	rotY: number
-): boolean
-	for _, existing in savedPieces do
-		if existing.GridX == gridX and existing.GridY == gridY and existing.GridZ == gridZ then
-			if existing.PieceType == pieceType then
-				return true
-			end
-			if (pieceType == "wall" or pieceType == "doorway") and existing.RotY == rotY then
-				if existing.PieceType == "wall" or existing.PieceType == "doorway" then
-					return true
-				end
-			end
-			if pieceType == "storage_box" or pieceType == "workbench_1" then
-				if existing.PieceType == "storage_box" or existing.PieceType == "workbench_1" then
-					return true
-				end
-			end
-		end
-	end
-	return false
-end
-
 local function destroyGhostModel()
 	if ghostModel then
 		ghostModel:Destroy()
 		ghostModel = nil
 	end
 	ghostPieceType = nil
-end
-
-local function createGhostPart(parent: Instance, size: Vector3, localCF: CFrame): Part
-	local part = Instance.new("Part")
-	part.Size = size
-	part.CFrame = localCF
-	part.Anchored = true
-	part.CanCollide = false
-	part.CanQuery = false
-	part.CanTouch = false
-	part.CastShadow = false
-	part.Material = Enum.Material.SmoothPlastic
-	part.Transparency = 0.55
-	part.Color = COLOR_GHOST_VALID
-	part.TopSurface = Enum.SurfaceType.Smooth
-	part.BottomSurface = Enum.SurfaceType.Smooth
-	part.Parent = parent
-	return part
+	refreshPreviewRaycastFilter()
 end
 
 local function ensureGhostModel(pieceType: BuildPieceType): Model
-	if ghostModel and ghostModel.Parent and ghostPieceType == pieceType then
+	local canonical = BuildingGeometry.CanonicalPieceType(pieceType)
+	if ghostModel and ghostModel.Parent ~= nil and ghostPieceType == canonical then
 		return ghostModel
 	end
-
-	destroyGhostModel()
-
-	local model = Instance.new("Model")
-	model.Name = string.format("BuildGhost_%s", pieceType)
-
-	if pieceType == "foundation" then
-		local basePart = createGhostPart(model, Vector3.new(12, 1, 12), CFrame.new(0, 0.5, 0))
-		model.PrimaryPart = basePart
-	elseif pieceType == "wall" then
-		local wallPart = createGhostPart(model, Vector3.new(12, 10, 1), CFrame.new(0, 5, -5.5))
-		model.PrimaryPart = wallPart
-	elseif pieceType == "doorway" then
-		createGhostPart(model, Vector3.new(4, 10, 1), CFrame.new(-4, 5, -5.5))
-		createGhostPart(model, Vector3.new(4, 10, 1), CFrame.new(4, 5, -5.5))
-		local lintel = createGhostPart(model, Vector3.new(4, 2.5, 1), CFrame.new(0, 8.75, -5.5))
-		model.PrimaryPart = lintel
-	elseif pieceType == "roof" then
-		local roofPart = createGhostPart(model, Vector3.new(12, 0.8, 12), CFrame.new(0, 10.4, 0))
-		model.PrimaryPart = roofPart
-	elseif pieceType == "storage_box" then
-		local body = createGhostPart(model, Vector3.new(4, 2.4, 2.5), CFrame.new(0, 2.2, 0))
-		createGhostPart(model, Vector3.new(4.2, 0.4, 2.7), CFrame.new(0, 3.6, 0))
-		model.PrimaryPart = body
-	elseif pieceType == "workbench_1" then
-		local top = createGhostPart(model, Vector3.new(5, 0.6, 3), CFrame.new(0, 3.3, 0))
-		createGhostPart(model, Vector3.new(0.6, 2.0, 2.6), CFrame.new(-2.0, 2.0, 0))
-		createGhostPart(model, Vector3.new(0.6, 2.0, 2.6), CFrame.new(2.0, 2.0, 0))
-		model.PrimaryPart = top
+	if ghostModel and ghostPieceType == canonical then
+		return ghostModel
 	end
-
+	destroyGhostModel()
+	local model = BuildingGeometry.CreateModel(
+		canonical,
+		CFrame.identity,
+		true,
+		string.format("ClientBuildPreview_%s", canonical)
+	)
 	ghostModel = model
-	ghostPieceType = pieceType
+	ghostPieceType = canonical
+	refreshPreviewRaycastFilter()
 	return model
 end
 
@@ -213,19 +186,141 @@ local function clearTargetHighlight()
 	end
 end
 
+local function collectPlayerStructureModels(): { Model }
+	local models: { Model } = {}
+	local localPlayer = Players.LocalPlayer
+	local structuresFolder = Workspace:FindFirstChild("PlayerBaseStructures")
+	if not localPlayer or not structuresFolder then
+		return models
+	end
+	for _, child in structuresFolder:GetChildren() do
+		if child:IsA("Model") and child:GetAttribute("OwnerUserId") == localPlayer.UserId then
+			table.insert(models, child)
+		end
+	end
+	return models
+end
+
+local function isSocketOccupiedLocally(
+	parentModel: Model,
+	parentType: BuildPieceType,
+	parentCF: CFrame,
+	socket: BuildSocketDef,
+	childType: BuildPieceType,
+	allModels: { Model },
+	rotStepOverride: number?
+): boolean
+	if BuildingConfig.Pieces[childType] == nil then
+		return true
+	end
+	local targetSlotKey = BuildingGeometry.GetSocketSlotKey(socket, childType, rotStepOverride)
+	for _, otherModel in allModels do
+		if otherModel ~= parentModel then
+			local otherTypeAttr = otherModel:GetAttribute("PieceType")
+			if typeof(otherTypeAttr) == "string" then
+				local otherType = BuildingGeometry.CanonicalPieceType(otherTypeAttr)
+				if BuildingGeometry.GetSocketSlotKey(socket, otherType, rotStepOverride) == targetSlotKey then
+					local otherPos = otherModel:GetPivot().Position
+					if
+						BuildingGeometry.DoesPieceOccupySocket(
+							parentType,
+							parentCF,
+							socket,
+							otherType,
+							otherPos,
+							SOCKET_OCCUPY_EPSILON,
+							rotStepOverride
+						)
+					then
+						return true
+					end
+				end
+			end
+		end
+	end
+	return false
+end
+
+local function hasSupportingWallLocally(parentType: BuildPieceType, parentCF: CFrame, allModels: { Model }): boolean
+	local parentCfg = BuildingConfig.Pieces[parentType]
+	local wallYOffset = if parentCfg ~= nil and parentCfg.Category == "Foundation"
+		then BuildingConfig.FoundationThickness
+		else BuildingConfig.FloorThickness
+	for _, socket in BuildingGeometry.GetPieceSockets(parentType) do
+		if socket.Kind == "Edge" then
+			local edgeWallPos = (parentCF * socket.LocalCFrame * CFrame.new(0, wallYOffset, 0)).Position
+			for _, otherModel in allModels do
+				local otherTypeAttr = otherModel:GetAttribute("PieceType")
+				if typeof(otherTypeAttr) == "string" then
+					local otherCfg = BuildingConfig.Pieces[otherTypeAttr :: BuildPieceType]
+					if otherCfg ~= nil and otherCfg.Category == "Wall" then
+						if (otherModel:GetPivot().Position - edgeWallPos).Magnitude <= SOCKET_OCCUPY_EPSILON then
+							return true
+						end
+					end
+				end
+			end
+		end
+	end
+	return false
+end
+
+local function getLowestFoundationYLocally(allModels: { Model }, fallbackY: number): number
+	local minY: number? = nil
+	for _, model in allModels do
+		local pieceTypeAttr = model:GetAttribute("PieceType")
+		if typeof(pieceTypeAttr) == "string" then
+			local cfg = BuildingConfig.Pieces[pieceTypeAttr :: BuildPieceType]
+			if cfg ~= nil and cfg.Category == "Foundation" then
+				local y = model:GetPivot().Position.Y
+				if minY == nil or y < minY then
+					minY = y
+				end
+			end
+		end
+	end
+	return minY or fallbackY
+end
+
+local function buildLocalWallCandidates(allModels: { Model }): { BuildingGeometry.ParallelWallCandidate }
+	local candidates: { BuildingGeometry.ParallelWallCandidate } = {}
+	local folder = Workspace:FindFirstChild("PlayerBaseStructures")
+	local sourceList = if folder then folder:GetChildren() else allModels
+	for _, child in sourceList do
+		if child:IsA("Model") then
+			local pieceTypeAttr = child:GetAttribute("PieceType")
+			if typeof(pieceTypeAttr) == "string" then
+				table.insert(candidates, {
+					PieceType = BuildingGeometry.CanonicalPieceType(pieceTypeAttr),
+					CFrame = child:GetPivot(),
+				})
+			end
+		end
+	end
+	return candidates
+end
+
 local function updateBuildUiVisuals()
+	local canBuild = BuildingController.CanBuild()
 	local inBase = BuildingController.IsBaseMode()
+	local buildActive = BuildingController.IsBuildMode()
+	local hammerActive = buildActive and isHammerModeActive()
+
 	if baseActionBar then
-		baseActionBar.Visible = inBase
+		baseActionBar.Visible = canBuild
 	end
-
+	if deployToMapBtn then
+		deployToMapBtn.Visible = inBase
+	end
 	if buildToggleBtn then
-		buildToggleBtn.BackgroundColor3 = if isBuildMode then COLOR_STROKE_SELECTED else Color3.fromRGB(55, 110, 165)
-		buildToggleBtn.Text = if isBuildMode then "Build: ON [B]" else "Build [B]"
+		buildToggleBtn.BackgroundColor3 = if hammerActive
+			then COLOR_ACTION_ACTIVE
+			elseif buildActive then COLOR_STROKE_SELECTED
+			else Color3.fromRGB(55, 110, 165)
+		buildToggleBtn.Text = if hammerActive then "Hammer [B]" elseif buildActive then "Build: ON [B]" else "Build [B]"
 	end
-
 	if buildMenuFrame then
-		buildMenuFrame.Visible = inBase and isBuildMode
+		buildMenuFrame.Visible = canBuild and buildActive
 	end
 
 	local selectedType = getSelectedPieceType()
@@ -234,32 +329,48 @@ local function updateBuildUiVisuals()
 		item.Button.BackgroundColor3 = if isSelected then COLOR_BTN_SELECTED else COLOR_BTN_DEFAULT
 		item.Stroke.Color = if isSelected then COLOR_STROKE_SELECTED else COLOR_STROKE_DEFAULT
 		item.Stroke.Thickness = if isSelected then 2 else 1.2
-
 		local pieceCfg = BuildingConfig.Pieces[item.PieceType]
 		if pieceCfg then
-			local affordable = canAffordCost(pieceCfg.Cost)
-			item.CostLabel.TextColor3 = if affordable
+			item.CostLabel.TextColor3 = if canAffordCost(pieceCfg.Cost)
 				then Color3.fromRGB(145, 225, 150)
 				else Color3.fromRGB(235, 115, 115)
 		end
 	end
 
-	local selectedCfg = BuildingConfig.Pieces[selectedType]
-	if statusInfoLabel and selectedCfg then
-		local affordable = canAffordCost(selectedCfg.Cost)
-		local costText = formatCostText(selectedCfg.Cost)
-		statusInfoLabel.Text = string.format("%s | Cost: %s", selectedCfg.Name, costText)
-		statusInfoLabel.TextColor3 = if affordable then Color3.fromRGB(140, 235, 145) else Color3.fromRGB(235, 110, 110)
+	if statusInfoLabel then
+		if hammerActive then
+			statusInfoLabel.Text = if #hammerStatusMessage > 0
+				then hammerStatusMessage
+				else "Hammer: LMB Upgrade | RMB Demolish"
+			statusInfoLabel.TextColor3 = if hammerStatusValid
+				then Color3.fromRGB(255, 215, 105)
+				else Color3.fromRGB(235, 110, 110)
+		else
+			local selectedCfg = BuildingConfig.Pieces[selectedType]
+			if selectedCfg then
+				local affordable = canAffordCost(selectedCfg.Cost)
+				local costText = formatCostText(selectedCfg.Cost)
+				if #previewStatusMessage > 0 and not previewPlaceable then
+					statusInfoLabel.Text = string.format("%s | %s", selectedCfg.Name, previewStatusMessage)
+					statusInfoLabel.TextColor3 = Color3.fromRGB(235, 110, 110)
+				else
+					statusInfoLabel.Text = string.format("%s | Cost: %s", selectedCfg.Name, costText)
+					statusInfoLabel.TextColor3 = if affordable
+						then Color3.fromRGB(140, 235, 145)
+						else Color3.fromRGB(235, 110, 110)
+				end
+			end
+		end
 	end
 
 	if rotButton then
-		rotButton.Text = string.format("Rot: %d deg [R]", currentRotY)
+		rotButton.Text = string.format("Rot: %d deg [R]", currentYawDeg)
 	end
-
-	local upgradeActive = isUpgradeSubModeActive()
 	local demolishActive = isDemolishSubModeActive()
 	if upgradeToggleBtn then
-		upgradeToggleBtn.BackgroundColor3 = if upgradeActive then COLOR_ACTION_ACTIVE else COLOR_ACTION_IDLE
+		upgradeToggleBtn.BackgroundColor3 = if hammerActive and not demolishActive
+			then COLOR_ACTION_ACTIVE
+			else COLOR_ACTION_IDLE
 	end
 	if demolishToggleBtn then
 		demolishToggleBtn.BackgroundColor3 = if demolishActive then COLOR_DEMOLISH_ACTIVE else COLOR_ACTION_IDLE
@@ -269,19 +380,15 @@ end
 local function raycastStructureUnderCursor(): (Model?, string?, BuildPieceType?, BuildTier?)
 	local structuresFolder = Workspace:FindFirstChild("PlayerBaseStructures")
 	local camera = Workspace.CurrentCamera
-	local localPlayer = Players.LocalPlayer
-	if not structuresFolder or not camera or not localPlayer then
+	if not structuresFolder or not camera then
 		return nil, nil, nil, nil
 	end
 
 	local mouseLoc = UserInputService:GetMouseLocation()
 	local unitRay = camera:ViewportPointToRay(mouseLoc.X, mouseLoc.Y)
+	cachedHammerRayParams.FilterDescendantsInstances = { structuresFolder }
 
-	local params = RaycastParams.new()
-	params.FilterType = Enum.RaycastFilterType.Include
-	params.FilterDescendantsInstances = { structuresFolder }
-
-	local result = Workspace:Raycast(unitRay.Origin, unitRay.Direction * 120, params)
+	local result = Workspace:Raycast(unitRay.Origin, unitRay.Direction * 120, cachedHammerRayParams)
 	if not result or not result.Instance then
 		return nil, nil, nil, nil
 	end
@@ -300,49 +407,194 @@ local function raycastStructureUnderCursor(): (Model?, string?, BuildPieceType?,
 	if typeof(uidAttr) ~= "string" or typeof(pieceTypeAttr) ~= "string" or typeof(tierAttr) ~= "string" then
 		return nil, nil, nil, nil
 	end
-
-	return current, uidAttr, pieceTypeAttr :: BuildPieceType, tierAttr :: BuildTier
+	return current, uidAttr, BuildingGeometry.CanonicalPieceType(pieceTypeAttr), tierAttr :: BuildTier
 end
 
-local function handleBuildLeftClick()
-	if not BuildingController.IsBaseMode() or not isBuildMode or isAnyModalUiOpen() then
+local function getRemainingRaidBlockSeconds(hoveredModel: Model): number
+	local serverTimeAttr = hoveredModel:GetAttribute("LastDamagedServerTime")
+	if typeof(serverTimeAttr) == "number" and serverTimeAttr > 0 then
+		return BuildingConfig.UpgradeRaidBlockSeconds - (Workspace:GetServerTimeNow() - serverTimeAttr)
+	end
+	local clockAttr = hoveredModel:GetAttribute("LastDamagedAt")
+	if typeof(clockAttr) == "number" and clockAttr > 0 then
+		return BuildingConfig.UpgradeRaidBlockSeconds - (os.clock() - clockAttr)
+	end
+	return 0
+end
+
+local function handleHammerAction(forceDemolish: boolean)
+	local localPlayer = Players.LocalPlayer
+	local character = if localPlayer then localPlayer.Character else nil
+	local hrp = if character then character:FindFirstChild("HumanoidRootPart") else nil
+	if not localPlayer or not hrp or not hrp:IsA("BasePart") then
 		return
 	end
 
-	if isUpgradeSubModeActive() then
-		local _, uid, pieceType, tier = raycastStructureUnderCursor()
-		if uid == nil or pieceType == nil or tier == nil then
-			return
-		end
-		local pieceCfg = BuildingConfig.Pieces[pieceType]
-		if not pieceCfg or not pieceCfg.Upgradeable then
-			return
-		end
-		local nextTier: BuildTier? = if tier == "wood" then "stone" elseif tier == "stone" then "metal" else nil
-		if nextTier ~= nil then
-			Net.GetEvent(Net.Events.BuildUpgradeRequest):FireServer(uid, nextTier)
-		end
+	local hoveredModel, uid, pieceType, tier = raycastStructureUnderCursor()
+	if not hoveredModel or uid == nil or pieceType == nil or tier == nil then
+		return
+	end
+	if hoveredModel:GetAttribute("OwnerUserId") ~= localPlayer.UserId then
+		return
+	end
+	if (hrp.Position - hoveredModel:GetPivot().Position).Magnitude > BuildingConfig.MaxBuildDistance then
+		return
+	end
+
+	if forceDemolish or isDemolishSubModeActive() then
+		Net.GetEvent(Net.Events.BuildDemolishRequest):FireServer(uid)
+		return
+	end
+
+	local pieceCfg = BuildingConfig.Pieces[pieceType]
+	if not pieceCfg or not pieceCfg.Upgradeable or getRemainingRaidBlockSeconds(hoveredModel) > 0 then
+		return
+	end
+
+	local nextTier = BuildingConfig.GetNextTier(tier)
+	local nextTierCfg = if nextTier ~= nil then BuildingConfig.Tiers[nextTier] else nil
+	if
+		nextTier == nil
+		or nextTierCfg == nil
+		or nextTierCfg.UpgradeCost == nil
+		or not canAffordCost(nextTierCfg.UpgradeCost)
+	then
+		return
+	end
+	Net.GetEvent(Net.Events.BuildUpgradeRequest):FireServer(uid, nextTier)
+end
+
+local function handleBuildLeftClick()
+	if not BuildingController.IsBuildMode() or isAnyModalUiOpen() then
+		return
+	end
+	if isHammerModeActive() then
+		handleHammerAction(false)
+		return
+	end
+	if previewPlaceable and previewCFrame ~= nil then
+		local selectedType = getSelectedPieceType()
+		Net.GetEvent(Net.Events.BuildPlaceRequest)
+			:FireServer(selectedType, previewCFrame, previewParentUid, previewSocketId, previewRotStep)
+	end
+end
+
+local function updateHammerHover()
+	if ghostModel then
+		ghostModel.Parent = nil
+	end
+	previewCFrame = nil
+	previewPlaceable = false
+
+	local localPlayer = Players.LocalPlayer
+	local character = if localPlayer then localPlayer.Character else nil
+	local hrp = if character then character:FindFirstChild("HumanoidRootPart") else nil
+	local hoveredModel, _, pieceType, tier = raycastStructureUnderCursor()
+
+	if
+		not hoveredModel
+		or not targetHighlight
+		or pieceType == nil
+		or tier == nil
+		or not localPlayer
+		or not hrp
+		or not hrp:IsA("BasePart")
+	then
+		clearTargetHighlight()
+		hammerStatusMessage = "Hammer: LMB Upgrade | RMB Demolish"
+		hammerStatusValid = true
+		updateBuildUiVisuals()
+		return
+	end
+
+	local isOwner = hoveredModel:GetAttribute("OwnerUserId") == localPlayer.UserId
+	local inRange = (hrp.Position - hoveredModel:GetPivot().Position).Magnitude <= BuildingConfig.MaxBuildDistance
+	local pieceCfg = BuildingConfig.Pieces[pieceType]
+	local pieceName = if pieceCfg then pieceCfg.Name else pieceType
+	local hpAttr = hoveredModel:GetAttribute("Health") or hoveredModel:GetAttribute("Hp")
+	local maxHpAttr = hoveredModel:GetAttribute("MaxHealth") or hoveredModel:GetAttribute("MaxHp")
+	local hp = if typeof(hpAttr) == "number" then math.max(0, math.floor(hpAttr + 0.5)) else 0
+	local maxHp = if typeof(maxHpAttr) == "number" then math.max(1, math.floor(maxHpAttr + 0.5)) else 1
+
+	targetHighlight.Adornee = hoveredModel
+	targetHighlight.Enabled = true
+
+	if not isOwner or not inRange then
+		targetHighlight.OutlineColor = Color3.fromRGB(255, 75, 75)
+		targetHighlight.FillColor = Color3.fromRGB(235, 65, 65)
+		hammerStatusMessage = if not isOwner
+			then string.format("%s | Not your structure", pieceName)
+			else string.format("%s | Too far (>%d studs)", pieceName, BuildingConfig.MaxBuildDistance)
+		hammerStatusValid = false
+		updateBuildUiVisuals()
 		return
 	end
 
 	if isDemolishSubModeActive() then
-		local _, uid = raycastStructureUnderCursor()
-		if uid ~= nil then
-			Net.GetEvent(Net.Events.BuildDemolishRequest):FireServer(uid)
-		end
+		targetHighlight.OutlineColor = Color3.fromRGB(255, 85, 85)
+		targetHighlight.FillColor = Color3.fromRGB(235, 65, 65)
+		hammerStatusMessage = string.format("Demolish: %s (%d/%d HP) [LMB/RMB]", pieceName, hp, maxHp)
+		hammerStatusValid = true
+		updateBuildUiVisuals()
 		return
 	end
 
-	if hasValidPreview then
-		local selectedType = getSelectedPieceType()
-		Net.GetEvent(Net.Events.BuildPlaceRequest)
-			:FireServer(selectedType, previewGridX, previewGridY, previewGridZ, currentRotY)
+	if not pieceCfg or not pieceCfg.Upgradeable then
+		targetHighlight.OutlineColor = Color3.fromRGB(160, 160, 175)
+		targetHighlight.FillColor = Color3.fromRGB(120, 120, 135)
+		hammerStatusMessage = string.format("%s (%d/%d HP) | Not upgradeable", pieceName, hp, maxHp)
+		hammerStatusValid = false
+		updateBuildUiVisuals()
+		return
 	end
+
+	local nextTier = BuildingConfig.GetNextTier(tier)
+	if nextTier == nil then
+		targetHighlight.OutlineColor = Color3.fromRGB(85, 195, 255)
+		targetHighlight.FillColor = Color3.fromRGB(70, 165, 235)
+		hammerStatusMessage = string.format("%s [Armored] (%d/%d HP) | Max Tier", pieceName, hp, maxHp)
+		hammerStatusValid = true
+		updateBuildUiVisuals()
+		return
+	end
+
+	local raidBlockRemaining = getRemainingRaidBlockSeconds(hoveredModel)
+	if raidBlockRemaining > 0 then
+		targetHighlight.OutlineColor = Color3.fromRGB(255, 75, 75)
+		targetHighlight.FillColor = Color3.fromRGB(235, 65, 65)
+		hammerStatusMessage =
+			string.format("%s (%d/%d HP) | Raid Blocked: %ds", pieceName, hp, maxHp, math.ceil(raidBlockRemaining))
+		hammerStatusValid = false
+		updateBuildUiVisuals()
+		return
+	end
+
+	local currentTierCfg = BuildingConfig.Tiers[tier]
+	local nextTierCfg = BuildingConfig.Tiers[nextTier]
+	local costText = if nextTierCfg and nextTierCfg.UpgradeCost then formatCostText(nextTierCfg.UpgradeCost) else ""
+	local affordable = if nextTierCfg and nextTierCfg.UpgradeCost then canAffordCost(nextTierCfg.UpgradeCost) else false
+
+	targetHighlight.OutlineColor = if affordable then Color3.fromRGB(95, 235, 125) else Color3.fromRGB(255, 130, 65)
+	targetHighlight.FillColor = if affordable then Color3.fromRGB(255, 195, 60) else Color3.fromRGB(220, 90, 50)
+	hammerStatusMessage = string.format(
+		"%s [%s -> %s] (%d/%d HP) | Cost: %s",
+		pieceName,
+		if currentTierCfg then currentTierCfg.Name else tier,
+		if nextTierCfg then nextTierCfg.Name else nextTier,
+		hp,
+		maxHp,
+		costText
+	)
+	hammerStatusValid = affordable
+	updateBuildUiVisuals()
 end
 
 local function updatePreviewAndHighlight()
-	if not BuildingController.IsBaseMode() or not isBuildMode or isAnyModalUiOpen() then
-		hasValidPreview = false
+	if not BuildingController.IsBuildMode() or isAnyModalUiOpen() then
+		previewCFrame = nil
+		previewParentUid = nil
+		previewSocketId = nil
+		previewPlaceable = false
 		if ghostModel then
 			ghostModel.Parent = nil
 		end
@@ -350,28 +602,8 @@ local function updatePreviewAndHighlight()
 		return
 	end
 
-	local upgradeActive = isUpgradeSubModeActive()
-	local demolishActive = isDemolishSubModeActive()
-
-	if upgradeActive or demolishActive then
-		hasValidPreview = false
-		if ghostModel then
-			ghostModel.Parent = nil
-		end
-
-		local hoveredModel = raycastStructureUnderCursor()
-		if hoveredModel and targetHighlight then
-			targetHighlight.Adornee = hoveredModel
-			targetHighlight.OutlineColor = if demolishActive
-				then Color3.fromRGB(255, 85, 85)
-				else Color3.fromRGB(255, 210, 75)
-			targetHighlight.FillColor = if demolishActive
-				then Color3.fromRGB(235, 65, 65)
-				else Color3.fromRGB(255, 195, 60)
-			targetHighlight.Enabled = true
-		else
-			clearTargetHighlight()
-		end
+	if isHammerModeActive() then
+		updateHammerHover()
 		return
 	end
 
@@ -381,8 +613,9 @@ local function updatePreviewAndHighlight()
 	local camera = Workspace.CurrentCamera
 	local character = if localPlayer then localPlayer.Character else nil
 	local hrp = if character then character:FindFirstChild("HumanoidRootPart") else nil
-	if not camera or not hrp or not hrp:IsA("BasePart") then
-		hasValidPreview = false
+	if not localPlayer or not camera or not hrp or not hrp:IsA("BasePart") then
+		previewCFrame = nil
+		previewPlaceable = false
 		if ghostModel then
 			ghostModel.Parent = nil
 		end
@@ -390,74 +623,197 @@ local function updatePreviewAndHighlight()
 	end
 
 	local selectedType = getSelectedPieceType()
-	local ghost = ensureGhostModel(selectedType)
+	local pieceCfg = BuildingConfig.Pieces[selectedType]
+	if pieceCfg == nil then
+		return
+	end
 
+	local ghost = ensureGhostModel(selectedType)
 	local mouseLoc = UserInputService:GetMouseLocation()
 	local unitRay = camera:ViewportPointToRay(mouseLoc.X, mouseLoc.Y)
 
-	local params = RaycastParams.new()
-	params.FilterType = Enum.RaycastFilterType.Exclude
-	local excludeList: { Instance } = { ghost }
-	if character then
-		table.insert(excludeList, character)
-	end
-	params.FilterDescendantsInstances = excludeList
+	local result = Workspace:Raycast(unitRay.Origin, unitRay.Direction * PLACE_RAY_DISTANCE, cachedPreviewRayParams)
+	local aimPos = if result
+		then result.Position
+		else (unitRay.Origin + unitRay.Direction * BuildingConfig.MaxBuildDistance)
 
-	local result = Workspace:Raycast(unitRay.Origin, unitRay.Direction * PLACE_RAY_DISTANCE, params)
-	local targetPoint: Vector3
-	if result then
-		targetPoint = result.Position + result.Normal * 0.05
-	else
-		targetPoint = hrp.Position + unitRay.Direction * 18
-	end
-
-	local gridSize = BuildingConfig.GridSize
-	local wallHeight = BuildingConfig.WallHeight
-	previewGridX = math.clamp(math.round(targetPoint.X / gridSize), BuildingConfig.GridMinXZ, BuildingConfig.GridMaxXZ)
-	previewGridY = math.clamp(
-		math.floor(math.max(0, targetPoint.Y) / wallHeight),
-		BuildingConfig.GridMinY,
-		BuildingConfig.GridMaxY
-	)
-	previewGridZ = math.clamp(math.round(targetPoint.Z / gridSize), BuildingConfig.GridMinXZ, BuildingConfig.GridMaxXZ)
-	hasValidPreview = true
-
-	local baseCF = CFrame.new(previewGridX * gridSize, previewGridY * wallHeight, previewGridZ * gridSize)
-		* CFrame.Angles(0, math.rad(currentRotY), 0)
-
-	local pivotOffset = CFrame.identity
-	if selectedType == "foundation" then
-		pivotOffset = CFrame.new(0, 0.5, 0)
-	elseif selectedType == "wall" then
-		pivotOffset = CFrame.new(0, 5, -5.5)
-	elseif selectedType == "doorway" then
-		pivotOffset = CFrame.new(0, 8.75, -5.5)
-	elseif selectedType == "roof" then
-		pivotOffset = CFrame.new(0, 10.4, 0)
-	elseif selectedType == "storage_box" then
-		pivotOffset = CFrame.new(0, 2.2, 0)
-	elseif selectedType == "workbench_1" then
-		pivotOffset = CFrame.new(0, 3.3, 0)
-	end
-
-	if ghost.PrimaryPart then
-		ghost:PivotTo(baseCF * pivotOffset)
-	end
-
-	local pieceCfg = BuildingConfig.Pieces[selectedType]
-	local affordable = if pieceCfg then canAffordCost(pieceCfg.Cost) else false
-	local collision = hasLocalCollision(selectedType, previewGridX, previewGridY, previewGridZ, currentRotY)
-	local underCap = #savedPieces < BuildingConfig.MaxPiecesPerBase
-	local canPlace = affordable and not collision and underCap
-
-	local color = if canPlace then COLOR_GHOST_VALID else COLOR_GHOST_INVALID
-	for _, child in ghost:GetDescendants() do
-		if child:IsA("BasePart") then
-			child.Color = color
+	local hitStructureModel: Model? = nil
+	local structuresFolder = Workspace:FindFirstChild("PlayerBaseStructures")
+	if result and structuresFolder and result.Instance:IsDescendantOf(structuresFolder) then
+		local cur: Instance? = result.Instance
+		while cur ~= nil and cur.Parent ~= structuresFolder do
+			cur = cur.Parent
+		end
+		if cur and cur:IsA("Model") then
+			hitStructureModel = cur
 		end
 	end
 
-	ghost.Parent = camera
+	local playerModels = collectPlayerStructureModels()
+	local isFoundation = (pieceCfg.Category == "Foundation")
+	local bestScore = if isFoundation then SOCKET_SEARCH_RADIUS_FOUNDATION else SOCKET_SEARCH_RADIUS_OTHER
+
+	local bestCF: CFrame? = nil
+	local bestParentUid: string? = nil
+	local bestSocketId: string? = nil
+	local bestSocketKind: Types.BuildSocketKind? = nil
+	local bestParentType: BuildPieceType? = nil
+	local bestParentCF: CFrame? = nil
+	local bestRotStep = currentRotStep
+
+	for _, parentModel in playerModels do
+		local uidAttr = parentModel:GetAttribute("BuildUid")
+		local typeAttr = parentModel:GetAttribute("PieceType")
+		if typeof(uidAttr) == "string" and typeof(typeAttr) == "string" then
+			local parentType = BuildingGeometry.CanonicalPieceType(typeAttr)
+			local parentCF = parentModel:GetPivot()
+			local hitBonus = if parentModel == hitStructureModel then 2.0 else 0
+
+			for _, socket in BuildingGeometry.GetPieceSockets(parentType) do
+				if BuildingGeometry.IsSocketCompatible(parentType, socket, selectedType) then
+					local stepsToTry = if socket.Kind == "WallTop" and pieceCfg.Category == "Floor"
+						then { 0, 1 }
+						else { currentRotStep }
+					for _, candStep in stepsToTry do
+						if
+							not isSocketOccupiedLocally(
+								parentModel,
+								parentType,
+								parentCF,
+								socket,
+								selectedType,
+								playerModels,
+								candStep
+							)
+						then
+							local candidateCF = BuildingGeometry.ComputeSnappedCFrame(
+								parentType,
+								parentCF,
+								socket,
+								selectedType,
+								candStep
+							)
+							local sockPos = (parentCF * socket.LocalCFrame).Position
+							local distToAim = if pieceCfg.Category == "Foundation"
+									or pieceCfg.Category == "Floor"
+								then (aimPos - candidateCF.Position).Magnitude * 0.65 + (aimPos - sockPos).Magnitude * 0.35
+								else (aimPos - sockPos).Magnitude
+							local score = distToAim - hitBonus
+							if score < bestScore then
+								bestScore = score
+								bestCF = candidateCF
+								bestParentUid = uidAttr
+								bestSocketId = socket.Id
+								bestSocketKind = socket.Kind
+								bestParentType = parentType
+								bestParentCF = parentCF
+								bestRotStep = candStep
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+
+	local targetCF: CFrame
+	local parentUid: string? = nil
+	local socketId: string? = nil
+	local chosenRotStep = currentRotStep
+	local hasValidTarget = true
+	local reason = ""
+
+	if bestCF ~= nil and bestParentUid ~= nil and bestSocketId ~= nil then
+		targetCF = bestCF
+		parentUid = bestParentUid
+		socketId = bestSocketId
+		chosenRotStep = bestRotStep
+
+		if bestSocketKind == "Top" and bestParentType ~= nil and bestParentCF ~= nil then
+			if not hasSupportingWallLocally(bestParentType, bestParentCF, playerModels) then
+				hasValidTarget = false
+				reason = "Requires supporting wall"
+			end
+		end
+
+		local groundRefY = getLowestFoundationYLocally(playerModels, targetCF.Position.Y)
+		local maxAllowedY = groundRefY + BuildingConfig.MaxBuildHeight * BuildingConfig.WallHeight + 2.0
+		if hasValidTarget and targetCF.Position.Y > maxAllowedY then
+			hasValidTarget = false
+			reason = "Max build height reached"
+		end
+	elseif isFoundation then
+		local groundResult = result
+		if groundResult == nil or hitStructureModel ~= nil then
+			local downOrigin = Vector3.new(aimPos.X, aimPos.Y + 4.0, aimPos.Z)
+			groundResult = Workspace:Raycast(downOrigin, Vector3.new(0, -12.0, 0), cachedPreviewRayParams)
+		end
+
+		if
+			groundResult ~= nil
+			and groundResult.Normal.Y >= 0.65
+			and not BuildingGeometry.IsNoBuildInstance(groundResult.Instance)
+		then
+			local gridStep = BuildingConfig.GridSize
+			local snapX = math.round(groundResult.Position.X / gridStep) * gridStep
+			local snapZ = math.round(groundResult.Position.Z / gridStep) * gridStep
+			targetCF = CFrame.new(snapX, groundResult.Position.Y, snapZ) * CFrame.Angles(0, math.rad(currentYawDeg), 0)
+		else
+			targetCF = CFrame.new(aimPos.X, aimPos.Y, aimPos.Z) * CFrame.Angles(0, math.rad(currentYawDeg), 0)
+			hasValidTarget = false
+			reason = "Aim at flat ground or socket"
+		end
+	else
+		targetCF = CFrame.new(aimPos) * CFrame.Angles(0, math.rad(currentYawDeg), 0)
+		hasValidTarget = false
+		reason = "Snap to valid socket"
+	end
+
+	if hasValidTarget then
+		if (hrp.Position - targetCF.Position).Magnitude > BuildingConfig.MaxBuildDistance then
+			hasValidTarget = false
+			reason = string.format("Too far (>%d studs)", BuildingConfig.MaxBuildDistance)
+		elseif #savedPieces >= BuildingConfig.MaxPiecesPerBase then
+			hasValidTarget = false
+			reason = "Max pieces limit reached"
+		elseif not canAffordCost(pieceCfg.Cost) then
+			hasValidTarget = false
+			reason = "Not enough resources"
+		else
+			local wallOk, wallReason = BuildingGeometry.CheckParallelWallStacking(
+				selectedType,
+				targetCF,
+				buildLocalWallCandidates(playerModels)
+			)
+			if not wallOk then
+				hasValidTarget = false
+				reason = wallReason or "Anti-stacking: too close to wall"
+			else
+				local overlap =
+					BuildingGeometry.CheckWorldOverlap(selectedType, targetCF, cachedPreviewExcludes, parentUid == nil)
+				if not overlap.Allowed then
+					hasValidTarget = false
+					reason = overlap.Reason or "Blocked"
+				end
+			end
+		end
+	end
+
+	previewCFrame = targetCF
+	previewParentUid = parentUid
+	previewSocketId = socketId
+	previewRotStep = chosenRotStep
+	previewPlaceable = hasValidTarget
+	previewStatusMessage = reason
+
+	ghost:PivotTo(targetCF)
+	local ghostColor = if not hasValidTarget
+		then COLOR_GHOST_INVALID
+		elseif socketId ~= nil then COLOR_GHOST_VALID_SOCKET
+		else COLOR_GHOST_VALID_GRID
+	BuildingGeometry.SetGhostColor(ghost, ghostColor)
+	ghost.Parent = Workspace
+	updateBuildUiVisuals()
 end
 
 local function createBuildingGui()
@@ -466,7 +822,6 @@ local function createBuildingGui()
 		return
 	end
 	local playerGui = localPlayer:WaitForChild("PlayerGui") :: PlayerGui
-
 	local existing = playerGui:FindFirstChild("BuildingGui")
 	if existing then
 		existing:Destroy()
@@ -482,9 +837,9 @@ local function createBuildingGui()
 	actionBar.Name = "BaseActionBar"
 	actionBar.AnchorPoint = Vector2.new(1, 0)
 	actionBar.Position = UDim2.new(1, -16, 0, 16)
-	actionBar.Size = UDim2.fromOffset(296, 40)
+	actionBar.Size = UDim2.fromOffset(304, 40)
 	actionBar.BackgroundTransparency = 1
-	actionBar.Visible = BuildingController.IsBaseMode()
+	actionBar.Visible = BuildingController.CanBuild()
 	actionBar.Parent = screenGui
 
 	local barLayout = Instance.new("UIListLayout")
@@ -494,42 +849,31 @@ local function createBuildingGui()
 	barLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	barLayout.Parent = actionBar
 
-	local buildBtn = Instance.new("TextButton")
-	buildBtn.Name = "BuildToggleButton"
-	buildBtn.LayoutOrder = 1
-	buildBtn.Size = UDim2.fromOffset(118, 38)
-	buildBtn.BackgroundColor3 = Color3.fromRGB(55, 110, 165)
-	buildBtn.BorderSizePixel = 0
-	buildBtn.Font = Enum.Font.GothamBold
-	buildBtn.TextSize = 13
-	buildBtn.TextColor3 = Color3.new(1, 1, 1)
-	buildBtn.Text = "Build [B]"
-	buildBtn.Parent = actionBar
+	local function makeTopBtn(name: string, order: number, w: number, bg: Color3, text: string): TextButton
+		local btn = Instance.new("TextButton")
+		btn.Name = name
+		btn.LayoutOrder = order
+		btn.Size = UDim2.fromOffset(w, 38)
+		btn.BackgroundColor3 = bg
+		btn.BorderSizePixel = 0
+		btn.Font = Enum.Font.GothamBold
+		btn.TextSize = 13
+		btn.TextColor3 = Color3.new(1, 1, 1)
+		btn.Text = text
+		btn.Parent = actionBar
+		local c = Instance.new("UICorner")
+		c.CornerRadius = UDim.new(0, 8)
+		c.Parent = btn
+		return btn
+	end
 
-	local buildBtnCorner = Instance.new("UICorner")
-	buildBtnCorner.CornerRadius = UDim.new(0, 8)
-	buildBtnCorner.Parent = buildBtn
-
+	local buildBtn = makeTopBtn("BuildToggleButton", 1, 124, Color3.fromRGB(55, 110, 165), "Build [B]")
 	buildBtn.Activated:Connect(function()
-		BuildingController.SetBuildMode(not isBuildMode)
+		BuildingController.SetBuildMode(not BuildingController.IsBuildMode())
 	end)
 
-	local deployBtn = Instance.new("TextButton")
-	deployBtn.Name = "DeployButton"
-	deployBtn.LayoutOrder = 2
-	deployBtn.Size = UDim2.fromOffset(168, 38)
-	deployBtn.BackgroundColor3 = Color3.fromRGB(55, 155, 85)
-	deployBtn.BorderSizePixel = 0
-	deployBtn.Font = Enum.Font.GothamBold
-	deployBtn.TextSize = 13
-	deployBtn.TextColor3 = Color3.new(1, 1, 1)
-	deployBtn.Text = "Deploy to PvP Map"
-	deployBtn.Parent = actionBar
-
-	local deployCorner = Instance.new("UICorner")
-	deployCorner.CornerRadius = UDim.new(0, 8)
-	deployCorner.Parent = deployBtn
-
+	local deployBtn = makeTopBtn("DeployButton", 2, 168, Color3.fromRGB(55, 155, 85), "Deploy to PvP Map")
+	deployBtn.Visible = BuildingController.IsBaseMode()
 	deployBtn.Activated:Connect(function()
 		if BuildingController.IsBaseMode() then
 			Net.GetEvent(Net.Events.RequestReturnToMap):FireServer()
@@ -540,7 +884,7 @@ local function createBuildingGui()
 	menuFrame.Name = "BuildMenuFrame"
 	menuFrame.AnchorPoint = Vector2.new(0.5, 1)
 	menuFrame.Position = UDim2.new(0.5, 0, 1, -110)
-	menuFrame.Size = UDim2.fromOffset(664, 122)
+	menuFrame.Size = UDim2.fromOffset(728, 168)
 	menuFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
 	menuFrame.BackgroundTransparency = 0.12
 	menuFrame.BorderSizePixel = 0
@@ -550,25 +894,24 @@ local function createBuildingGui()
 	local menuCorner = Instance.new("UICorner")
 	menuCorner.CornerRadius = UDim.new(0, 10)
 	menuCorner.Parent = menuFrame
-
 	local menuStroke = Instance.new("UIStroke")
 	menuStroke.Color = Color3.fromRGB(85, 85, 98)
 	menuStroke.Thickness = 1.5
 	menuStroke.Parent = menuFrame
 
-	local piecesRow = Instance.new("Frame")
-	piecesRow.Name = "PiecesRow"
-	piecesRow.Position = UDim2.fromOffset(10, 10)
-	piecesRow.Size = UDim2.new(1, -20, 0, 48)
-	piecesRow.BackgroundTransparency = 1
-	piecesRow.Parent = menuFrame
+	local piecesGridFrame = Instance.new("Frame")
+	piecesGridFrame.Name = "PiecesGrid"
+	piecesGridFrame.Position = UDim2.fromOffset(10, 8)
+	piecesGridFrame.Size = UDim2.new(1, -20, 0, 96)
+	piecesGridFrame.BackgroundTransparency = 1
+	piecesGridFrame.Parent = menuFrame
 
-	local piecesLayout = Instance.new("UIListLayout")
-	piecesLayout.FillDirection = Enum.FillDirection.Horizontal
-	piecesLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-	piecesLayout.Padding = UDim.new(0, 6)
-	piecesLayout.SortOrder = Enum.SortOrder.LayoutOrder
-	piecesLayout.Parent = piecesRow
+	local piecesGrid = Instance.new("UIGridLayout")
+	piecesGrid.CellSize = UDim2.fromOffset(112, 44)
+	piecesGrid.CellPadding = UDim2.fromOffset(6, 6)
+	piecesGrid.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	piecesGrid.SortOrder = Enum.SortOrder.LayoutOrder
+	piecesGrid.Parent = piecesGridFrame
 
 	table.clear(pieceButtons)
 	for index, pieceType in BuildingConfig.PieceOrder do
@@ -576,16 +919,13 @@ local function createBuildingGui()
 		local btn = Instance.new("TextButton")
 		btn.Name = string.format("Piece_%s", pieceType)
 		btn.LayoutOrder = index
-		btn.Size = UDim2.fromOffset(102, 46)
 		btn.BackgroundColor3 = COLOR_BTN_DEFAULT
 		btn.BorderSizePixel = 0
 		btn.Text = ""
-		btn.Parent = piecesRow
-
+		btn.Parent = piecesGridFrame
 		local btnCorner = Instance.new("UICorner")
 		btnCorner.CornerRadius = UDim.new(0, 7)
 		btnCorner.Parent = btn
-
 		local btnStroke = Instance.new("UIStroke")
 		btnStroke.Color = COLOR_STROKE_DEFAULT
 		btnStroke.Thickness = 1.2
@@ -594,22 +934,24 @@ local function createBuildingGui()
 
 		local nameLabel = Instance.new("TextLabel")
 		nameLabel.Name = "NameLabel"
-		nameLabel.Position = UDim2.fromOffset(4, 4)
+		nameLabel.Position = UDim2.fromOffset(4, 3)
 		nameLabel.Size = UDim2.new(1, -8, 0, 18)
 		nameLabel.BackgroundTransparency = 1
 		nameLabel.Font = Enum.Font.GothamBold
-		nameLabel.TextSize = 11
+		nameLabel.TextSize = 10
+		nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
 		nameLabel.TextColor3 = Color3.fromRGB(240, 240, 246)
 		nameLabel.Text = if pieceCfg then pieceCfg.Name else pieceType
 		nameLabel.Parent = btn
 
 		local costLabel = Instance.new("TextLabel")
 		costLabel.Name = "CostLabel"
-		costLabel.Position = UDim2.fromOffset(4, 24)
+		costLabel.Position = UDim2.fromOffset(4, 22)
 		costLabel.Size = UDim2.new(1, -8, 0, 16)
 		costLabel.BackgroundTransparency = 1
 		costLabel.Font = Enum.Font.GothamMedium
 		costLabel.TextSize = 10
+		costLabel.TextTruncate = Enum.TextTruncate.AtEnd
 		costLabel.TextColor3 = Color3.fromRGB(165, 215, 165)
 		costLabel.Text = if pieceCfg then formatCostText(pieceCfg.Cost) else ""
 		costLabel.Parent = btn
@@ -618,20 +960,19 @@ local function createBuildingGui()
 			selectedPieceIndex = index
 			upgradeModeToggle = false
 			demolishModeToggle = false
+			if toolMode == "Hammer" then
+				toolMode = "None"
+				manualBuildMode = true
+			end
 			updateBuildUiVisuals()
 		end)
 
-		table.insert(pieceButtons, {
-			PieceType = pieceType,
-			Button = btn,
-			Stroke = btnStroke,
-			CostLabel = costLabel,
-		})
+		table.insert(pieceButtons, { PieceType = pieceType, Button = btn, Stroke = btnStroke, CostLabel = costLabel })
 	end
 
 	local statusRow = Instance.new("Frame")
 	statusRow.Name = "StatusRow"
-	statusRow.Position = UDim2.fromOffset(10, 64)
+	statusRow.Position = UDim2.fromOffset(10, 110)
 	statusRow.Size = UDim2.new(1, -20, 0, 28)
 	statusRow.BackgroundTransparency = 1
 	statusRow.Parent = menuFrame
@@ -639,76 +980,54 @@ local function createBuildingGui()
 	local statusLabel = Instance.new("TextLabel")
 	statusLabel.Name = "StatusInfo"
 	statusLabel.Position = UDim2.fromOffset(2, 0)
-	statusLabel.Size = UDim2.fromScale(0.46, 1)
+	statusLabel.Size = UDim2.fromScale(0.50, 1)
 	statusLabel.BackgroundTransparency = 1
 	statusLabel.Font = Enum.Font.GothamBold
 	statusLabel.TextSize = 12
+	statusLabel.TextTruncate = Enum.TextTruncate.AtEnd
 	statusLabel.TextColor3 = Color3.fromRGB(140, 235, 145)
 	statusLabel.TextXAlignment = Enum.TextXAlignment.Left
 	statusLabel.Text = ""
 	statusLabel.Parent = statusRow
 
-	local rotBtn = Instance.new("TextButton")
-	rotBtn.Name = "RotateButton"
-	rotBtn.Position = UDim2.new(0.47, 0, 0, 1)
-	rotBtn.Size = UDim2.fromOffset(118, 26)
-	rotBtn.BackgroundColor3 = COLOR_ACTION_IDLE
-	rotBtn.BorderSizePixel = 0
-	rotBtn.Font = Enum.Font.GothamBold
-	rotBtn.TextSize = 11
-	rotBtn.TextColor3 = Color3.new(1, 1, 1)
-	rotBtn.Text = "Rot: 0 deg [R]"
-	rotBtn.Parent = statusRow
+	local function makeActionBtn(name: string, xScale: number, w: number, text: string): TextButton
+		local b = Instance.new("TextButton")
+		b.Name = name
+		b.Position = UDim2.new(xScale, 0, 0, 1)
+		b.Size = UDim2.fromOffset(w, 26)
+		b.BackgroundColor3 = COLOR_ACTION_IDLE
+		b.BorderSizePixel = 0
+		b.Font = Enum.Font.GothamBold
+		b.TextSize = 11
+		b.TextColor3 = Color3.new(1, 1, 1)
+		b.Text = text
+		b.Parent = statusRow
+		local c = Instance.new("UICorner")
+		c.CornerRadius = UDim.new(0, 6)
+		c.Parent = b
+		return b
+	end
 
-	local rotCorner = Instance.new("UICorner")
-	rotCorner.CornerRadius = UDim.new(0, 6)
-	rotCorner.Parent = rotBtn
-
+	local rotBtn = makeActionBtn("RotateButton", 0.51, 112, "Rot: 0 deg [R]")
 	rotBtn.Activated:Connect(function()
-		currentRotY = (currentRotY + 90) % 360
+		currentRotStep = (currentRotStep + 1) % 12
+		currentYawDeg = (currentYawDeg + 30) % 360
 		updateBuildUiVisuals()
 	end)
 
-	local upgBtn = Instance.new("TextButton")
-	upgBtn.Name = "UpgradeButton"
-	upgBtn.Position = UDim2.new(0.67, 0, 0, 1)
-	upgBtn.Size = UDim2.fromOffset(104, 26)
-	upgBtn.BackgroundColor3 = COLOR_ACTION_IDLE
-	upgBtn.BorderSizePixel = 0
-	upgBtn.Font = Enum.Font.GothamBold
-	upgBtn.TextSize = 11
-	upgBtn.TextColor3 = Color3.new(1, 1, 1)
-	upgBtn.Text = "Upgrade [G]"
-	upgBtn.Parent = statusRow
-
-	local upgCorner = Instance.new("UICorner")
-	upgCorner.CornerRadius = UDim.new(0, 6)
-	upgCorner.Parent = upgBtn
-
+	local upgBtn = makeActionBtn("UpgradeButton", 0.68, 110, "Hammer [G]")
 	upgBtn.Activated:Connect(function()
 		upgradeModeToggle = not upgradeModeToggle
 		if upgradeModeToggle then
 			demolishModeToggle = false
+		elseif toolMode == "Hammer" then
+			toolMode = "None"
+			manualBuildMode = true
 		end
 		updateBuildUiVisuals()
 	end)
 
-	local demBtn = Instance.new("TextButton")
-	demBtn.Name = "DemolishButton"
-	demBtn.Position = UDim2.new(0.84, 0, 0, 1)
-	demBtn.Size = UDim2.fromOffset(96, 26)
-	demBtn.BackgroundColor3 = COLOR_ACTION_IDLE
-	demBtn.BorderSizePixel = 0
-	demBtn.Font = Enum.Font.GothamBold
-	demBtn.TextSize = 11
-	demBtn.TextColor3 = Color3.new(1, 1, 1)
-	demBtn.Text = "Demolish"
-	demBtn.Parent = statusRow
-
-	local demCorner = Instance.new("UICorner")
-	demCorner.CornerRadius = UDim.new(0, 6)
-	demCorner.Parent = demBtn
-
+	local demBtn = makeActionBtn("DemolishButton", 0.85, 96, "Demolish")
 	demBtn.Activated:Connect(function()
 		demolishModeToggle = not demolishModeToggle
 		if demolishModeToggle then
@@ -726,7 +1045,7 @@ local function createBuildingGui()
 	hintLabel.Font = Enum.Font.Gotham
 	hintLabel.TextSize = 11
 	hintLabel.TextColor3 = Color3.fromRGB(185, 185, 200)
-	hintLabel.Text = "[Z/X] Piece | [R] Rotate | [G+LMB] Upgrade | [LMB] Place | [B] Exit"
+	hintLabel.Text = "[Z/X] Piece | [R] Rotate | [G/Hammer] LMB Upgrade / RMB Demolish | [LMB] Place | [B] Exit"
 	hintLabel.Parent = menuFrame
 
 	local highlight = Instance.new("Highlight")
@@ -738,6 +1057,7 @@ local function createBuildingGui()
 
 	baseActionBar = actionBar
 	buildToggleBtn = buildBtn
+	deployToMapBtn = deployBtn
 	buildMenuFrame = menuFrame
 	statusInfoLabel = statusLabel
 	rotButton = rotBtn
@@ -757,27 +1077,72 @@ local function onBaseStateSync(piecesAny: any)
 				and type(item.Uid) == "string"
 				and type(item.PieceType) == "string"
 				and type(item.Tier) == "string"
-				and type(item.GridX) == "number"
-				and type(item.GridY) == "number"
-				and type(item.GridZ) == "number"
 				and type(item.RotY) == "number"
 				and type(item.Hp) == "number"
 			then
+				local parentUid = if type(item.ParentUid) == "string"
+					then item.ParentUid
+					elseif type(item.AnchorUid) == "string" then item.AnchorUid
+					else nil
 				table.insert(parsed, {
 					Uid = item.Uid,
-					PieceType = item.PieceType :: BuildPieceType,
+					PieceType = BuildingGeometry.CanonicalPieceType(item.PieceType),
 					Tier = item.Tier :: BuildTier,
-					GridX = item.GridX,
-					GridY = item.GridY,
-					GridZ = item.GridZ,
+					PosX = if type(item.PosX) == "number" then item.PosX else 0,
+					PosY = if type(item.PosY) == "number" then item.PosY else 0,
+					PosZ = if type(item.PosZ) == "number" then item.PosZ else 0,
 					RotY = item.RotY,
+					ParentUid = parentUid,
+					AnchorUid = parentUid,
+					SocketId = if type(item.SocketId) == "string" then item.SocketId else nil,
 					Hp = item.Hp,
+					LastDamagedAt = if type(item.LastDamagedAt) == "number" then item.LastDamagedAt else nil,
 					Storage = if type(item.Storage) == "table" then item.Storage else nil,
 				})
 			end
 		end
 	end
 	savedPieces = parsed
+end
+
+local function syncModeFromEquippedTool()
+	if not BuildingController.CanBuild() then
+		toolMode = "None"
+		manualBuildMode = false
+		upgradeModeToggle = false
+		demolishModeToggle = false
+		updateBuildUiVisuals()
+		return
+	end
+
+	local selectedSlot = HotbarController.GetSelectedSlot()
+	local equipped = InventoryController.GetSlot(selectedSlot)
+	local itemId = if equipped ~= nil and equipped.Count > 0 then equipped.Id else ""
+
+	if itemId == "building_plan" then
+		toolMode = "Build"
+		upgradeModeToggle = false
+		demolishModeToggle = false
+	elseif itemId == "hammer" then
+		toolMode = "Hammer"
+		upgradeModeToggle = true
+		demolishModeToggle = false
+	elseif toolMode ~= "None" then
+		toolMode = "None"
+		manualBuildMode = false
+		upgradeModeToggle = false
+		demolishModeToggle = false
+	end
+
+	if not BuildingController.IsBuildMode() then
+		previewCFrame = nil
+		previewPlaceable = false
+		if ghostModel then
+			ghostModel.Parent = nil
+		end
+		clearTargetHighlight()
+	end
+	updateBuildUiVisuals()
 end
 
 function BuildingController.IsBaseMode(): boolean
@@ -792,23 +1157,44 @@ function BuildingController.IsBaseMode(): boolean
 		or (RunService:IsStudio() and Workspace:GetAttribute("ForceBaseMode") == true)
 end
 
+function BuildingController.CanBuild(): boolean
+	if Workspace:GetAttribute("RaidServerMode") == true then
+		return false
+	end
+	local localPlayer = Players.LocalPlayer
+	if localPlayer ~= nil and localPlayer:GetAttribute("InRaid") == true then
+		return false
+	end
+	return true
+end
+
 function BuildingController.IsBuildMode(): boolean
-	return BuildingController.IsBaseMode() and isBuildMode
+	return BuildingController.CanBuild() and (toolMode ~= "None" or manualBuildMode)
 end
 
 function BuildingController.SetBuildMode(enabled: boolean)
-	if enabled and not BuildingController.IsBaseMode() then
+	if enabled and not BuildingController.CanBuild() then
 		return
 	end
-	isBuildMode = enabled
+	manualBuildMode = enabled
 	if not enabled then
+		toolMode = "None"
 		upgradeModeToggle = false
 		demolishModeToggle = false
-		hasValidPreview = false
+		previewCFrame = nil
+		previewParentUid = nil
+		previewSocketId = nil
+		previewPlaceable = false
 		if ghostModel then
 			ghostModel.Parent = nil
 		end
 		clearTargetHighlight()
+	else
+		if toolMode == "Hammer" then
+			toolMode = "None"
+		end
+		upgradeModeToggle = false
+		demolishModeToggle = false
 	end
 	updateBuildUiVisuals()
 end
@@ -824,63 +1210,72 @@ function BuildingController.Init()
 	isInitialized = true
 
 	createBuildingGui()
+	refreshPreviewRaycastFilter()
 	updateBuildUiVisuals()
 
 	Net.GetEvent(Net.Events.BaseStateSync).OnClientEvent:Connect(onBaseStateSync)
+	InventoryController.OnChanged(syncModeFromEquippedTool)
+	HotbarController.SelectionChanged:Connect(syncModeFromEquippedTool)
 
-	InventoryController.OnChanged(function()
-		updateBuildUiVisuals()
-	end)
-
-	if RunService:IsStudio() then
-		Workspace:GetAttributeChangedSignal("ForceBaseMode"):Connect(function()
-			if not BuildingController.IsBaseMode() then
-				BuildingController.SetBuildMode(false)
-			end
-			updateBuildUiVisuals()
+	local localPlayer = Players.LocalPlayer
+	if localPlayer ~= nil then
+		localPlayer:GetAttributeChangedSignal("InRaid"):Connect(syncModeFromEquippedTool)
+		localPlayer.CharacterAdded:Connect(function()
+			refreshPreviewRaycastFilter()
 		end)
+		localPlayer.CharacterRemoving:Connect(function()
+			refreshPreviewRaycastFilter()
+		end)
+	end
+	Workspace:GetAttributeChangedSignal("RaidServerMode"):Connect(syncModeFromEquippedTool)
+	if RunService:IsStudio() then
+		Workspace:GetAttributeChangedSignal("ForceBaseMode"):Connect(updateBuildUiVisuals)
 	end
 
 	UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessedEvent: boolean)
 		if UserInputService:GetFocusedTextBox() ~= nil then
 			return
 		end
-
 		if input.KeyCode == Enum.KeyCode.B and not gameProcessedEvent then
-			if BuildingController.IsBaseMode() then
-				BuildingController.SetBuildMode(not isBuildMode)
+			if BuildingController.CanBuild() then
+				BuildingController.SetBuildMode(not BuildingController.IsBuildMode())
 			end
 			return
 		end
-
 		if not BuildingController.IsBuildMode() then
 			return
 		end
 
 		if input.KeyCode == Enum.KeyCode.R and not gameProcessedEvent then
-			currentRotY = (currentRotY + 90) % 360
+			currentRotStep = (currentRotStep + 1) % 12
+			currentYawDeg = (currentYawDeg + 30) % 360
 			updateBuildUiVisuals()
-		elseif input.KeyCode == Enum.KeyCode.Z and not gameProcessedEvent then
+		elseif (input.KeyCode == Enum.KeyCode.Z or input.KeyCode == Enum.KeyCode.X) and not gameProcessedEvent then
 			local total = #BuildingConfig.PieceOrder
-			selectedPieceIndex = ((selectedPieceIndex - 2) % total) + 1
+			local delta = if input.KeyCode == Enum.KeyCode.Z then -2 else 0
+			selectedPieceIndex = ((selectedPieceIndex + delta) % total) + 1
 			upgradeModeToggle = false
 			demolishModeToggle = false
-			updateBuildUiVisuals()
-		elseif input.KeyCode == Enum.KeyCode.X and not gameProcessedEvent then
-			local total = #BuildingConfig.PieceOrder
-			selectedPieceIndex = (selectedPieceIndex % total) + 1
-			upgradeModeToggle = false
-			demolishModeToggle = false
+			if toolMode == "Hammer" then
+				toolMode = "None"
+				manualBuildMode = true
+			end
 			updateBuildUiVisuals()
 		elseif input.KeyCode == Enum.KeyCode.G then
 			updateBuildUiVisuals()
 		elseif input.UserInputType == Enum.UserInputType.MouseButton1 and not gameProcessedEvent then
 			handleBuildLeftClick()
+		elseif
+			input.UserInputType == Enum.UserInputType.MouseButton2
+			and isHammerModeActive()
+			and not isAnyModalUiOpen()
+		then
+			handleHammerAction(true)
 		end
 	end)
 
 	UserInputService.InputEnded:Connect(function(input: InputObject)
-		if input.KeyCode == Enum.KeyCode.G and isBuildMode then
+		if input.KeyCode == Enum.KeyCode.G and BuildingController.IsBuildMode() then
 			updateBuildUiVisuals()
 		end
 	end)

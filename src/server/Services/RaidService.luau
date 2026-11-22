@@ -9,8 +9,10 @@ local Workspace = game:GetService("Workspace")
 local Config = require(ReplicatedStorage.Shared.Config)
 local Types = require(ReplicatedStorage.Shared.Types)
 local BuildingConfig = require(ReplicatedStorage.Shared.configs.BuildingConfig)
+local BuildingGeometry = require(ReplicatedStorage.Shared.BuildingGeometry)
 local Explosives = require(ReplicatedStorage.Shared.configs.Explosives)
 local Net = require(ReplicatedStorage.Shared.Net)
+local BaseService = require(ServerScriptService.Server.Services.BaseService)
 local DataService = require(ServerScriptService.Server.Services.DataService)
 local InventoryService = require(ServerScriptService.Server.Services.InventoryService)
 local LootService = require(ServerScriptService.Server.Services.LootService)
@@ -72,21 +74,6 @@ local MAX_HIT_SURFACE_OFFSET = 4.0
 local EXPLOSION_EFFECT_BROADCAST_RADIUS = 350
 local MAX_OCCLUSION_RAY_PASSES = 8
 local DEFAULT_MIN_FALLOFF_MULTIPLIER = 0.25
-
-local TIER_VISUALS: { [BuildTier]: { Material: Enum.Material, Color: Color3 } } = {
-	wood = {
-		Material = Enum.Material.WoodPlanks,
-		Color = Color3.fromRGB(165, 118, 72),
-	},
-	stone = {
-		Material = Enum.Material.Cobblestone,
-		Color = Color3.fromRGB(140, 140, 145),
-	},
-	metal = {
-		Material = Enum.Material.DiamondPlate,
-		Color = Color3.fromRGB(95, 108, 122),
-	},
-}
 
 local activeSessions: { [Player]: RaidSession } = {}
 local lastListRequest: { [Player]: number } = {}
@@ -169,121 +156,121 @@ local function buildMockRaidBase(): BaseData
 			Uid = "mock_foundation_1",
 			PieceType = "foundation",
 			Tier = "stone",
-			GridX = 0,
-			GridY = 0,
-			GridZ = 0,
+			PosX = 0,
+			PosY = 0,
+			PosZ = 0,
 			RotY = 0,
-			Hp = 300,
+			Hp = 500,
 		},
 		{
 			Uid = "mock_foundation_2",
 			PieceType = "foundation",
 			Tier = "stone",
-			GridX = 0,
-			GridY = 0,
-			GridZ = -1,
+			PosX = 0,
+			PosY = 0,
+			PosZ = -12,
 			RotY = 0,
-			Hp = 300,
+			Hp = 500,
 		},
 		{
 			Uid = "mock_wall_front",
 			PieceType = "wall",
 			Tier = "wood",
-			GridX = 0,
-			GridY = 0,
-			GridZ = 0,
+			PosX = 0,
+			PosY = 1,
+			PosZ = 6,
 			RotY = 180,
-			Hp = 150,
+			Hp = 250,
 		},
 		{
 			Uid = "mock_wall_west_1",
 			PieceType = "wall",
 			Tier = "stone",
-			GridX = 0,
-			GridY = 0,
-			GridZ = 0,
+			PosX = -6,
+			PosY = 1,
+			PosZ = 0,
 			RotY = 90,
-			Hp = 300,
+			Hp = 500,
 		},
 		{
 			Uid = "mock_wall_east_1",
 			PieceType = "wall",
 			Tier = "stone",
-			GridX = 0,
-			GridY = 0,
-			GridZ = 0,
+			PosX = 6,
+			PosY = 1,
+			PosZ = 0,
 			RotY = 270,
-			Hp = 300,
+			Hp = 500,
 		},
 		{
 			Uid = "mock_wall_west_2",
 			PieceType = "wall",
 			Tier = "stone",
-			GridX = 0,
-			GridY = 0,
-			GridZ = -1,
+			PosX = -6,
+			PosY = 1,
+			PosZ = -12,
 			RotY = 90,
-			Hp = 300,
+			Hp = 500,
 		},
 		{
 			Uid = "mock_wall_east_2",
 			PieceType = "wall",
 			Tier = "stone",
-			GridX = 0,
-			GridY = 0,
-			GridZ = -1,
+			PosX = 6,
+			PosY = 1,
+			PosZ = -12,
 			RotY = 270,
-			Hp = 300,
+			Hp = 500,
 		},
 		{
 			Uid = "mock_wall_north",
 			PieceType = "wall",
 			Tier = "stone",
-			GridX = 0,
-			GridY = 0,
-			GridZ = -1,
+			PosX = 0,
+			PosY = 1,
+			PosZ = -18,
 			RotY = 0,
-			Hp = 300,
+			Hp = 500,
 		},
 		{
 			Uid = "mock_doorway_inner",
 			PieceType = "doorway",
 			Tier = "stone",
-			GridX = 0,
-			GridY = 0,
-			GridZ = 0,
+			PosX = 0,
+			PosY = 1,
+			PosZ = -6,
 			RotY = 0,
-			Hp = 240,
+			Hp = 400,
 		},
 		{
 			Uid = "mock_roof_1",
 			PieceType = "roof",
 			Tier = "stone",
-			GridX = 0,
-			GridY = 0,
-			GridZ = 0,
+			PosX = 0,
+			PosY = 10.2,
+			PosZ = 0,
 			RotY = 0,
-			Hp = 240,
+			Hp = 400,
 		},
 		{
 			Uid = "mock_roof_2",
 			PieceType = "roof",
 			Tier = "stone",
-			GridX = 0,
-			GridY = 0,
-			GridZ = -1,
+			PosX = 0,
+			PosY = 10.2,
+			PosZ = -12,
 			RotY = 0,
-			Hp = 240,
+			Hp = 400,
 		},
 		{
 			Uid = "mock_storage_1",
 			PieceType = "storage_box",
 			Tier = "wood",
-			GridX = 0,
-			GridY = 0,
-			GridZ = -1,
+			PosX = 0,
+			PosY = 1,
+			PosZ = -12,
 			RotY = 0,
-			Hp = 100,
+			Hp = 150,
 			Storage = {
 				["1"] = { Id = "scrap", Count = 120 },
 				["2"] = { Id = "tech_parts", Count = 6 },
@@ -299,107 +286,25 @@ local function buildMockRaidBase(): BaseData
 	}
 end
 
-local function createPiecePart(parent: Instance, name: string, size: Vector3, cframe: CFrame): Part
-	local part = Instance.new("Part")
-	part.Name = name
-	part.Size = size
-	part.CFrame = cframe
-	part.Anchored = true
-	part.CanCollide = true
-	part.TopSurface = Enum.SurfaceType.Smooth
-	part.BottomSurface = Enum.SurfaceType.Smooth
-	part.Parent = parent
-	return part
-end
-
-local function applyTierVisuals(model: Model, pieceType: BuildPieceType, tier: BuildTier)
-	if pieceType == "storage_box" then
-		for _, child in model:GetDescendants() do
-			if child:IsA("BasePart") then
-				child.Material = Enum.Material.Wood
-				if child.Name == "ChestLid" then
-					child.Color = Color3.fromRGB(95, 62, 32)
-				else
-					child.Color = Color3.fromRGB(130, 88, 48)
-				end
-			end
-		end
-		return
-	end
-
-	if pieceType == "workbench_1" then
-		for _, child in model:GetDescendants() do
-			if child:IsA("BasePart") then
-				if child.Name == "TableTop" then
-					child.Material = Enum.Material.WoodPlanks
-					child.Color = Color3.fromRGB(150, 105, 65)
-				else
-					child.Material = Enum.Material.Metal
-					child.Color = Color3.fromRGB(70, 74, 80)
-				end
-			end
-		end
-		return
-	end
-
-	local visual = TIER_VISUALS[tier] or TIER_VISUALS.wood
-	for _, child in model:GetDescendants() do
-		if child:IsA("BasePart") then
-			child.Material = visual.Material
-			child.Color = visual.Color
-		end
-	end
-end
-
 local function createRaidPieceModel(piece: SavedBuildPiece, origin: Vector3): (Model, number)
-	local model = Instance.new("Model")
-	model.Name = string.format("Raid_%s_%s", piece.PieceType, string.sub(piece.Uid, 1, 12))
+	local canonicalType = BuildingGeometry.CanonicalPieceType(piece.PieceType)
+	piece.PieceType = canonicalType
+	local worldCF = BuildingGeometry.GetPieceWorldCFrame(piece, origin)
+	local modelName = string.format("Raid_%s_%s", canonicalType, string.sub(piece.Uid, 1, 12))
+	local model = BuildingGeometry.CreateModel(canonicalType, worldCF, false, modelName)
+	BuildingGeometry.ApplyTierVisuals(model, canonicalType, piece.Tier)
 
-	local gridSize = BuildingConfig.GridSize
-	local wallHeight = BuildingConfig.WallHeight
-	local baseCF = CFrame.new(
-		origin.X + piece.GridX * gridSize,
-		origin.Y + piece.GridY * wallHeight,
-		origin.Z + piece.GridZ * gridSize
-	) * CFrame.Angles(0, math.rad(piece.RotY), 0)
-
-	if piece.PieceType == "foundation" then
-		local basePart = createPiecePart(model, "Base", Vector3.new(12, 1, 12), baseCF * CFrame.new(0, 0.5, 0))
-		model.PrimaryPart = basePart
-	elseif piece.PieceType == "wall" then
-		local wallPart = createPiecePart(model, "Wall", Vector3.new(12, 10, 1), baseCF * CFrame.new(0, 5, -5.5))
-		model.PrimaryPart = wallPart
-	elseif piece.PieceType == "doorway" then
-		createPiecePart(model, "LeftPillar", Vector3.new(4, 10, 1), baseCF * CFrame.new(-4, 5, -5.5))
-		createPiecePart(model, "RightPillar", Vector3.new(4, 10, 1), baseCF * CFrame.new(4, 5, -5.5))
-		local lintel = createPiecePart(model, "TopLintel", Vector3.new(4, 2.5, 1), baseCF * CFrame.new(0, 8.75, -5.5))
-		model.PrimaryPart = lintel
-	elseif piece.PieceType == "roof" then
-		local roofPart = createPiecePart(model, "Roof", Vector3.new(12, 0.8, 12), baseCF * CFrame.new(0, 10.4, 0))
-		model.PrimaryPart = roofPart
-	elseif piece.PieceType == "storage_box" then
-		local body = createPiecePart(model, "ChestBody", Vector3.new(4, 2.4, 2.5), baseCF * CFrame.new(0, 2.2, 0))
-		createPiecePart(model, "ChestLid", Vector3.new(4.2, 0.4, 2.7), baseCF * CFrame.new(0, 3.6, 0))
-		model.PrimaryPart = body
-	elseif piece.PieceType == "workbench_1" then
-		local top = createPiecePart(model, "TableTop", Vector3.new(5, 0.6, 3), baseCF * CFrame.new(0, 3.3, 0))
-		createPiecePart(model, "LeftLeg", Vector3.new(0.6, 2.0, 2.6), baseCF * CFrame.new(-2.0, 2.0, 0))
-		createPiecePart(model, "RightLeg", Vector3.new(0.6, 2.0, 2.6), baseCF * CFrame.new(2.0, 2.0, 0))
-		model.PrimaryPart = top
-	end
-
-	applyTierVisuals(model, piece.PieceType, piece.Tier)
-
-	local pieceConfig = BuildingConfig.Pieces[piece.PieceType]
-	local tierConfig = BuildingConfig.Tiers[piece.Tier]
-	local maxHp = math.floor(pieceConfig.BaseHp * tierConfig.HpMultiplier + 0.5)
+	local maxHp = BuildingGeometry.ComputeMaxHp(canonicalType, piece.Tier)
 
 	model:SetAttribute("RaidPieceUid", piece.Uid)
 	model:SetAttribute("BuildUid", piece.Uid)
-	model:SetAttribute("PieceType", piece.PieceType)
+	model:SetAttribute("PieceType", canonicalType)
 	model:SetAttribute("Tier", piece.Tier)
+	model:SetAttribute("Health", piece.Hp)
 	model:SetAttribute("Hp", piece.Hp)
+	model:SetAttribute("MaxHealth", maxHp)
 	model:SetAttribute("MaxHp", maxHp)
+	model:SetAttribute("LastDamagedAt", piece.LastDamagedAt or 0)
 	model:SetAttribute("IsRaidTarget", true)
 
 	return model, maxHp
@@ -614,12 +519,17 @@ local function spawnRaidTargetBase(session: RaidSession, baseData: BaseData)
 			Uid = savedPiece.Uid,
 			PieceType = savedPiece.PieceType,
 			Tier = savedPiece.Tier,
+			PosX = savedPiece.PosX,
+			PosY = savedPiece.PosY,
+			PosZ = savedPiece.PosZ,
+			RotY = savedPiece.RotY,
+			AnchorUid = savedPiece.AnchorUid,
+			SocketId = savedPiece.SocketId,
+			Hp = savedPiece.Hp,
+			Storage = savedPiece.Storage,
 			GridX = savedPiece.GridX,
 			GridY = savedPiece.GridY,
 			GridZ = savedPiece.GridZ,
-			RotY = savedPiece.RotY,
-			Hp = savedPiece.Hp,
-			Storage = savedPiece.Storage,
 		}
 
 		local model, maxHp = createRaidPieceModel(pieceCopy, session.Origin)
@@ -860,8 +770,19 @@ local function getTargetControlPoints(targetModel: Model, isCharacterTarget: boo
 			return points
 		end
 	else
-		if targetModel:GetAttribute("PieceType") == "doorway" then
+		local pieceAttr = targetModel:GetAttribute("PieceType")
+		if pieceAttr == "doorway" then
 			for _, partName in { "LeftPillar", "RightPillar", "TopLintel" } do
+				local part = targetModel:FindFirstChild(partName)
+				if part and part:IsA("BasePart") then
+					table.insert(points, part.Position)
+				end
+			end
+			if #points > 0 then
+				return points
+			end
+		elseif pieceAttr == "window_wall" or pieceAttr == "WindowWall" then
+			for _, partName in { "LeftPillar", "RightPillar", "BottomSill", "TopHeader" } do
 				local part = targetModel:FindFirstChild(partName)
 				if part and part:IsA("BasePart") then
 					table.insert(points, part.Position)
@@ -1012,6 +933,7 @@ function RaidService.TriggerExplosion(params: ExplosionParams): ExplosionResult
 
 	-- Phase 1: Collect targets & evaluate Line-of-Sight BEFORE modifying/destroying walls
 	local pendingStructureHits: { { Session: RaidSession, Record: RaidPieceRecord, Damage: number } } = {}
+	local pendingBaseHits: { { Uid: string, Damage: number } } = {}
 	if params.StructureDamage > 0 then
 		for _, session in activeSessions do
 			for _, record in session.Pieces do
@@ -1021,7 +943,9 @@ function RaidService.TriggerExplosion(params: ExplosionParams): ExplosionResult
 					if dist <= radius then
 						if RaidService.HasExplosionLineOfSight(origin, record.Model, baseExcludes, false) then
 							local falloff = computeBlastFalloff(dist, radius, minMult)
-							local damage = math.floor(params.StructureDamage * falloff + 0.5)
+							local tierCfg = BuildingConfig.Tiers[record.Piece.Tier] or BuildingConfig.Tiers.wood
+							local resistMult = math.max(0.05, 1.0 - tierCfg.ExplosionResistance)
+							local damage = math.floor(params.StructureDamage * falloff * resistMult + 0.5)
 							if damage > 0 then
 								table.insert(pendingStructureHits, {
 									Session = session,
@@ -1032,6 +956,27 @@ function RaidService.TriggerExplosion(params: ExplosionParams): ExplosionResult
 						else
 							summary.OccludedStructures += 1
 						end
+					end
+				end
+			end
+		end
+
+		for _, liveItem in BaseService.GetLivePieceModelsInRadius(origin, radius) do
+			if liveItem.Model.Parent ~= nil then
+				local closest = closestPointOnModel(liveItem.Model, origin)
+				local dist = (closest - origin).Magnitude
+				if dist <= radius then
+					if RaidService.HasExplosionLineOfSight(origin, liveItem.Model, baseExcludes, false) then
+						local falloff = computeBlastFalloff(dist, radius, minMult)
+						local rawDamage = math.floor(params.StructureDamage * falloff + 0.5)
+						if rawDamage > 0 then
+							table.insert(pendingBaseHits, {
+								Uid = liveItem.Uid,
+								Damage = rawDamage,
+							})
+						end
+					else
+						summary.OccludedStructures += 1
 					end
 				end
 			end
@@ -1099,18 +1044,32 @@ function RaidService.TriggerExplosion(params: ExplosionParams): ExplosionResult
 	end
 
 	-- Phase 2: Apply structure and humanoid damage
+	local nowClock = os.clock()
 	for _, hit in pendingStructureHits do
 		local record = hit.Record
 		if hit.Session.Pieces[record.Piece.Uid] == record and record.Model.Parent ~= nil then
 			record.Piece.Hp -= hit.Damage
+			record.Piece.LastDamagedAt = nowClock
+			record.Model:SetAttribute("LastDamagedAt", nowClock)
 			summary.DamagedStructures += 1
 			if record.Piece.Hp <= 0 then
 				destroyRaidPiece(hit.Session, record.Piece.Uid, true)
 				summary.DestroyedStructures += 1
 			else
+				record.Model:SetAttribute("Health", record.Piece.Hp)
 				record.Model:SetAttribute("Hp", record.Piece.Hp)
 				updatePieceDamageBillboard(record)
 			end
+		end
+	end
+
+	for _, hit in pendingBaseHits do
+		local damaged, destroyed = BaseService.DamagePiece(hit.Uid, hit.Damage, "Explosion", params.Attacker)
+		if damaged then
+			summary.DamagedStructures += 1
+		end
+		if destroyed then
+			summary.DestroyedStructures += 1
 		end
 	end
 
