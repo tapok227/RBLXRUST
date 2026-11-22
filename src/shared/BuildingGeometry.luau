@@ -261,71 +261,70 @@ function BuildingGeometry.CreateModel(
 			isGhost
 		)
 	elseif canonical == "square_stairs" then
-		primaryLocalCF = CFrame.new(-3.0, 4.2, -3.0)
+		primaryLocalCF = CFrame.new(-3.0, 4.6, -3.0)
 		primaryPart =
-			spawnPrim("Part", model, "MidLanding", Vector3.new(5.2, 0.8, 5.2), worldCF * primaryLocalCF, isGhost)
-		local rSize = Vector3.new(5.2, 4.5, 5.6)
+			spawnPrim("Part", model, "MidLanding", Vector3.new(5.4, 0.8, 5.4), worldCF * primaryLocalCF, isGhost)
 		spawnPrim(
 			"WedgePart",
 			model,
 			"LowerRamp",
-			rSize,
-			worldCF * CFrame.new(-3.0, 2.25, 2.4) * CFrame.Angles(0, math.rad(180), 0),
+			Vector3.new(5.4, 5.0, 5.8),
+			worldCF * CFrame.new(-3.0, 2.5, 2.6) * CFrame.Angles(0, math.rad(180), 0),
 			isGhost
 		)
 		spawnPrim(
 			"WedgePart",
 			model,
 			"UpperRamp",
-			rSize,
-			worldCF * CFrame.new(2.4, 6.75, -3.0) * CFrame.Angles(0, math.rad(90), 0),
+			Vector3.new(5.4, 5.0, 6.3),
+			worldCF * CFrame.new(2.85, 7.5, -3.0) * CFrame.Angles(0, math.rad(90), 0),
 			isGhost
 		)
 		spawnPrim(
 			"Part",
 			model,
 			"SupportPostA",
-			Vector3.new(0.6, 3.8, 0.6),
-			worldCF * CFrame.new(-5.2, 1.9, -5.2),
+			Vector3.new(0.6, 4.2, 0.6),
+			worldCF * CFrame.new(-5.3, 2.1, -5.3),
 			isGhost
 		)
 		spawnPrim(
 			"Part",
 			model,
 			"SupportPostB",
-			Vector3.new(0.6, 3.8, 0.6),
-			worldCF * CFrame.new(-0.8, 1.9, -5.2),
+			Vector3.new(0.6, 4.2, 0.6),
+			worldCF * CFrame.new(-0.7, 2.1, -5.3),
 			isGhost
 		)
 	elseif canonical == "triangle_stairs" then
-		primaryLocalCF = CFrame.new(2.3, 4.2, -1.65)
+		primaryLocalCF = CFrame.new(2.3, 4.6, -1.65)
 		primaryPart =
-			spawnPrim("Part", model, "MidLanding", Vector3.new(2.2, 0.8, 2.4), worldCF * primaryLocalCF, isGhost)
+			spawnPrim("Part", model, "MidLanding", Vector3.new(2.4, 0.8, 2.6), worldCF * primaryLocalCF, isGhost)
 		spawnPrim(
 			"WedgePart",
 			model,
 			"LowerRamp",
-			Vector3.new(2.4, 4.5, 4.4),
-			worldCF * CFrame.new(-1.0, 2.25, -1.65) * CFrame.Angles(0, math.rad(90), 0),
+			Vector3.new(2.6, 5.0, 4.6),
+			worldCF * CFrame.new(-1.1, 2.5, -1.65) * CFrame.Angles(0, math.rad(90), 0),
 			isGhost
 		)
 		local dir2 = Vector3.new(-0.5, 0, math.sqrt(3) / 2)
-		local upperCenter = Vector3.new(1.0, 6.75, 1.1)
+		local upperCenter = Vector3.new(1.0, 7.5, 1.1)
 		spawnPrim(
 			"WedgePart",
 			model,
 			"UpperRamp",
-			Vector3.new(2.2, 4.5, 4.4),
+			Vector3.new(2.4, 5.0, 4.6),
 			worldCF * CFrame.lookAt(upperCenter, upperCenter - dir2),
 			isGhost
 		)
-		spawnPrim("Part", model, "TopExitPad", Vector3.new(1.8, 0.8, 1.4), worldCF * CFrame.new(0, 8.6, 3.3), isGhost)
+		spawnPrim("Part", model, "TopExitPad", Vector3.new(3.6, 0.8, 2.2), worldCF * CFrame.new(0, 9.6, 2.8), isGhost)
 		spawnPrim(
 			"Part",
 			model,
 			"SupportPost",
-			Vector3.new(0.6, 3.8, 0.6),
-			worldCF * CFrame.new(2.3, 1.9, -1.65),
+			Vector3.new(0.6, 4.2, 0.6),
+			worldCF * CFrame.new(2.3, 2.1, -1.65),
 			isGhost
 		)
 	elseif canonical == "storage_box" then
@@ -739,12 +738,58 @@ function BuildingGeometry.ApplyTierVisuals(model: Model, pieceType: BuildPieceTy
 					child.Material = Enum.Material.DiamondPlate
 					child.Color = Color3.fromRGB(88, 92, 96)
 				end
+			elseif child.Name == "DoorPanel" then
+				child.Material = tierCfg.Material
+				child.Color = tierCfg.Color:Lerp(Color3.new(0, 0, 0), 0.18)
 			else
 				child.Material = tierCfg.Material
 				child.Color = tierCfg.Color
 			end
 		end
 	end
+end
+
+function BuildingGeometry.SetDoorOpen(model: Model, isOpen: boolean)
+	model:SetAttribute("DoorOpen", isOpen)
+	local doorPanel = model:FindFirstChild("DoorPanel")
+	if doorPanel ~= nil and doorPanel:IsA("BasePart") then
+		local closedAttr = doorPanel:GetAttribute("ClosedCFrame")
+		local openAttr = doorPanel:GetAttribute("OpenCFrame")
+		if typeof(closedAttr) == "CFrame" and typeof(openAttr) == "CFrame" then
+			doorPanel.CFrame = if isOpen then openAttr else closedAttr
+		end
+		doorPanel.CanCollide = not isOpen
+		doorPanel.CanQuery = not isOpen
+	end
+end
+
+function BuildingGeometry.AttachDoorPanel(model: Model, worldCF: CFrame, tier: BuildTier, isOpen: boolean?): BasePart
+	local existing = model:FindFirstChild("DoorPanel")
+	if existing ~= nil then
+		existing:Destroy()
+	end
+
+	local tierCfg = BuildingConfig.Tiers[tier] or BuildingConfig.Tiers.wood
+	local closedCF = worldCF * CFrame.new(0, 3.775, 0)
+	local hingeCF = worldCF * CFrame.new(-2.45, 3.775, 0)
+	local openCF = hingeCF * CFrame.Angles(0, math.rad(95), 0) * CFrame.new(2.45, 0, 0)
+
+	local doorPanel = Instance.new("Part")
+	doorPanel.Name = "DoorPanel"
+	doorPanel.Size = Vector3.new(4.9, 7.55, 0.35)
+	doorPanel.CFrame = closedCF
+	doorPanel.Anchored = true
+	doorPanel.TopSurface = Enum.SurfaceType.Smooth
+	doorPanel.BottomSurface = Enum.SurfaceType.Smooth
+	doorPanel.Material = tierCfg.Material
+	doorPanel.Color = tierCfg.Color:Lerp(Color3.new(0, 0, 0), 0.18)
+	doorPanel:SetAttribute("ClosedCFrame", closedCF)
+	doorPanel:SetAttribute("OpenCFrame", openCF)
+	doorPanel.Parent = model
+
+	model:SetAttribute("HasDoor", true)
+	BuildingGeometry.SetDoorOpen(model, isOpen == true)
+	return doorPanel
 end
 
 function BuildingGeometry.SetGhostColor(model: Model, color: Color3)

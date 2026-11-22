@@ -668,7 +668,8 @@ function BuildingValidator.CheckMaxWallsToTC(
 		end
 	end
 
-	local hasUpperFloor: { [string]: boolean } = {}
+	local hasImmediateCeiling: { [string]: boolean } = {}
+	local hasAnyOverheadRoof: { [string]: boolean } = {}
 	local connectedPairs: { [string]: boolean } = {}
 
 	-- Connect solid ceiling/floor slabs above lower surfaces (+1 layer) first so stairs cannot bypass solid slabs
@@ -677,16 +678,19 @@ function BuildingValidator.CheckMaxWallsToTC(
 		for _, upper in surfaceList do
 			if upper.Uid ~= lower.Uid and upper.Category == "Floor" then
 				local dy = upper.CFrame.Position.Y - lowerPos.Y
-				if dy >= 7.0 and dy <= 12.5 then
+				if dy >= 7.0 then
 					local dx = upper.CFrame.Position.X - lowerPos.X
 					local dz = upper.CFrame.Position.Z - lowerPos.Z
 					local xzDist = math.sqrt(dx * dx + dz * dz)
 					if xzDist <= 3.0 then
-						hasUpperFloor[lower.Uid] = true
-						local pKey = pairKey(lower.Uid, upper.Uid)
-						if not connectedPairs[pKey] then
-							connectedPairs[pKey] = true
-							addUndirectedEdge(lower.Uid, upper.Uid, 1)
+						hasAnyOverheadRoof[lower.Uid] = true
+						if dy <= 12.5 then
+							hasImmediateCeiling[lower.Uid] = true
+							local pKey = pairKey(lower.Uid, upper.Uid)
+							if not connectedPairs[pKey] then
+								connectedPairs[pKey] = true
+								addUndirectedEdge(lower.Uid, upper.Uid, 1)
+							end
 						end
 					end
 				end
@@ -711,7 +715,7 @@ function BuildingValidator.CheckMaxWallsToTC(
 			end
 		end
 
-		if hostNode ~= nil and not hasUpperFloor[hostNode.Uid] then
+		if hostNode ~= nil and not hasImmediateCeiling[hostNode.Uid] then
 			local hostPos = hostNode.CFrame.Position
 			local lowerWallYOffset = getSurfaceWallYOffset(hostNode.Category)
 			for _, upper in surfaceList do
@@ -757,7 +761,7 @@ function BuildingValidator.CheckMaxWallsToTC(
 
 	-- Open sky surfaces have 0-layer access from exterior
 	for _, node in surfaceList do
-		if not hasUpperFloor[node.Uid] then
+		if not hasAnyOverheadRoof[node.Uid] then
 			addDirectedEdge(EXTERIOR_UID, node.Uid, 0)
 		end
 	end
@@ -819,6 +823,288 @@ function BuildingValidator.CanReachToolCupboard(
 ): (boolean, string?)
 	local ok, reason = BuildingValidator.CheckMaxWallsToTC(playerRecords, occupiedSockets, candidatePiece)
 	return ok, reason
+end
+
+function BuildingValidator.FindUnsupportedPieces(
+	pieces: { SavedBuildPiece },
+	removedUids: { [string]: boolean }?
+): { string }
+	type NodeInfo = {
+		Piece: SavedBuildPiece,
+		Canonical: BuildPieceType,
+		Category: Types.BuildPieceCategory,
+		AssaultDeployable: boolean,
+		CFrame: CFrame,
+	}
+
+	local nodes: { NodeInfo } = {}
+	local nodesByUid: { [string]: NodeInfo } = {}
+	local remainingPieces: { SavedBuildPiece } = {}
+
+	for _, piece in pieces do
+		if removedUids ~= nil and removedUids[piece.Uid] == true then
+			continue
+		end
+		local canonical = BuildingGeometry.CanonicalPieceType(piece.PieceType)
+		local cfg = BuildingConfig.Pieces[canonical]
+		if cfg ~= nil then
+			local info: NodeInfo = {
+				Piece = piece,
+				Canonical = canonical,
+				Category = cfg.Category,
+				AssaultDeployable = cfg.AssaultDeployable == true,
+				CFrame = BuildingGeometry.GetPieceWorldCFrame(piece),
+			}
+			table.insert(nodes, info)
+			nodesByUid[piece.Uid] = info
+			table.insert(remainingPieces, piece)
+		end
+	end
+
+	if #nodes == 0 then
+		return {}
+	end
+
+	local groundRefY = getBaseFloorGroundY(remainingPieces, 0)
+	local supported: { [string]: boolean } = {}
+	local floorDepth: { [string]: number } = {}
+	local supportedSurfaces: { NodeInfo } = {}
+	local supportedWalls: { NodeInfo } = {}
+	local supportedFloors: { NodeInfo } = {}
+
+	local function markSupported(node: NodeInfo, depth: number?)
+		local uid = node.Piece.Uid
+		if supported[uid] then
+			return
+		end
+		supported[uid] = true
+		if node.Category == "Foundation" or node.Category == "Floor" then
+			table.insert(supportedSurfaces, node)
+			if node.Category == "Floor" then
+				floorDepth[uid] = depth or 0
+				table.insert(supportedFloors, node)
+			end
+		elseif node.Category == "Wall" then
+			table.insert(supportedWalls, node)
+		end
+	end
+
+	-- Seed grounded pieces: Foundations, AssaultDeployables, and yard-grounded floor deployables
+	for _, node in nodes do
+		if node.Category == "Foundation" or node.AssaultDeployable then
+			markSupported(node, nil)
+		elseif node.Category == "Deployable" then
+			local parentUid = node.Piece.ParentUid or node.Piece.AnchorUid
+			local mount = node.Piece.MountSurface
+			if
+				(mount == nil or mount == "Floor")
+				and parentUid == nil
+				and node.CFrame.Position.Y <= (groundRefY + 1.8)
+			then
+				markSupported(node, nil)
+			end
+		end
+	end
+
+	local function hasSupportedSurfaceUnderEdge(wallPos: Vector3): boolean
+		for _, surf in supportedSurfaces do
+			local wallYOffset = getSurfaceWallYOffset(surf.Category)
+			for _, socket in BuildingGeometry.GetPieceSockets(surf.Canonical) do
+				if socket.Kind == "Edge" then
+					local expectedWallPos = (surf.CFrame * socket.LocalCFrame * CFrame.new(0, wallYOffset, 0)).Position
+					if (expectedWallPos - wallPos).Magnitude <= 1.5 then
+						return true
+					end
+				end
+			end
+		end
+		return false
+	end
+
+	local function hasSupportedWallUnderWall(wallPos: Vector3): boolean
+		for _, lowerWall in supportedWalls do
+			local lp = lowerWall.CFrame.Position
+			local dx = wallPos.X - lp.X
+			local dz = wallPos.Z - lp.Z
+			local dy = wallPos.Y - lp.Y
+			if math.sqrt(dx * dx + dz * dz) <= 1.2 and dy >= 8.5 and dy <= 10.8 then
+				return true
+			end
+		end
+		return false
+	end
+
+	local function hasSupportedWallSupportingFloor(floorNode: NodeInfo): boolean
+		local floorSockets = BuildingGeometry.GetPieceSockets(floorNode.Canonical)
+		for _, wall in supportedWalls do
+			local wallTopPos = wall.CFrame.Position + Vector3.new(0, BuildingConfig.WallBodyHeight, 0)
+			for _, socket in floorSockets do
+				if socket.Kind == "Edge" then
+					local edgePos = (floorNode.CFrame * socket.LocalCFrame).Position
+					if (edgePos - wallTopPos).Magnitude <= 1.5 then
+						return true
+					end
+				end
+			end
+		end
+		return false
+	end
+
+	local function hasSupportedAdjacentFloor(floorNode: NodeInfo): boolean
+		local floorSockets = BuildingGeometry.GetPieceSockets(floorNode.Canonical)
+		for _, adj in supportedFloors do
+			if (floorDepth[adj.Piece.Uid] or 0) == 0 then
+				for _, sockA in floorSockets do
+					if sockA.Kind == "Edge" then
+						local posA = (floorNode.CFrame * sockA.LocalCFrame).Position
+						for _, sockB in BuildingGeometry.GetPieceSockets(adj.Canonical) do
+							if sockB.Kind == "Edge" then
+								local posB = (adj.CFrame * sockB.LocalCFrame).Position
+								if (posA - posB).Magnitude <= 1.5 then
+									return true
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+		return false
+	end
+
+	local function isParentValidAndSupported(node: NodeInfo, allowedParentCategories: { [string]: boolean }?): boolean?
+		local parentUid = node.Piece.ParentUid or node.Piece.AnchorUid
+		if parentUid == nil then
+			return nil
+		end
+		local parentNode = nodesByUid[parentUid]
+		if parentNode == nil or not supported[parentUid] then
+			return false
+		end
+		if allowedParentCategories ~= nil and not allowedParentCategories[parentNode.Category] then
+			return false
+		end
+		return true
+	end
+
+	local changed = true
+	local guard = 0
+	while changed and guard <= #nodes do
+		changed = false
+		guard += 1
+		for _, node in nodes do
+			if supported[node.Piece.Uid] then
+				continue
+			end
+
+			local pos = node.CFrame.Position
+			if node.Category == "Wall" then
+				local parentOk = isParentValidAndSupported(node, { Foundation = true, Floor = true, Wall = true })
+				if parentOk == true or hasSupportedSurfaceUnderEdge(pos) or hasSupportedWallUnderWall(pos) then
+					markSupported(node, nil)
+					changed = true
+				end
+			elseif node.Category == "Floor" then
+				local parentOk = isParentValidAndSupported(node, { Wall = true, Floor = true })
+				if hasSupportedWallSupportingFloor(node) then
+					markSupported(node, 0)
+					changed = true
+				elseif parentOk == true then
+					local pUid = (node.Piece.ParentUid or node.Piece.AnchorUid) :: string
+					local pNode = nodesByUid[pUid]
+					local nextDepth = if pNode.Category == "Wall" then 0 else ((floorDepth[pUid] or 0) + 1)
+					if nextDepth <= 1 then
+						markSupported(node, nextDepth)
+						changed = true
+					end
+				elseif hasSupportedAdjacentFloor(node) then
+					markSupported(node, 1)
+					changed = true
+				end
+			elseif node.Category == "Stairs" then
+				local parentOk = isParentValidAndSupported(node, { Foundation = true, Floor = true })
+				local isOk = parentOk == true
+				if not isOk and parentOk == nil then
+					for _, surf in supportedSurfaces do
+						local dx = pos.X - surf.CFrame.Position.X
+						local dz = pos.Z - surf.CFrame.Position.Z
+						local dy = pos.Y - surf.CFrame.Position.Y
+						if math.sqrt(dx * dx + dz * dz) <= 4.5 and dy >= -0.5 and dy <= 2.2 then
+							isOk = true
+							break
+						end
+					end
+				end
+				if isOk then
+					markSupported(node, nil)
+					changed = true
+				end
+			elseif node.Category == "Deployable" then
+				local mount = node.Piece.MountSurface
+				if mount == "Wall" then
+					local parentOk = isParentValidAndSupported(node, { Wall = true })
+					local isOk = parentOk == true
+					if not isOk and parentOk == nil then
+						for _, wall in supportedWalls do
+							local lp = wall.CFrame:PointToObjectSpace(pos)
+							if math.abs(lp.X) <= 6.2 and math.abs(lp.Z) <= 2.0 and lp.Y >= 0 and lp.Y <= 9.5 then
+								isOk = true
+								break
+							end
+						end
+					end
+					if isOk then
+						markSupported(node, nil)
+						changed = true
+					end
+				elseif mount == "Ceiling" then
+					local parentOk = isParentValidAndSupported(node, { Floor = true, Foundation = true })
+					local isOk = parentOk == true
+					if not isOk and parentOk == nil then
+						for _, fl in supportedFloors do
+							local dx = pos.X - fl.CFrame.Position.X
+							local dz = pos.Z - fl.CFrame.Position.Z
+							local dy = math.abs(pos.Y - fl.CFrame.Position.Y)
+							if math.sqrt(dx * dx + dz * dz) <= 6.2 and dy <= 1.5 then
+								isOk = true
+								break
+							end
+						end
+					end
+					if isOk then
+						markSupported(node, nil)
+						changed = true
+					end
+				else
+					local parentOk = isParentValidAndSupported(node, { Foundation = true, Floor = true })
+					local isOk = parentOk == true
+					if not isOk and parentOk == nil then
+						for _, surf in supportedSurfaces do
+							local dx = pos.X - surf.CFrame.Position.X
+							local dz = pos.Z - surf.CFrame.Position.Z
+							local dy = pos.Y - surf.CFrame.Position.Y
+							if math.sqrt(dx * dx + dz * dz) <= 6.5 and dy >= -0.5 and dy <= 2.5 then
+								isOk = true
+								break
+							end
+						end
+					end
+					if isOk then
+						markSupported(node, nil)
+						changed = true
+					end
+				end
+			end
+		end
+	end
+
+	local unsupported: { string } = {}
+	for _, node in nodes do
+		if not supported[node.Piece.Uid] then
+			table.insert(unsupported, node.Piece.Uid)
+		end
+	end
+	return unsupported
 end
 
 local function findAutoMatchedSocket(

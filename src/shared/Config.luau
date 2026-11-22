@@ -99,6 +99,17 @@ return table.freeze({
 		Duration = 8,
 		CooldownAfterDamage = 5,
 	}),
+	Explosion = table.freeze({
+		UpgradeRaidBlockSeconds = 30,
+		DoorDamageMultiplier = 1.25,
+		DefenseDamageMultiplier = 1.0,
+		TierDamageMultiplier = table.freeze({
+			wood = 1.0,
+			stone = 0.85,
+			metal = 0.70,
+			armored = 0.50,
+		}),
+	}),
 	Raid = table.freeze({
 		MaxLives = 3,
 		RespawnDelay = 0.8,

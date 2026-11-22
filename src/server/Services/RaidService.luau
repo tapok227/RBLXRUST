@@ -2311,26 +2311,88 @@ local function getTargetControlPoints(targetModel: Model, isCharacterTarget: boo
 		end
 	else
 		local pieceAttr = targetModel:GetAttribute("PieceType")
-		if pieceAttr == "doorway" then
-			for _, partName in { "LeftPillar", "RightPillar", "TopLintel" } do
-				local part = targetModel:FindFirstChild(partName)
-				if part and part:IsA("BasePart") then
-					table.insert(points, part.Position)
+		local canonical = if typeof(pieceAttr) == "string" then BuildingGeometry.CanonicalPieceType(pieceAttr) else nil
+		local baseCF = targetModel:GetPivot()
+
+		if canonical == "wall" or canonical == "doorway" or canonical == "window_wall" then
+			local centerCF = baseCF * CFrame.new(0, BuildingConfig.WallBodyHeight * 0.5, 0)
+			local hx = BuildingConfig.GridSize * 0.42
+			local hy = BuildingConfig.WallBodyHeight * 0.38
+			local offsets = {
+				Vector3.new(0, 0, 0),
+				Vector3.new(-hx, -hy, 0),
+				Vector3.new(hx, -hy, 0),
+				Vector3.new(-hx, hy, 0),
+				Vector3.new(hx, hy, 0),
+				Vector3.new(-hx, 0, 0),
+				Vector3.new(hx, 0, 0),
+				Vector3.new(0, -hy, 0),
+				Vector3.new(0, hy, 0),
+			}
+			for _, off in offsets do
+				table.insert(points, (centerCF * CFrame.new(off)).Position)
+			end
+			if canonical == "doorway" then
+				for _, partName in { "LeftPillar", "RightPillar", "TopLintel" } do
+					local part = targetModel:FindFirstChild(partName)
+					if part and part:IsA("BasePart") then
+						table.insert(points, part.Position)
+					end
+				end
+				local doorPanel = targetModel:FindFirstChild("DoorPanel")
+				if doorPanel and doorPanel:IsA("BasePart") and doorPanel.CanCollide then
+					table.insert(points, doorPanel.Position)
+				end
+			elseif canonical == "window_wall" then
+				for _, partName in { "LeftPillar", "RightPillar", "BottomSill", "TopHeader" } do
+					local part = targetModel:FindFirstChild(partName)
+					if part and part:IsA("BasePart") then
+						table.insert(points, part.Position)
+					end
 				end
 			end
-			if #points > 0 then
-				return points
+			return points
+		elseif canonical == "foundation" or canonical == "roof" then
+			local t = if canonical == "foundation"
+				then BuildingConfig.FoundationThickness
+				else BuildingConfig.FloorThickness
+			local midCF = baseCF * CFrame.new(0, t * 0.5, 0)
+			local h = BuildingConfig.GridSize * 0.40
+			for _, off in
+				{
+					Vector3.new(0, 0, 0),
+					Vector3.new(-h, 0, -h),
+					Vector3.new(h, 0, -h),
+					Vector3.new(-h, 0, h),
+					Vector3.new(h, 0, h),
+					Vector3.new(0, 0, -h),
+					Vector3.new(0, 0, h),
+					Vector3.new(-h, 0, 0),
+					Vector3.new(h, 0, 0),
+				}
+			do
+				table.insert(points, (midCF * CFrame.new(off)).Position)
 			end
-		elseif pieceAttr == "window_wall" or pieceAttr == "WindowWall" then
-			for _, partName in { "LeftPillar", "RightPillar", "BottomSill", "TopHeader" } do
-				local part = targetModel:FindFirstChild(partName)
-				if part and part:IsA("BasePart") then
-					table.insert(points, part.Position)
-				end
+			return points
+		elseif canonical == "triangle_foundation" or canonical == "triangle_floor" then
+			local t = if canonical == "triangle_foundation"
+				then BuildingConfig.FoundationThickness
+				else BuildingConfig.FloorThickness
+			local midCF = baseCF * CFrame.new(0, t * 0.5, 0)
+			for _, off in
+				{
+					Vector3.new(0, 0, 0),
+					Vector3.new(-4.8, 0, -2.75),
+					Vector3.new(4.8, 0, -2.75),
+					Vector3.new(0, 0, 5.5),
+					Vector3.new(0, 0, -2.75),
+					Vector3.new(-2.4, 0, 1.35),
+					Vector3.new(2.4, 0, 1.35),
+				}
+			do
+				table.insert(points, (midCF * CFrame.new(off)).Position)
 			end
-			if #points > 0 then
-				return points
-			end
+			return points
 		end
 	end
 
@@ -2339,10 +2401,14 @@ local function getTargetControlPoints(targetModel: Model, isCharacterTarget: boo
 		table.insert(points, cf.Position)
 		table.insert(points, cf.Position + cf.UpVector * (size.Y * 0.35))
 		table.insert(points, cf.Position - cf.UpVector * (size.Y * 0.35))
+		table.insert(points, cf.Position + cf.RightVector * (size.X * 0.35))
+		table.insert(points, cf.Position - cf.RightVector * (size.X * 0.35))
 	elseif math.max(size.X, size.Z) >= 6.0 then
 		table.insert(points, cf.Position)
-		table.insert(points, cf.Position + cf.RightVector * (size.X * 0.3))
-		table.insert(points, cf.Position - cf.RightVector * (size.X * 0.3))
+		table.insert(points, cf.Position + cf.RightVector * (size.X * 0.35))
+		table.insert(points, cf.Position - cf.RightVector * (size.X * 0.35))
+		table.insert(points, cf.Position + cf.LookVector * (size.Z * 0.35))
+		table.insert(points, cf.Position - cf.LookVector * (size.Z * 0.35))
 	else
 		table.insert(points, cf.Position)
 		table.insert(points, cf.Position + Vector3.new(0, size.Y * 0.3, 0))
@@ -2483,9 +2549,12 @@ function RaidService.TriggerExplosion(params: ExplosionParams): ExplosionResult
 					if dist <= radius then
 						if RaidService.HasExplosionLineOfSight(origin, record.Model, baseExcludes, false) then
 							local falloff = computeBlastFalloff(dist, radius, minMult)
-							local tierCfg = BuildingConfig.Tiers[record.Piece.Tier] or BuildingConfig.Tiers.wood
-							local resistMult = math.max(0.05, 1.0 - tierCfg.ExplosionResistance)
-							local damage = math.floor(params.StructureDamage * falloff * resistMult + 0.5)
+							local damage = BuildingConfig.ComputeExplosionDamage(
+								params.StructureDamage * falloff,
+								record.Piece.PieceType,
+								record.Piece.Tier,
+								record.Model:GetAttribute("HasDoor") == true
+							)
 							if damage > 0 then
 								table.insert(pendingStructureHits, {
 									Session = session,
@@ -2585,21 +2654,38 @@ function RaidService.TriggerExplosion(params: ExplosionParams): ExplosionResult
 
 	-- Phase 2: Apply structure and humanoid damage
 	local nowClock = os.clock()
+	local nowServer = Workspace:GetServerTimeNow()
+	local sessionsWithDestroyedPieces: { [RaidSession]: boolean } = {}
 	for _, hit in pendingStructureHits do
 		local record = hit.Record
 		if hit.Session.Pieces[record.Piece.Uid] == record and record.Model.Parent ~= nil then
 			record.Piece.Hp -= hit.Damage
 			record.Piece.LastDamagedAt = nowClock
 			record.Model:SetAttribute("LastDamagedAt", nowClock)
+			record.Model:SetAttribute("LastDamagedServerTime", nowServer)
 			summary.DamagedStructures += 1
 			if record.Piece.Hp <= 0 then
 				destroyRaidPiece(hit.Session, record.Piece.Uid, true)
+				sessionsWithDestroyedPieces[hit.Session] = true
 				summary.DestroyedStructures += 1
 			else
 				record.Model:SetAttribute("Health", record.Piece.Hp)
 				record.Model:SetAttribute("Hp", record.Piece.Hp)
 				DefenseService.UpdateDefenseHp(record.Piece.Uid, record.Piece.Hp, nil)
 				updatePieceDamageBillboard(record)
+			end
+		end
+	end
+
+	for session in sessionsWithDestroyedPieces do
+		local remainingPieces: { SavedBuildPiece } = {}
+		for _, rec in session.Pieces do
+			table.insert(remainingPieces, rec.Piece)
+		end
+		for _, unsupportedUid in BuildingValidator.FindUnsupportedPieces(remainingPieces, nil) do
+			if session.Pieces[unsupportedUid] ~= nil then
+				destroyRaidPiece(session, unsupportedUid, true)
+				summary.DestroyedStructures += 1
 			end
 		end
 	end
@@ -2657,16 +2743,33 @@ function RaidService.DamageRaidPiece(
 		local record = session.Pieces[uid]
 		if record ~= nil and record.Model.Parent ~= nil then
 			local tierCfg = BuildingConfig.Tiers[record.Piece.Tier] or BuildingConfig.Tiers.wood
-			local mult = if damageKind == "Explosion"
-				then math.max(0.05, 1.0 - tierCfg.ExplosionResistance)
-				else tierCfg.ToolDamageMultiplier
-			local finalDamage = math.max(1, math.floor(rawDamage * mult + 0.5))
+			local finalDamage: number
+			if damageKind == "Explosion" then
+				finalDamage = BuildingConfig.ComputeExplosionDamage(
+					rawDamage,
+					record.Piece.PieceType,
+					record.Piece.Tier,
+					record.Model:GetAttribute("HasDoor") == true
+				)
+			else
+				finalDamage = math.max(1, math.floor(rawDamage * tierCfg.ToolDamageMultiplier + 0.5))
+			end
 			local nowClock = os.clock()
 			record.Piece.Hp -= finalDamage
 			record.Piece.LastDamagedAt = nowClock
 			record.Model:SetAttribute("LastDamagedAt", nowClock)
+			record.Model:SetAttribute("LastDamagedServerTime", Workspace:GetServerTimeNow())
 			if record.Piece.Hp <= 0 then
 				destroyRaidPiece(session, uid, true)
+				local remainingPieces: { SavedBuildPiece } = {}
+				for _, rec in session.Pieces do
+					table.insert(remainingPieces, rec.Piece)
+				end
+				for _, unsupportedUid in BuildingValidator.FindUnsupportedPieces(remainingPieces, nil) do
+					if session.Pieces[unsupportedUid] ~= nil then
+						destroyRaidPiece(session, unsupportedUid, true)
+					end
+				end
 				return true, true
 			else
 				record.Model:SetAttribute("Health", record.Piece.Hp)

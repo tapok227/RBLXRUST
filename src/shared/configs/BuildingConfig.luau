@@ -347,6 +347,26 @@ local function normalizePieceType(raw: string): BuildPieceType?
 	return CanonicalPieceMap[raw]
 end
 
+local function computeExplosionDamage(
+	rawDamage: number,
+	pieceType: BuildPieceType,
+	tier: BuildTier,
+	hasDoor: boolean?
+): number
+	local canonical = normalizePieceType(pieceType) or pieceType
+	local pieceCfg = Pieces[canonical]
+	local tierCfg = Tiers[tier] or Tiers.wood
+	local tierMults = Config.Explosion.TierDamageMultiplier :: { [string]: number }
+	local mult = tierMults[tier] or math.max(0.05, 1.0 - tierCfg.ExplosionResistance)
+	if pieceCfg ~= nil and pieceCfg.IsDefense == true then
+		mult *= Config.Explosion.DefenseDamageMultiplier
+	end
+	if canonical == "doorway" and hasDoor == true then
+		mult *= Config.Explosion.DoorDamageMultiplier
+	end
+	return math.max(1, math.floor(rawDamage * mult + 0.5))
+end
+
 local BuildingConfig = table.freeze({
 	GridSize = GRID_SIZE,
 	WallHeight = WALL_HEIGHT,
@@ -363,7 +383,7 @@ local BuildingConfig = table.freeze({
 	ParallelWallSearchRadius = 6.0,
 	ParallelWallAngleDeg = 15.0,
 	FreeFoundationSpacing = 3.5,
-	UpgradeRaidBlockSeconds = 30,
+	UpgradeRaidBlockSeconds = Config.Explosion.UpgradeRaidBlockSeconds,
 	MaxBuildHeight = 4,
 	OverlapShrinkFactor = 0.85,
 	GridMinXZ = -10,
@@ -378,6 +398,7 @@ local BuildingConfig = table.freeze({
 	Tiers = Tiers,
 	GetNextTier = getNextTier,
 	NormalizePieceType = normalizePieceType,
+	ComputeExplosionDamage = computeExplosionDamage,
 })
 
 return BuildingConfig

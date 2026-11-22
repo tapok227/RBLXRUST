@@ -347,6 +347,39 @@ local function cleanupPieceRuntime(record: LivePieceRecord)
 	end
 end
 
+local function destroyUnsupportedCascade(player: Player, data: Types.PlayerData): number
+	local unsupportedUids = BuildingValidator.FindUnsupportedPieces(data.Base.Pieces, nil)
+	if #unsupportedUids == 0 then
+		return 0
+	end
+
+	local dropSet: { [string]: boolean } = {}
+	for _, dropUid in unsupportedUids do
+		dropSet[dropUid] = true
+	end
+
+	local playerRecords = spawnedByPlayer[player]
+	for _, dropUid in unsupportedUids do
+		decayFractions[dropUid] = nil
+		local rec = if playerRecords ~= nil then playerRecords[dropUid] else recordsByUid[dropUid]
+		if playerRecords ~= nil then
+			playerRecords[dropUid] = nil
+		end
+		if rec ~= nil then
+			cleanupPieceRuntime(rec)
+		end
+	end
+
+	local kept: { SavedBuildPiece } = {}
+	for _, piece in data.Base.Pieces do
+		if not dropSet[piece.Uid] then
+			table.insert(kept, piece)
+		end
+	end
+	data.Base.Pieces = kept
+	return #unsupportedUids
+end
+
 local function createPieceModel(owner: Player, piece: SavedBuildPiece): (Model, CFrame)
 	local canonicalType = BuildingGeometry.CanonicalPieceType(piece.PieceType)
 	piece.PieceType = canonicalType
@@ -888,6 +921,20 @@ local function onBuildDemolishRequest(player: Player, uidAny: any)
 			end
 		end
 
+		local unsupportedDependents = BuildingValidator.FindUnsupportedPieces(data.Base.Pieces, { [uid] = true })
+		if #unsupportedDependents > 0 then
+			sendBuildFeedback(
+				player,
+				false,
+				string.format(
+					"Сначала снесите верхние/зависимые элементы (%d шт.)",
+					#unsupportedDependents
+				),
+				data.Base.BaseTier
+			)
+			return
+		end
+
 		local isDefense = Defenses.Get(canonicalRemoved) ~= nil
 		if isDefense then
 			if not InventoryService.CanCraftTransaction(player, {}, canonicalRemoved, 1) then
@@ -1249,6 +1296,7 @@ function BaseService.ProcessUpkeepAndDecay(player: Player, elapsedSeconds: numbe
 				end
 			end
 			data.Base.Pieces = kept
+			destroyUnsupportedCascade(player, data)
 		end
 	end
 
@@ -1549,10 +1597,17 @@ function BaseService.DamagePiece(
 	end
 
 	local tierCfg = BuildingConfig.Tiers[record.Piece.Tier] or BuildingConfig.Tiers.wood
-	local mult = if damageKind == "Explosion"
-		then math.max(0.05, 1.0 - tierCfg.ExplosionResistance)
-		else tierCfg.ToolDamageMultiplier
-	local finalDamage = math.max(1, math.floor(rawDamage * mult + 0.5))
+	local finalDamage: number
+	if damageKind == "Explosion" then
+		finalDamage = BuildingConfig.ComputeExplosionDamage(
+			rawDamage,
+			record.Piece.PieceType,
+			record.Piece.Tier,
+			record.Model:GetAttribute("HasDoor") == true
+		)
+	else
+		finalDamage = math.max(1, math.floor(rawDamage * tierCfg.ToolDamageMultiplier + 0.5))
+	end
 
 	local nowClock = os.clock()
 	record.LastDamagedAt = nowClock
@@ -1576,6 +1631,7 @@ function BaseService.DamagePiece(
 					break
 				end
 			end
+			destroyUnsupportedCascade(owner, data)
 			recalculateAndSyncBaseTier(owner)
 			syncBaseState(owner)
 		end
