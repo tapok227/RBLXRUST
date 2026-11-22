@@ -11,6 +11,7 @@ local Tools = require(ReplicatedStorage.Shared.configs.Tools)
 local Net = require(ReplicatedStorage.Shared.Net)
 local DataService = require(ServerScriptService.Server.Services.DataService)
 local InventoryService = require(ServerScriptService.Server.Services.InventoryService)
+local SecurityService = require(ServerScriptService.Server.Services.SecurityService)
 
 type PartSnapshot = {
 	Part: BasePart,
@@ -152,23 +153,28 @@ local function depleteNode(node: ServerNodeState, respawnTime: number)
 end
 
 local function onHitNode(player: Player, nodeIdAny: any)
-	if typeof(nodeIdAny) ~= "string" or #nodeIdAny == 0 or #nodeIdAny > 64 then
+	if not SecurityService.CheckRateLimit(player, Net.Events.HitNode) then
+		return
+	end
+	if not SecurityService.IsValidString(nodeIdAny, 1, 64) then
 		return
 	end
 
-	local node = nodesById[nodeIdAny]
-	if not node or node.Depleted then
+	if DataService.IsTeleporting(player) or SecurityService.IsTransactionLocked(player) then
 		return
 	end
-
 	if DataService.GetData(player) == nil then
 		return
 	end
 
-	local character = player.Character
-	local hrp = if character then character:FindFirstChild("HumanoidRootPart") else nil
-	local humanoid = if character then character:FindFirstChildOfClass("Humanoid") else nil
-	if not hrp or not hrp:IsA("BasePart") or not humanoid or humanoid.Health <= 0 then
+	local nodeId = nodeIdAny :: string
+	local node = nodesById[nodeId]
+	if not node or node.Depleted or not node.PrimaryPart.Parent then
+		return
+	end
+
+	local _, hrp = SecurityService.GetAliveCharacterRoot(player)
+	if not hrp then
 		return
 	end
 
@@ -176,39 +182,58 @@ local function onHitNode(player: Player, nodeIdAny: any)
 		return
 	end
 
-	local equipped = InventoryService.GetEquippedItem(player)
-	local toolConfig = if equipped ~= nil then Tools[equipped.Id] else nil
-	local basePower = if toolConfig ~= nil then toolConfig.Power else Types.HANDS_POWER
-	local cooldown = if toolConfig ~= nil then toolConfig.Cooldown else Types.HANDS_COOLDOWN
+	SecurityService.RunLocked(player, "HitNode", function()
+		if
+			nodesById[nodeId] ~= node
+			or node.Depleted
+			or not node.PrimaryPart.Parent
+			or DataService.GetData(player) == nil
+		then
+			return
+		end
 
-	local now = os.clock()
-	local prevHit = lastHitTime[player]
-	if prevHit ~= nil and (now - prevHit) < cooldown then
-		return
-	end
-	lastHitTime[player] = now
+		local _, innerHrp = SecurityService.GetAliveCharacterRoot(player)
+		if
+			not innerHrp
+			or (innerHrp.Position - node.PrimaryPart.Position).Magnitude > Types.MAX_GATHER_DISTANCE_SERVER
+		then
+			return
+		end
 
-	local nodeConfig = Nodes[node.NodeType]
-	local multiplier = if toolConfig ~= nil and toolConfig.PreferredNodeType == nodeConfig.Category
-		then toolConfig.BonusMultiplier
-		else Types.BASE_TOOL_MULTIPLIER
+		local equipped = InventoryService.GetEquippedItem(player)
+		local toolConfig = if equipped ~= nil then Tools[equipped.Id] else nil
+		local basePower = if toolConfig ~= nil then toolConfig.Power else Types.HANDS_POWER
+		local cooldown = if toolConfig ~= nil then toolConfig.Cooldown else Types.HANDS_COOLDOWN
 
-	local damage = basePower * multiplier
-	local actualDamage = math.min(damage, node.Hp)
-	local yieldAmount = math.max(1, math.floor(nodeConfig.YieldPerHit * (actualDamage / 25) + 0.5))
+		local now = os.clock()
+		local prevHit = lastHitTime[player]
+		if prevHit ~= nil and (now - prevHit) < cooldown then
+			return
+		end
+		lastHitTime[player] = now
 
-	node.Hp = math.max(0, node.Hp - actualDamage)
-	node.Model:SetAttribute("Hp", node.Hp)
+		local nodeConfig = Nodes[node.NodeType]
+		local multiplier = if toolConfig ~= nil and toolConfig.PreferredNodeType == nodeConfig.Category
+			then toolConfig.BonusMultiplier
+			else Types.BASE_TOOL_MULTIPLIER
 
-	local totalGrant = yieldAmount
-	if node.Hp <= 0 then
-		totalGrant += nodeConfig.BonusOnDestroy
-		depleteNode(node, nodeConfig.RespawnTime)
-	end
+		local damage = basePower * multiplier
+		local actualDamage = math.min(damage, node.Hp)
+		local yieldAmount = math.max(1, math.floor(nodeConfig.YieldPerHit * (actualDamage / 25) + 0.5))
 
-	InventoryService.AddItem(player, nodeConfig.ResourceId, totalGrant)
+		node.Hp = math.max(0, node.Hp - actualDamage)
+		node.Model:SetAttribute("Hp", node.Hp)
 
-	broadcastNodeUpdate(node, player, node.Depleted)
+		local totalGrant = yieldAmount
+		if node.Hp <= 0 then
+			totalGrant += nodeConfig.BonusOnDestroy
+			depleteNode(node, nodeConfig.RespawnTime)
+		end
+
+		InventoryService.AddItem(player, nodeConfig.ResourceId, totalGrant)
+
+		broadcastNodeUpdate(node, player, node.Depleted)
+	end)
 end
 
 function ResourceService.Init()

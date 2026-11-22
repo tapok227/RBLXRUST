@@ -11,6 +11,7 @@ local LootTables = require(ReplicatedStorage.Shared.configs.LootTables)
 local Net = require(ReplicatedStorage.Shared.Net)
 local DataService = require(ServerScriptService.Server.Services.DataService)
 local InventoryService = require(ServerScriptService.Server.Services.InventoryService)
+local SecurityService = require(ServerScriptService.Server.Services.SecurityService)
 
 type Inventory = Types.Inventory
 type Slot = Types.Slot
@@ -35,6 +36,7 @@ type ServerContainer = {
 	RespawnTime: number,
 	ExpiresAt: number,
 	Depleted: boolean,
+	Locked: boolean,
 	MaxSlots: number,
 	AllowDeposit: boolean,
 	OwnerUserId: number?,
@@ -62,10 +64,6 @@ local rng = Random.new()
 local isInitialized = false
 
 local LootService = {}
-
-local function isValidInteger(val: any): boolean
-	return typeof(val) == "number" and val == val and val % 1 == 0 and math.abs(val) ~= math.huge
-end
 
 local function isValidPositiveNumber(val: any): boolean
 	return typeof(val) == "number" and val == val and val > 0 and val < math.huge
@@ -186,15 +184,7 @@ local function computeAvailableCapacity(
 end
 
 local function getAliveCharacterRoot(player: Player): BasePart?
-	local character = player.Character
-	if not character then
-		return nil
-	end
-	local hrp = character:FindFirstChild("HumanoidRootPart")
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	if not hrp or not hrp:IsA("BasePart") or not humanoid or humanoid.Health <= 0 then
-		return nil
-	end
+	local _, hrp = SecurityService.GetAliveCharacterRoot(player)
 	return hrp
 end
 
@@ -210,6 +200,7 @@ local function closeAllViewers(container: ServerContainer)
 		if openContainerByPlayer[viewer] == container.ContainerId then
 			openContainerByPlayer[viewer] = nil
 		end
+		SecurityService.ClearActiveContainer(viewer, container.ContainerId)
 		if viewer.Parent == Players then
 			closeEvent:FireClient(viewer, container.ContainerId)
 		end
@@ -255,6 +246,7 @@ local function openContainerInternal(player: Player, container: ServerContainer)
 
 	openContainerByPlayer[player] = container.ContainerId
 	container.Viewers[player] = true
+	SecurityService.SetActiveContainer(player, container.ContainerId, container.PrimaryPart)
 
 	Net.GetEvent(Net.Events.OpenContainer):FireClient(
 		player,
@@ -433,6 +425,7 @@ local function registerPoiCrate(model: Instance)
 		RespawnTime = tableConfig.RespawnTime,
 		ExpiresAt = 0,
 		Depleted = false,
+		Locked = false,
 		MaxSlots = Types.INVENTORY_SIZE,
 		AllowDeposit = false,
 		OwnerUserId = nil,
@@ -471,7 +464,13 @@ local function scanPoiFolder()
 	end
 end
 
-local function onCloseContainer(player: Player, _containerIdAny: any)
+local function onCloseContainer(player: Player, containerIdAny: any)
+	if not SecurityService.CheckRateLimit(player, Net.Events.CloseContainer) then
+		return
+	end
+	if containerIdAny ~= nil and not SecurityService.IsValidString(containerIdAny, 1, 64) then
+		return
+	end
 	LootService.CloseContainerForPlayer(player, false)
 end
 
@@ -483,29 +482,28 @@ local function canPlayerAccessContainer(player: Player, container: ServerContain
 end
 
 local function onLootTakeSlot(player: Player, containerIdAny: any, containerSlotAny: any, targetPlayerSlotAny: any)
-	if typeof(containerIdAny) ~= "string" or #containerIdAny == 0 or #containerIdAny > 64 then
+	if not SecurityService.CheckRateLimit(player, Net.Events.LootTakeSlot) then
 		return
 	end
-	if not isValidInteger(containerSlotAny) then
+	if not SecurityService.IsValidString(containerIdAny, 1, 64) then
+		return
+	end
+	if not SecurityService.IsValidInteger(containerSlotAny, 1, Types.INVENTORY_SIZE) then
 		return
 	end
 	local containerSlot = containerSlotAny :: number
-	if containerSlot < 1 or containerSlot > Types.INVENTORY_SIZE then
-		return
-	end
 
 	local targetPlayerSlot: number? = nil
 	if targetPlayerSlotAny ~= nil then
-		if not isValidInteger(targetPlayerSlotAny) then
+		if not SecurityService.IsValidInteger(targetPlayerSlotAny, 1, Types.INVENTORY_SIZE) then
 			return
 		end
-		local candidate = targetPlayerSlotAny :: number
-		if candidate < 1 or candidate > Types.INVENTORY_SIZE then
-			return
-		end
-		targetPlayerSlot = candidate
+		targetPlayerSlot = targetPlayerSlotAny :: number
 	end
 
+	if DataService.IsTeleporting(player) or SecurityService.IsTransactionLocked(player) then
+		return
+	end
 	if DataService.GetData(player) == nil then
 		return
 	end
@@ -515,8 +513,13 @@ local function onLootTakeSlot(player: Player, containerIdAny: any, containerSlot
 		return
 	end
 
-	local container = containers[containerIdAny]
-	if container == nil or container.Depleted or not container.PrimaryPart.Parent then
+	local containerId = containerIdAny :: string
+	if openContainerByPlayer[player] ~= containerId then
+		return
+	end
+
+	local container = containers[containerId]
+	if container == nil or container.Depleted or container.Locked or not container.PrimaryPart.Parent then
 		return
 	end
 
@@ -528,47 +531,84 @@ local function onLootTakeSlot(player: Player, containerIdAny: any, containerSlot
 		return
 	end
 
-	if (hrp.Position - container.PrimaryPart.Position).Magnitude > Types.MAX_LOOT_DISTANCE then
+	if
+		(hrp.Position - container.PrimaryPart.Position).Magnitude
+		> Types.MAX_LOOT_DISTANCE + Types.PING_DISTANCE_TOLERANCE
+	then
 		return
 	end
 
-	local slot = container.Slots[containerSlot]
-	if slot == nil or slot.Count <= 0 then
-		return
-	end
-
-	local remainder: number
-	if targetPlayerSlot ~= nil then
-		remainder = InventoryService.AddItemToSlot(player, slot.Id, slot.Count, targetPlayerSlot)
-	else
-		remainder = InventoryService.AddItem(player, slot.Id, slot.Count)
-	end
-
-	if remainder >= slot.Count then
-		return
-	end
-
-	if remainder <= 0 then
-		container.Slots[containerSlot] = nil
-	else
-		slot.Count = remainder
-	end
-
-	if container.OnChanged then
-		container.OnChanged(container.Slots)
-	end
-
-	if not hasAnySlots(container.Slots, container.MaxSlots) then
-		if container.Kind == "Storage" then
-			notifyContainerViewers(container)
-		elseif container.Kind == "POI" and container.RespawnTime > 0 and container.TableId ~= nil then
-			depletePoiContainer(container)
-		else
-			LootService.DestroyContainer(container.ContainerId)
+	SecurityService.RunLocked(player, "LootTakeSlot", function()
+		if
+			containers[containerId] ~= container
+			or container.Depleted
+			or container.Locked
+			or not container.PrimaryPart.Parent
+			or openContainerByPlayer[player] ~= containerId
+			or DataService.GetData(player) == nil
+		then
+			return
 		end
-	else
-		notifyContainerViewers(container)
-	end
+
+		local innerHrp = getAliveCharacterRoot(player)
+		if
+			not innerHrp
+			or (innerHrp.Position - container.PrimaryPart.Position).Magnitude
+				> Types.MAX_LOOT_DISTANCE + Types.PING_DISTANCE_TOLERANCE
+		then
+			return
+		end
+
+		container.Locked = true
+		local ok, err = pcall(function()
+			local slot = container.Slots[containerSlot]
+			if slot == nil or slot.Count <= 0 then
+				return
+			end
+
+			local takenId = slot.Id
+			local takenCount = slot.Count
+			container.Slots[containerSlot] = nil
+
+			local remainder: number
+			if targetPlayerSlot ~= nil then
+				remainder = InventoryService.AddItemToSlot(player, takenId, takenCount, targetPlayerSlot)
+			else
+				remainder = InventoryService.AddItem(player, takenId, takenCount)
+			end
+
+			if remainder > 0 then
+				container.Slots[containerSlot] = {
+					Id = takenId,
+					Count = remainder,
+				}
+			end
+
+			if remainder >= takenCount then
+				return
+			end
+
+			if container.OnChanged then
+				container.OnChanged(container.Slots)
+			end
+
+			if not hasAnySlots(container.Slots, container.MaxSlots) then
+				if container.Kind == "Storage" then
+					notifyContainerViewers(container)
+				elseif container.Kind == "POI" and container.RespawnTime > 0 and container.TableId ~= nil then
+					depletePoiContainer(container)
+				else
+					LootService.DestroyContainer(container.ContainerId)
+				end
+			else
+				notifyContainerViewers(container)
+			end
+		end)
+		container.Locked = false
+		if not ok then
+			error(err)
+		end
+	end)
 end
 
 local function onContainerDepositSlot(
@@ -577,17 +617,20 @@ local function onContainerDepositSlot(
 	playerSlotAny: any,
 	targetContainerSlotAny: any
 )
-	if typeof(containerIdAny) ~= "string" or #containerIdAny == 0 or #containerIdAny > 64 then
+	if not SecurityService.CheckRateLimit(player, Net.Events.ContainerDepositSlot) then
 		return
 	end
-	if not isValidInteger(playerSlotAny) then
+	if not SecurityService.IsValidString(containerIdAny, 1, 64) then
+		return
+	end
+	if not SecurityService.IsValidInteger(playerSlotAny, 1, Types.INVENTORY_SIZE) then
 		return
 	end
 	local playerSlotIndex = playerSlotAny :: number
-	if playerSlotIndex < 1 or playerSlotIndex > Types.INVENTORY_SIZE then
+
+	if DataService.IsTeleporting(player) or SecurityService.IsTransactionLocked(player) then
 		return
 	end
-
 	if DataService.GetData(player) == nil then
 		return
 	end
@@ -597,8 +640,19 @@ local function onContainerDepositSlot(
 		return
 	end
 
-	local container = containers[containerIdAny]
-	if container == nil or container.Depleted or not container.PrimaryPart.Parent or not container.AllowDeposit then
+	local containerId = containerIdAny :: string
+	if openContainerByPlayer[player] ~= containerId then
+		return
+	end
+
+	local container = containers[containerId]
+	if
+		container == nil
+		or container.Depleted
+		or container.Locked
+		or not container.PrimaryPart.Parent
+		or not container.AllowDeposit
+	then
 		return
 	end
 
@@ -608,62 +662,99 @@ local function onContainerDepositSlot(
 
 	local targetContainerSlot: number? = nil
 	if targetContainerSlotAny ~= nil then
-		if not isValidInteger(targetContainerSlotAny) then
+		if not SecurityService.IsValidInteger(targetContainerSlotAny, 1, container.MaxSlots) then
 			return
 		end
-		local candidate = targetContainerSlotAny :: number
-		if candidate < 1 or candidate > container.MaxSlots then
+		targetContainerSlot = targetContainerSlotAny :: number
+	end
+
+	if
+		(hrp.Position - container.PrimaryPart.Position).Magnitude
+		> Types.MAX_LOOT_DISTANCE + Types.PING_DISTANCE_TOLERANCE
+	then
+		return
+	end
+
+	SecurityService.RunLocked(player, "ContainerDepositSlot", function()
+		if
+			containers[containerId] ~= container
+			or container.Depleted
+			or container.Locked
+			or not container.PrimaryPart.Parent
+			or not container.AllowDeposit
+			or openContainerByPlayer[player] ~= containerId
+			or DataService.GetData(player) == nil
+		then
 			return
 		end
-		targetContainerSlot = candidate
-	end
 
-	if (hrp.Position - container.PrimaryPart.Position).Magnitude > Types.MAX_LOOT_DISTANCE then
-		return
-	end
-
-	local playerSlot = InventoryService.GetSlot(player, playerSlotIndex)
-	if playerSlot == nil or playerSlot.Count <= 0 then
-		return
-	end
-
-	local itemId = playerSlot.Id
-	local itemCount = playerSlot.Count
-	local itemConfig = Items[itemId]
-	if not itemConfig then
-		return
-	end
-
-	local availableCapacity =
-		computeAvailableCapacity(container.Slots, container.MaxSlots, itemId, itemConfig.MaxStack, targetContainerSlot)
-	local toDeposit = math.min(itemCount, availableCapacity)
-	if toDeposit <= 0 then
-		return
-	end
-
-	if not InventoryService.ConsumeSlot(player, playerSlotIndex, toDeposit) then
-		return
-	end
-
-	if targetContainerSlot ~= nil then
-		local existing = container.Slots[targetContainerSlot]
-		if existing == nil then
-			container.Slots[targetContainerSlot] = {
-				Id = itemId,
-				Count = toDeposit,
-			}
-		else
-			existing.Count += toDeposit
+		local innerHrp = getAliveCharacterRoot(player)
+		if
+			not innerHrp
+			or (innerHrp.Position - container.PrimaryPart.Position).Magnitude
+				> Types.MAX_LOOT_DISTANCE + Types.PING_DISTANCE_TOLERANCE
+		then
+			return
 		end
-	else
-		addItemToSlots(container.Slots, container.MaxSlots, itemId, toDeposit)
-	end
 
-	if container.OnChanged then
-		container.OnChanged(container.Slots)
-	end
+		container.Locked = true
+		local ok, err = pcall(function()
+			local playerSlot = InventoryService.GetSlot(player, playerSlotIndex)
+			if playerSlot == nil or playerSlot.Count <= 0 then
+				return
+			end
 
-	notifyContainerViewers(container)
+			local itemId = playerSlot.Id
+			local itemCount = playerSlot.Count
+			local itemConfig = Items[itemId]
+			if not itemConfig then
+				return
+			end
+
+			local availableCapacity = computeAvailableCapacity(
+				container.Slots,
+				container.MaxSlots,
+				itemId,
+				itemConfig.MaxStack,
+				targetContainerSlot
+			)
+			local toDeposit = math.min(itemCount, availableCapacity)
+			if toDeposit <= 0 then
+				return
+			end
+
+			if not InventoryService.ConsumeSlot(player, playerSlotIndex, toDeposit) then
+				return
+			end
+
+			if targetContainerSlot ~= nil then
+				local existing = container.Slots[targetContainerSlot]
+				if existing == nil then
+					container.Slots[targetContainerSlot] = {
+						Id = itemId,
+						Count = toDeposit,
+					}
+				else
+					existing.Count += toDeposit
+				end
+			else
+				local leftover = addItemToSlots(container.Slots, container.MaxSlots, itemId, toDeposit)
+				if leftover > 0 then
+					InventoryService.AddItemToSlot(player, itemId, leftover, playerSlotIndex)
+				end
+			end
+
+			if container.OnChanged then
+				container.OnChanged(container.Slots)
+			end
+
+			notifyContainerViewers(container)
+		end)
+		container.Locked = false
+		if not ok then
+			error(err)
+		end
+	end)
 end
 
 local function stepViewerDistanceCheck()
@@ -781,6 +872,7 @@ function LootService.RegisterSlotsContainer(
 		RespawnTime = 0,
 		ExpiresAt = expiresAt,
 		Depleted = false,
+		Locked = false,
 		MaxSlots = Types.INVENTORY_SIZE,
 		AllowDeposit = false,
 		OwnerUserId = nil,
@@ -874,6 +966,7 @@ function LootService.RegisterStorageContainer(
 		RespawnTime = 0,
 		ExpiresAt = 0,
 		Depleted = false,
+		Locked = false,
 		MaxSlots = effectiveMaxSlots,
 		AllowDeposit = canDeposit,
 		OwnerUserId = ownerUserId,
@@ -918,6 +1011,10 @@ function LootService.OpenContainerForPlayer(player: Player, containerId: string)
 		return false
 	end
 
+	if DataService.IsTeleporting(player) or SecurityService.IsTransactionLocked(player) then
+		return false
+	end
+
 	local container = containers[containerId]
 	if container == nil or container.Depleted or not container.PrimaryPart.Parent then
 		return false
@@ -947,9 +1044,11 @@ end
 function LootService.CloseContainerForPlayer(player: Player, notifyClient: boolean)
 	local containerId = openContainerByPlayer[player]
 	if containerId == nil then
+		SecurityService.ClearActiveContainer(player, nil)
 		return
 	end
 	openContainerByPlayer[player] = nil
+	SecurityService.ClearActiveContainer(player, containerId)
 
 	local container = containers[containerId]
 	if container ~= nil then

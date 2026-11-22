@@ -8,6 +8,7 @@ local Types = require(ReplicatedStorage.Shared.Types)
 local Items = require(ReplicatedStorage.Shared.configs.Items)
 local Net = require(ReplicatedStorage.Shared.Net)
 local DataService = require(ServerScriptService.Server.Services.DataService)
+local SecurityService = require(ServerScriptService.Server.Services.SecurityService)
 
 type Inventory = Types.Inventory
 type Slot = Types.Slot
@@ -435,72 +436,105 @@ function InventoryService.AddItemToSlot(player: Player, id: string, count: numbe
 end
 
 local function onInventoryMove(player: Player, fromSlotAny: any, toSlotAny: any)
-	if not isValidInteger(fromSlotAny) or not isValidInteger(toSlotAny) then
+	if not SecurityService.CheckRateLimit(player, Net.Events.InventoryMove) then
+		return
+	end
+
+	if
+		not SecurityService.IsValidInteger(fromSlotAny, 1, Types.INVENTORY_SIZE)
+		or not SecurityService.IsValidInteger(toSlotAny, 1, Types.INVENTORY_SIZE)
+	then
 		return
 	end
 
 	local fromSlot = fromSlotAny :: number
 	local toSlot = toSlotAny :: number
-
-	if fromSlot < 1 or fromSlot > Types.INVENTORY_SIZE or toSlot < 1 or toSlot > Types.INVENTORY_SIZE then
-		return
-	end
-
 	if fromSlot == toSlot then
 		return
 	end
 
-	local data = DataService.GetData(player)
-	if not data then
+	if DataService.IsTeleporting(player) or SecurityService.IsTransactionLocked(player) then
 		return
 	end
 
-	local inv = data.Inventory
-	local source = inv[fromSlot]
-	if source == nil or source.Count <= 0 then
+	if SecurityService.GetAliveCharacterRoot(player) == nil then
 		return
 	end
 
-	local target = inv[toSlot]
-	if target == nil then
-		inv[toSlot] = source
-		inv[fromSlot] = nil
-		sendInventorySync(player)
+	if SecurityService.IsActiveContainerOutOfRange(player, Types.MAX_LOOT_DISTANCE, Types.PING_DISTANCE_TOLERANCE) then
 		return
 	end
 
-	if source.Id == target.Id then
-		local itemConfig = Items[source.Id]
-		local maxStack = if itemConfig then itemConfig.MaxStack else 1
-		if target.Count < maxStack then
-			local transfer = math.min(source.Count, maxStack - target.Count)
-			if transfer > 0 then
-				target.Count += transfer
-				source.Count -= transfer
-				if source.Count <= 0 then
-					inv[fromSlot] = nil
-				end
-				sendInventorySync(player)
-			end
+	SecurityService.RunLocked(player, "InventoryMove", function()
+		if SecurityService.GetAliveCharacterRoot(player) == nil then
+			return
 		end
-	else
-		inv[toSlot] = source
-		inv[fromSlot] = target
-		sendInventorySync(player)
-	end
+
+		local data = DataService.GetData(player)
+		if not data then
+			return
+		end
+
+		local inv = data.Inventory
+		local source = inv[fromSlot]
+		if source == nil or source.Count <= 0 then
+			return
+		end
+
+		local target = inv[toSlot]
+		if target == nil then
+			inv[fromSlot] = nil
+			inv[toSlot] = source
+			sendInventorySync(player)
+			return
+		end
+
+		if source.Id == target.Id then
+			local itemConfig = Items[source.Id]
+			local maxStack = if itemConfig then itemConfig.MaxStack else 1
+			if target.Count < maxStack then
+				local transfer = math.min(source.Count, maxStack - target.Count)
+				if transfer > 0 then
+					source.Count -= transfer
+					if source.Count <= 0 then
+						inv[fromSlot] = nil
+					end
+					target.Count += transfer
+					sendInventorySync(player)
+				end
+			end
+		else
+			inv[fromSlot] = nil
+			inv[toSlot] = nil
+			inv[toSlot] = source
+			inv[fromSlot] = target
+			sendInventorySync(player)
+		end
+	end)
 end
 
 local function onHotbarSelect(player: Player, slotAny: any)
-	if not isValidInteger(slotAny) then
+	if not SecurityService.CheckRateLimit(player, Net.Events.HotbarSelect) then
 		return
 	end
 
-	local slot = slotAny :: number
-	if slot < 1 or slot > Types.HOTBAR_SIZE then
+	if not SecurityService.IsValidInteger(slotAny, 1, Types.HOTBAR_SIZE) then
 		return
 	end
 
-	equippedSlots[player] = slot
+	if
+		DataService.GetData(player) == nil
+		or DataService.IsTeleporting(player)
+		or SecurityService.IsTeleportLocked(player)
+	then
+		return
+	end
+
+	if SecurityService.GetAliveCharacterRoot(player) == nil then
+		return
+	end
+
+	equippedSlots[player] = slotAny :: number
 end
 
 local function onPlayerDataLoaded(player: Player, data: Types.PlayerData)

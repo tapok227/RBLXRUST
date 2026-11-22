@@ -9,6 +9,7 @@ local Types = require(ReplicatedStorage.Shared.Types)
 local Signal = require(ReplicatedStorage.Shared.Signal)
 local BuildingConfig = require(ReplicatedStorage.Shared.configs.BuildingConfig)
 local ProfileStore = require(ServerScriptService.Server.Vendor.ProfileStore)
+local SecurityService = require(ServerScriptService.Server.Services.SecurityService)
 
 type PlayerData = Types.PlayerData
 type Slot = Types.Slot
@@ -21,14 +22,15 @@ type RaidTargetInfo = Types.RaidTargetInfo
 
 local PROFILE_STORE_NAME = "PlayerData_v1"
 local RAIDABLE_BASES_STORE_NAME = "RaidableBases_v1"
-local TELEPORT_RELEASE_TIMEOUT = 5
+local TELEPORT_RELEASE_TIMEOUT = 8
 local MOCK_RAID_TARGET_USER_ID = -1001
 local MOCK_RAID_TARGET_NAME = "MockRaidTarget"
 local MOCK_RAID_TARGET_PIECE_COUNT = 12
 local MAX_NAME_CACHE_ENTRIES = 256
 
 local DATA_TEMPLATE = {
-	Version = 1,
+	DataVersion = Types.CURRENT_DATA_VERSION,
+	Version = Types.CURRENT_DATA_VERSION,
 	Inventory = {},
 	Stats = {
 		Health = Types.MAX_HEALTH,
@@ -328,8 +330,74 @@ local function serializeBase(baseData: BaseData): BaseData
 	}
 end
 
+local function deepCloneValue(value: any): any
+	if type(value) ~= "table" then
+		return value
+	end
+	local cloned: { [any]: any } = {}
+	for k, v in value do
+		cloned[deepCloneValue(k)] = deepCloneValue(v)
+	end
+	return cloned
+end
+
+function DataService.MigrateProfileData(rawData: { [string]: any }): { [string]: any }
+	local data: { [string]: any } = if type(rawData) == "table" then deepCloneValue(rawData) else {}
+
+	local versionNumber = 0
+	if
+		type(data.DataVersion) == "number"
+		and SecurityService.IsFiniteNumber(data.DataVersion)
+		and data.DataVersion >= 0
+	then
+		versionNumber = math.floor(data.DataVersion)
+	elseif type(data.Version) == "number" and SecurityService.IsFiniteNumber(data.Version) and data.Version >= 1 then
+		versionNumber = math.floor(data.Version)
+	end
+	data.DataVersion = versionNumber
+
+	-- Step 1: initial schema (DataVersion 0 -> 1)
+	if data.DataVersion < 1 then
+		if type(data.Inventory) ~= "table" then
+			data.Inventory = {}
+		end
+		if type(data.Stats) ~= "table" then
+			data.Stats = {
+				Health = Types.MAX_HEALTH,
+				Hunger = Types.MAX_HUNGER,
+				Thirst = Types.MAX_THIRST,
+			}
+		else
+			if not SecurityService.IsFiniteNumber(data.Stats.Health) then
+				data.Stats.Health = Types.MAX_HEALTH
+			end
+			if not SecurityService.IsFiniteNumber(data.Stats.Hunger) then
+				data.Stats.Hunger = Types.MAX_HUNGER
+			end
+			if not SecurityService.IsFiniteNumber(data.Stats.Thirst) then
+				data.Stats.Thirst = Types.MAX_THIRST
+			end
+		end
+		if type(data.Base) ~= "table" then
+			data.Base = { Pieces = {} }
+		elseif type(data.Base.Pieces) ~= "table" then
+			data.Base.Pieces = {}
+		end
+		data.DataVersion = 1
+	end
+
+	-- Step 2: scaffold for future schema updates (v1 -> v2)
+	if Types.CURRENT_DATA_VERSION >= 2 and data.DataVersion < 2 then
+		data.DataVersion = 2
+	end
+
+	data.Version = data.DataVersion
+	return data
+end
+
 local function syncRuntimeToProfile(profile: any, runtimePlayerData: PlayerData)
-	profile.Data.Version = runtimePlayerData.Version
+	profile.Data.DataVersion = runtimePlayerData.DataVersion
+	profile.Data.Version = runtimePlayerData.DataVersion
 	profile.Data.Inventory = serializeInventory(runtimePlayerData.Inventory)
 	profile.Data.Stats = serializeStats(runtimePlayerData.Stats)
 	profile.Data.Base = serializeBase(runtimePlayerData.Base)
@@ -423,9 +491,15 @@ local function loadPlayerProfile(player: Player)
 	if profile ~= nil then
 		profile:AddUserId(player.UserId)
 		profile:Reconcile()
+		profile.Data = DataService.MigrateProfileData(profile.Data)
+
+		local currentVersion = if type(profile.Data.DataVersion) == "number"
+			then profile.Data.DataVersion
+			else Types.CURRENT_DATA_VERSION
 
 		local runtimePlayerData: PlayerData = {
-			Version = if type(profile.Data.Version) == "number" then profile.Data.Version else 1,
+			DataVersion = currentVersion,
+			Version = currentVersion,
 			Inventory = deserializeInventory(
 				if type(profile.Data.Inventory) == "table" then profile.Data.Inventory else {}
 			),
@@ -453,6 +527,14 @@ local function loadPlayerProfile(player: Player)
 			RuntimeData[player] = nil
 			unloadedByPlayer[player] = nil
 			if player.Parent == Players and not teleportingPlayers[player] then
+				SecurityService.SetTeleportLock(player, true)
+				warn(
+					string.format(
+						"[DataService] Unexpected OnSessionEnd for %s (%d) - kicking to prevent double session",
+						player.Name,
+						player.UserId
+					)
+				)
 				player:Kick("Profile session ended - please rejoin.")
 			end
 		end)
@@ -486,6 +568,7 @@ local function onPlayerRemoving(player: Player)
 	RuntimeData[player] = nil
 	unloadedByPlayer[player] = nil
 	teleportingPlayers[player] = nil
+	SecurityService.SetTeleportLock(player, false)
 	if not registerInFlight[player.UserId] then
 		lastRegisteredPieceCount[player.UserId] = nil
 	end
@@ -501,6 +584,7 @@ function DataService.ReleaseForTeleport(player: Player): boolean
 		return false
 	end
 
+	SecurityService.SetTeleportLock(player, true)
 	teleportingPlayers[player] = true
 
 	local runtimePlayerData = RuntimeData[player]
@@ -509,9 +593,15 @@ function DataService.ReleaseForTeleport(player: Player): boolean
 		syncRuntimeToProfile(profile, runtimePlayerData)
 	end
 
+	local lastSaveStarted = false
 	local saveCompleted = false
+	local lastSaveConn = profile.OnLastSave:Connect(function()
+		lastSaveStarted = true
+	end)
 	local afterSaveConn = profile.OnAfterSave:Connect(function()
-		saveCompleted = true
+		if lastSaveStarted or not profile:IsActive() then
+			saveCompleted = true
+		end
 	end)
 
 	profile:EndSession()
@@ -521,6 +611,7 @@ function DataService.ReleaseForTeleport(player: Player): boolean
 		task.wait(0.05)
 	end
 
+	lastSaveConn:Disconnect()
 	afterSaveConn:Disconnect()
 
 	if not profile:IsActive() then
@@ -543,20 +634,26 @@ function DataService.ReleaseForTeleport(player: Player): boolean
 end
 
 function DataService.RestoreAfterFailedTeleport(player: Player): boolean
+	teleportingPlayers[player] = nil
+
 	if player.Parent ~= Players then
-		teleportingPlayers[player] = nil
+		SecurityService.SetTeleportLock(player, false)
 		return false
 	end
 
 	local existingProfile = Profiles[player]
 	if existingProfile ~= nil and existingProfile:IsActive() then
-		teleportingPlayers[player] = nil
+		SecurityService.SetTeleportLock(player, false)
 		return true
 	end
 
-	teleportingPlayers[player] = nil
 	loadPlayerProfile(player)
-	return DataService.GetData(player) ~= nil
+	if DataService.GetData(player) ~= nil then
+		SecurityService.SetTeleportLock(player, false)
+		return true
+	end
+
+	return false
 end
 
 function DataService.GetData(player: Player): PlayerData?

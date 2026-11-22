@@ -11,6 +11,8 @@ local Types = require(ReplicatedStorage.Shared.Types)
 local Net = require(ReplicatedStorage.Shared.Net)
 local Janitor = require(ReplicatedStorage.Shared.Janitor)
 local DataService = require(ServerScriptService.Server.Services.DataService)
+local LootService = require(ServerScriptService.Server.Services.LootService)
+local SecurityService = require(ServerScriptService.Server.Services.SecurityService)
 
 type ExtractionState = Types.ExtractionState
 
@@ -249,6 +251,7 @@ local function handleTeleportFailure(player: Player, reasonText: string, allowRe
 			if player.Parent ~= Players then
 				pendingTeleports[player] = nil
 				teleportInProgress[player] = nil
+				SecurityService.SetTeleportLock(player, false)
 				return
 			end
 
@@ -283,10 +286,12 @@ local function teleportPlayerToPlace(
 	teleportData: { [string]: any },
 	studioLabel: string
 )
-	if teleportInProgress[player] or player.Parent ~= Players then
+	if teleportInProgress[player] or SecurityService.IsTeleportLocked(player) or player.Parent ~= Players then
 		return
 	end
 	teleportInProgress[player] = true
+	SecurityService.SetTeleportLock(player, true)
+	LootService.CloseContainerForPlayer(player, true)
 
 	if RunService:IsStudio() then
 		local released = DataService.ReleaseForTeleport(player)
@@ -345,6 +350,7 @@ local function teleportPlayerToPlace(
 
 	if player.Parent ~= Players then
 		teleportInProgress[player] = nil
+		SecurityService.SetTeleportLock(player, false)
 		return
 	end
 

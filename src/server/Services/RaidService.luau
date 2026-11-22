@@ -14,6 +14,7 @@ local Net = require(ReplicatedStorage.Shared.Net)
 local DataService = require(ServerScriptService.Server.Services.DataService)
 local InventoryService = require(ServerScriptService.Server.Services.InventoryService)
 local LootService = require(ServerScriptService.Server.Services.LootService)
+local SecurityService = require(ServerScriptService.Server.Services.SecurityService)
 
 type Slot = Types.Slot
 type Inventory = Types.Inventory
@@ -64,6 +65,7 @@ local LOOT_CONTAINERS_FOLDER_NAME = "LootContainers"
 local STUDIO_MOCK_RAID_ORIGIN = Vector3.new(300, 0, 300)
 local RAID_DURATION = Types.RAID_DURATION
 local LIST_COOLDOWN = 1.0
+local EXPLOSIVE_PLACE_COOLDOWN = 0.5
 local MAX_HIT_SURFACE_OFFSET = 4.0
 
 local TIER_VISUALS: { [BuildTier]: { Material: Enum.Material, Color: Color3 } } = {
@@ -83,6 +85,7 @@ local TIER_VISUALS: { [BuildTier]: { Material: Enum.Material, Color: Color3 } } 
 
 local activeSessions: { [Player]: RaidSession } = {}
 local lastListRequest: { [Player]: number } = {}
+local lastExplosivePlaceTime: { [Player]: number } = {}
 local teleportInProgress: { [Player]: boolean } = {}
 local pendingTeleports: { [Player]: PendingTeleport } = {}
 local nextBagId = 0
@@ -90,21 +93,20 @@ local isInitialized = false
 
 local RaidService = {}
 
-local function isValidInteger(val: any): boolean
-	return typeof(val) == "number" and val == val and val % 1 == 0 and math.abs(val) ~= math.huge
-end
-
-local function isValidVector3(val: any): boolean
-	if typeof(val) ~= "Vector3" then
-		return false
+local function isNearRaidTerminal(hrp: BasePart): boolean
+	local terminal = Workspace:FindFirstChild("RaidTerminal")
+	if terminal == nil then
+		return true
 	end
-	local v = val :: Vector3
-	return v.X == v.X
-		and v.Y == v.Y
-		and v.Z == v.Z
-		and math.abs(v.X) ~= math.huge
-		and math.abs(v.Y) ~= math.huge
-		and math.abs(v.Z) ~= math.huge
+	local pos: Vector3
+	if terminal:IsA("Model") then
+		pos = if terminal.PrimaryPart then terminal.PrimaryPart.Position else terminal:GetPivot().Position
+	elseif terminal:IsA("BasePart") then
+		pos = terminal.Position
+	else
+		return true
+	end
+	return (hrp.Position - pos).Magnitude <= Types.MAX_RAID_TERMINAL_DISTANCE + Types.PING_DISTANCE_TOLERANCE
 end
 
 local function hasAnySlots(inv: Inventory, maxSlots: number): boolean
@@ -129,16 +131,7 @@ local function getOrCreateFolder(name: string): Folder
 end
 
 local function getAliveCharacterParts(player: Player): (Model?, BasePart?, Humanoid?)
-	local character = player.Character
-	if not character then
-		return nil, nil, nil
-	end
-	local hrp = character:FindFirstChild("HumanoidRootPart")
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	if not hrp or not hrp:IsA("BasePart") or not humanoid or humanoid.Health <= 0 then
-		return nil, nil, nil
-	end
-	return character, hrp, humanoid
+	return SecurityService.GetAliveCharacterRoot(player)
 end
 
 local function sendRaidHud(player: Player, state: RaidHudState)
@@ -682,6 +675,7 @@ local function finishRaidSession(player: Player, statusText: string?)
 		return
 	end
 	session.Extracting = true
+	SecurityService.SetTeleportLock(player, true)
 
 	LootService.CloseContainerForPlayer(player, true)
 
@@ -715,6 +709,7 @@ local function finishRaidSession(player: Player, statusText: string?)
 
 	if teleportInProgress[player] then
 		session.Extracting = false
+		SecurityService.SetTeleportLock(player, false)
 		return
 	end
 	teleportInProgress[player] = true
@@ -739,6 +734,7 @@ local function finishRaidSession(player: Player, statusText: string?)
 		activeSessions[player] = nil
 		cleanupSession(session)
 		teleportInProgress[player] = nil
+		SecurityService.SetTeleportLock(player, false)
 		return
 	end
 
@@ -885,7 +881,20 @@ local function detonateExplosive(
 end
 
 local function onRaidListRequest(player: Player)
+	if not SecurityService.CheckRateLimit(player, Net.Events.RaidListRequest) then
+		return
+	end
 	if game.PlaceId ~= Config.Places.MainMap and not RunService:IsStudio() then
+		return
+	end
+	if DataService.IsTeleporting(player) or SecurityService.IsTransactionLocked(player) then
+		return
+	end
+	if DataService.GetData(player) == nil then
+		return
+	end
+	local _, hrp = getAliveCharacterParts(player)
+	if hrp == nil or not isNearRaidTerminal(hrp) then
 		return
 	end
 
@@ -903,16 +912,24 @@ local function onRaidListRequest(player: Player)
 end
 
 local function onStartRaidRequest(player: Player, targetUserIdAny: any)
+	if not SecurityService.CheckRateLimit(player, Net.Events.StartRaidRequest) then
+		return
+	end
 	if game.PlaceId ~= Config.Places.MainMap and not RunService:IsStudio() then
 		return
 	end
-	if activeSessions[player] ~= nil or teleportInProgress[player] then
+	if activeSessions[player] ~= nil or teleportInProgress[player] or SecurityService.IsTeleportLocked(player) then
 		return
 	end
 	if DataService.GetData(player) == nil then
 		return
 	end
-	if not isValidInteger(targetUserIdAny) then
+	if not SecurityService.IsValidInteger(targetUserIdAny) then
+		return
+	end
+
+	local _, hrp = getAliveCharacterParts(player)
+	if hrp == nil or not isNearRaidTerminal(hrp) then
 		return
 	end
 
@@ -925,6 +942,8 @@ local function onStartRaidRequest(player: Player, targetUserIdAny: any)
 	end
 
 	teleportInProgress[player] = true
+	SecurityService.SetTeleportLock(player, true)
+	LootService.CloseContainerForPlayer(player, true)
 	local targetName = resolveTargetName(targetUserId)
 
 	if RunService:IsStudio() then
@@ -970,6 +989,7 @@ local function onStartRaidRequest(player: Player, targetUserIdAny: any)
 
 		if player.Parent ~= Players then
 			teleportInProgress[player] = nil
+			SecurityService.SetTeleportLock(player, false)
 			return
 		end
 
@@ -996,6 +1016,7 @@ local function onStartRaidRequest(player: Player, targetUserIdAny: any)
 			TargetName = targetName,
 		}
 		local options = Instance.new("TeleportOptions")
+		options.ReservedServerAccessCode = accessCode
 		options:SetTeleportData(teleportData)
 
 		pendingTeleports[player] = {
@@ -1006,10 +1027,10 @@ local function onStartRaidRequest(player: Player, targetUserIdAny: any)
 		}
 
 		local okTp, errTp = pcall(function()
-			TeleportService:TeleportToPrivateServer(Config.Places.PlayerBase, accessCode, { player }, nil, teleportData)
+			TeleportService:TeleportAsync(Config.Places.PlayerBase, { player }, options)
 		end)
 		if not okTp then
-			warn(string.format("[RaidService] TeleportToPrivateServer failed for %s: %s", player.Name, tostring(errTp)))
+			warn(string.format("[RaidService] TeleportAsync failed for %s: %s", player.Name, tostring(errTp)))
 			pendingTeleports[player] = nil
 			teleportInProgress[player] = nil
 			DataService.RestoreAfterFailedTeleport(player)
@@ -1024,21 +1045,28 @@ local function onStartRaidRequest(player: Player, targetUserIdAny: any)
 end
 
 local function onPlaceExplosiveRequest(player: Player, targetUidAny: any, hitPositionAny: any)
+	if not SecurityService.CheckRateLimit(player, Net.Events.PlaceExplosiveRequest) then
+		return
+	end
 	local session = activeSessions[player]
 	if session == nil or session.Extracting then
+		return
+	end
+	if DataService.IsTeleporting(player) or SecurityService.IsTransactionLocked(player) then
 		return
 	end
 	if DataService.GetData(player) == nil then
 		return
 	end
-	if typeof(targetUidAny) ~= "string" or #targetUidAny == 0 or #targetUidAny > 64 then
+	if not SecurityService.IsValidString(targetUidAny, 1, 64) then
 		return
 	end
-	if not isValidVector3(hitPositionAny) then
+	if not SecurityService.IsValidVector3(hitPositionAny) then
 		return
 	end
 
-	local targetRecord = session.Pieces[targetUidAny]
+	local targetUid = targetUidAny :: string
+	local targetRecord = session.Pieces[targetUid]
 	if targetRecord == nil or not targetRecord.Model.Parent then
 		return
 	end
@@ -1048,66 +1076,109 @@ local function onPlaceExplosiveRequest(player: Player, targetUidAny: any, hitPos
 		return
 	end
 
-	local equippedSlot = InventoryService.GetEquippedSlot(player)
-	local slotData = InventoryService.GetSlot(player, equippedSlot)
-	if slotData == nil or slotData.Count <= 0 then
-		return
-	end
-
-	local explosiveCfg = Explosives[slotData.Id]
-	if explosiveCfg == nil then
-		return
-	end
-
 	local hitPosition = hitPositionAny :: Vector3
 	local clampedPos = closestPointOnModel(targetRecord.Model, hitPosition)
 	if (hitPosition - clampedPos).Magnitude > MAX_HIT_SURFACE_OFFSET then
 		return
 	end
-	if (hrp.Position - clampedPos).Magnitude > Types.MAX_EXPLOSIVE_PLACE_DISTANCE then
+	if (hrp.Position - clampedPos).Magnitude > Types.MAX_EXPLOSIVE_PLACE_DISTANCE + Types.PING_DISTANCE_TOLERANCE then
 		return
 	end
 
-	if not InventoryService.ConsumeSlot(player, equippedSlot, 1) then
-		return
-	end
-
-	local toPlayer = hrp.Position - clampedPos
-	local nudge = if toPlayer.Magnitude > 0.05 then toPlayer.Unit * 0.3 else Vector3.new(0, 0.3, 0)
-	local blastOrigin = clampedPos + nudge
-
-	local explosiveId = slotData.Id
-	local visualPart, timerLabel = createExplosiveVisual(blastOrigin, explosiveId)
-	local explosiveRecord: ActiveExplosiveRecord = {
-		Part = visualPart,
-		Label = timerLabel,
-		CancelFlag = false,
-	}
-	table.insert(session.ActiveExplosives, explosiveRecord)
-
-	task.spawn(function()
-		local detonateAt = os.clock() + explosiveCfg.FuseTime
-		while not explosiveRecord.CancelFlag and activeSessions[player] == session do
-			local remaining = detonateAt - os.clock()
-			if remaining <= 0 then
-				break
-			end
-			if explosiveRecord.Label and explosiveRecord.Label.Parent then
-				explosiveRecord.Label.Text = string.format("%.1fs", remaining)
-			end
-			task.wait(0.1)
+	SecurityService.RunLocked(player, "PlaceExplosive", function()
+		if
+			activeSessions[player] ~= session
+			or session.Extracting
+			or DataService.GetData(player) == nil
+			or session.Pieces[targetUid] ~= targetRecord
+			or not targetRecord.Model.Parent
+		then
+			return
 		end
 
-		if not explosiveRecord.CancelFlag and activeSessions[player] == session then
-			detonateExplosive(session, explosiveRecord, blastOrigin, explosiveId)
-		elseif explosiveRecord.Part.Parent then
-			explosiveRecord.Part:Destroy()
+		local _, innerHrp, _ = getAliveCharacterParts(player)
+		if innerHrp == nil then
+			return
 		end
+		if
+			(innerHrp.Position - clampedPos).Magnitude
+			> Types.MAX_EXPLOSIVE_PLACE_DISTANCE + Types.PING_DISTANCE_TOLERANCE
+		then
+			return
+		end
+
+		local now = os.clock()
+		local prevPlace = lastExplosivePlaceTime[player]
+		if prevPlace ~= nil and (now - prevPlace) < EXPLOSIVE_PLACE_COOLDOWN then
+			return
+		end
+
+		local equippedSlot = InventoryService.GetEquippedSlot(player)
+		local slotData = InventoryService.GetSlot(player, equippedSlot)
+		if slotData == nil or slotData.Count <= 0 then
+			return
+		end
+
+		local explosiveCfg = Explosives[slotData.Id]
+		if explosiveCfg == nil then
+			return
+		end
+
+		local explosiveId = slotData.Id
+		if not InventoryService.ConsumeSlot(player, equippedSlot, 1) then
+			return
+		end
+		lastExplosivePlaceTime[player] = now
+
+		local toPlayer = innerHrp.Position - clampedPos
+		local nudge = if toPlayer.Magnitude > 0.05 then toPlayer.Unit * 0.3 else Vector3.new(0, 0.3, 0)
+		local blastOrigin = clampedPos + nudge
+
+		local visualPart, timerLabel = createExplosiveVisual(blastOrigin, explosiveId)
+		local explosiveRecord: ActiveExplosiveRecord = {
+			Part = visualPart,
+			Label = timerLabel,
+			CancelFlag = false,
+		}
+		table.insert(session.ActiveExplosives, explosiveRecord)
+
+		task.spawn(function()
+			local detonateAt = os.clock() + explosiveCfg.FuseTime
+			while not explosiveRecord.CancelFlag and activeSessions[player] == session do
+				local remaining = detonateAt - os.clock()
+				if remaining <= 0 then
+					break
+				end
+				if explosiveRecord.Label and explosiveRecord.Label.Parent then
+					explosiveRecord.Label.Text = string.format("%.1fs", remaining)
+				end
+				task.wait(0.1)
+			end
+
+			if not explosiveRecord.CancelFlag and activeSessions[player] == session then
+				detonateExplosive(session, explosiveRecord, blastOrigin, explosiveId)
+			elseif explosiveRecord.Part.Parent then
+				explosiveRecord.Part:Destroy()
+			end
+		end)
 	end)
 end
 
 local function onRaidExtractRequest(player: Player)
-	if activeSessions[player] == nil then
+	if not SecurityService.CheckRateLimit(player, Net.Events.RaidExtractRequest) then
+		return
+	end
+	local session = activeSessions[player]
+	if session == nil or session.Extracting then
+		return
+	end
+	if teleportInProgress[player] or SecurityService.IsTeleportLocked(player) then
+		return
+	end
+	if DataService.GetData(player) == nil then
+		return
+	end
+	if SecurityService.GetAliveCharacterRoot(player) == nil then
 		return
 	end
 	finishRaidSession(player, "Extracted with loot")
@@ -1167,7 +1238,7 @@ local function onPlayerDataLoaded(player: Player, _data: Types.PlayerData)
 	end
 
 	local targetUserIdAny = teleportData.TargetUserId
-	if not isValidInteger(targetUserIdAny) then
+	if not SecurityService.IsValidInteger(targetUserIdAny) then
 		return
 	end
 	local targetUserId = math.floor(targetUserIdAny :: number)
@@ -1293,6 +1364,7 @@ function RaidService.Init()
 			cleanupSession(session)
 		end
 		lastListRequest[player] = nil
+		lastExplosivePlaceTime[player] = nil
 		teleportInProgress[player] = nil
 		pendingTeleports[player] = nil
 	end)

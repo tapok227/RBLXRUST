@@ -9,6 +9,7 @@ local Weapons = require(ReplicatedStorage.Shared.configs.Weapons)
 local Net = require(ReplicatedStorage.Shared.Net)
 local DataService = require(ServerScriptService.Server.Services.DataService)
 local InventoryService = require(ServerScriptService.Server.Services.InventoryService)
+local SecurityService = require(ServerScriptService.Server.Services.SecurityService)
 
 type WeaponConfig = Types.WeaponConfig
 
@@ -21,18 +22,6 @@ local cachedLootFolder: Instance? = nil
 local isInitialized = false
 
 local CombatService = {}
-
-local function isFiniteNumber(val: number): boolean
-	return val == val and math.abs(val) ~= math.huge
-end
-
-local function isFiniteVector3(v: any): boolean
-	if typeof(v) ~= "Vector3" then
-		return false
-	end
-	local vec = v :: Vector3
-	return isFiniteNumber(vec.X) and isFiniteNumber(vec.Y) and isFiniteNumber(vec.Z)
-end
 
 local function getWeaponForPlayer(player: Player): (string, WeaponConfig)
 	local equipped = InventoryService.GetEquippedItem(player)
@@ -196,27 +185,28 @@ local function onAttackRequest(
 	_targetModelAny: any,
 	_isHeadshotHintAny: any
 )
-	if not isFiniteVector3(originAny) or not isFiniteVector3(directionAny) then
+	if not SecurityService.CheckRateLimit(player, Net.Events.AttackRequest) then
+		return
+	end
+	if not SecurityService.IsValidVector3(originAny) or not SecurityService.IsValidVector3(directionAny) then
 		return
 	end
 
 	local origin = originAny :: Vector3
 	local direction = directionAny :: Vector3
-	if direction.Magnitude <= 0.01 then
+	if not SecurityService.IsFiniteNumber(direction.Magnitude) or direction.Magnitude <= 0.01 then
 		return
 	end
 
+	if DataService.IsTeleporting(player) or SecurityService.IsTransactionLocked(player) then
+		return
+	end
 	if DataService.GetData(player) == nil then
 		return
 	end
 
-	local character = player.Character
-	if not character then
-		return
-	end
-	local hrp = character:FindFirstChild("HumanoidRootPart")
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	if not hrp or not hrp:IsA("BasePart") or not humanoid or humanoid.Health <= 0 then
+	local character, hrp = SecurityService.GetAliveCharacterRoot(player)
+	if not character or not hrp then
 		return
 	end
 
@@ -224,21 +214,35 @@ local function onAttackRequest(
 		return
 	end
 
-	local weaponId, weapon = getWeaponForPlayer(player)
+	local canAttack = false
+	local weaponId = "fists"
+	local weapon = Weapons.FISTS
 
-	local now = os.clock()
-	local prevAttack = lastAttackTime[player]
-	if prevAttack ~= nil and (now - prevAttack) < weapon.Cooldown then
-		return
-	end
-
-	if weapon.AmmoId ~= nil then
-		if not InventoryService.RemoveItem(player, weapon.AmmoId, 1) then
+	SecurityService.RunLocked(player, "AttackAmmo", function()
+		if DataService.GetData(player) == nil then
 			return
 		end
-	end
+		weaponId, weapon = getWeaponForPlayer(player)
 
-	lastAttackTime[player] = now
+		local now = os.clock()
+		local prevAttack = lastAttackTime[player]
+		if prevAttack ~= nil and (now - prevAttack) < weapon.Cooldown then
+			return
+		end
+
+		if weapon.AmmoId ~= nil then
+			if not InventoryService.RemoveItem(player, weapon.AmmoId, 1) then
+				return
+			end
+		end
+
+		lastAttackTime[player] = now
+		canAttack = true
+	end)
+
+	if not canAttack then
+		return
+	end
 
 	local unitDir = direction.Unit
 	local hitResult = performServerRaycast(origin, unitDir, weapon.Range, character)

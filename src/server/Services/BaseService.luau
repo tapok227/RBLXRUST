@@ -15,6 +15,7 @@ local DataService = require(ServerScriptService.Server.Services.DataService)
 local InventoryService = require(ServerScriptService.Server.Services.InventoryService)
 local LootService = require(ServerScriptService.Server.Services.LootService)
 local CraftingService = require(ServerScriptService.Server.Services.CraftingService)
+local SecurityService = require(ServerScriptService.Server.Services.SecurityService)
 
 type Slot = Types.Slot
 type Inventory = Types.Inventory
@@ -31,6 +32,7 @@ type SpawnedPieceRecord = {
 
 local STRUCTURES_FOLDER_NAME = "PlayerBaseStructures"
 local STUDIO_SIM_BANNER_DURATION = 4
+local BUILD_ACTION_COOLDOWN = 0.15
 
 local TIER_VISUALS: { [BuildTier]: { Material: Enum.Material, Color: Color3 } } = {
 	wood = {
@@ -48,14 +50,19 @@ local TIER_VISUALS: { [BuildTier]: { Material: Enum.Material, Color: Color3 } } 
 }
 
 local spawnedByPlayer: { [Player]: { [string]: SpawnedPieceRecord } } = {}
+local lastBuildActionTime: { [Player]: number } = {}
 local teleportInProgress: { [Player]: boolean } = {}
 local pendingTeleports: { [Player]: boolean } = {}
 local isInitialized = false
 
 local BaseService = {}
 
-local function isValidInteger(val: any): boolean
-	return typeof(val) == "number" and val == val and val % 1 == 0 and math.abs(val) ~= math.huge
+local function getPieceWorldPosition(gridX: number, gridY: number, gridZ: number): Vector3
+	return Vector3.new(
+		gridX * BuildingConfig.GridSize,
+		gridY * BuildingConfig.WallHeight,
+		gridZ * BuildingConfig.GridSize
+	)
 end
 
 local function getOrCreateStructuresFolder(): Folder
@@ -359,11 +366,17 @@ local function onBuildPlaceRequest(
 	gridZAny: any,
 	rotYAny: any
 )
+	if not SecurityService.CheckRateLimit(player, Net.Events.BuildPlaceRequest) then
+		return
+	end
 	if not BaseService.IsBaseMode() then
 		return
 	end
+	if DataService.IsTeleporting(player) or SecurityService.IsTransactionLocked(player) then
+		return
+	end
 
-	if typeof(pieceTypeAny) ~= "string" then
+	if not SecurityService.IsValidString(pieceTypeAny, 1, 32) then
 		return
 	end
 	local pieceConfig = BuildingConfig.Pieces[pieceTypeAny :: BuildPieceType]
@@ -373,10 +386,10 @@ local function onBuildPlaceRequest(
 	local pieceType = pieceTypeAny :: BuildPieceType
 
 	if
-		not isValidInteger(gridXAny)
-		or not isValidInteger(gridYAny)
-		or not isValidInteger(gridZAny)
-		or not isValidInteger(rotYAny)
+		not SecurityService.IsValidInteger(gridXAny, BuildingConfig.GridMinXZ, BuildingConfig.GridMaxXZ)
+		or not SecurityService.IsValidInteger(gridYAny, BuildingConfig.GridMinY, BuildingConfig.GridMaxY)
+		or not SecurityService.IsValidInteger(gridZAny, BuildingConfig.GridMinXZ, BuildingConfig.GridMaxXZ)
+		or not SecurityService.IsValidInteger(rotYAny)
 	then
 		return
 	end
@@ -386,157 +399,243 @@ local function onBuildPlaceRequest(
 	local gridZ = gridZAny :: number
 	local rotY = rotYAny :: number
 
-	if
-		gridX < BuildingConfig.GridMinXZ
-		or gridX > BuildingConfig.GridMaxXZ
-		or gridY < BuildingConfig.GridMinY
-		or gridY > BuildingConfig.GridMaxY
-		or gridZ < BuildingConfig.GridMinXZ
-		or gridZ > BuildingConfig.GridMaxXZ
-		or BuildingConfig.ValidRotations[rotY] ~= true
-	then
+	if BuildingConfig.ValidRotations[rotY] ~= true then
 		return
 	end
 
-	local data = DataService.GetData(player)
-	if data == nil then
+	local _, hrp = SecurityService.GetAliveCharacterRoot(player)
+	if not hrp then
 		return
 	end
 
-	if #data.Base.Pieces >= BuildingConfig.MaxPiecesPerBase then
+	local targetPos = getPieceWorldPosition(gridX, gridY, gridZ)
+	if (hrp.Position - targetPos).Magnitude > Types.MAX_BUILD_DISTANCE + Types.PING_DISTANCE_TOLERANCE then
 		return
 	end
 
-	if hasPlacementCollision(data.Base.Pieces, pieceType, gridX, gridY, gridZ, rotY) then
-		return
-	end
+	SecurityService.RunLocked(player, "BuildPlace", function()
+		local _, innerHrp = SecurityService.GetAliveCharacterRoot(player)
+		if
+			not innerHrp
+			or (innerHrp.Position - targetPos).Magnitude > Types.MAX_BUILD_DISTANCE + Types.PING_DISTANCE_TOLERANCE
+		then
+			return
+		end
 
-	local costBatch = costMapToBatch(pieceConfig.Cost)
-	if not InventoryService.RemoveItems(player, costBatch) then
-		return
-	end
+		local now = os.clock()
+		local prevAction = lastBuildActionTime[player]
+		if prevAction ~= nil and (now - prevAction) < BUILD_ACTION_COOLDOWN then
+			return
+		end
 
-	local newPiece: SavedBuildPiece = {
-		Uid = HttpService:GenerateGUID(false),
-		PieceType = pieceType,
-		Tier = "wood",
-		GridX = gridX,
-		GridY = gridY,
-		GridZ = gridZ,
-		RotY = rotY,
-		Hp = pieceConfig.BaseHp,
-		Storage = if pieceConfig.StorageSlots ~= nil then {} else nil,
-	}
+		local data = DataService.GetData(player)
+		if data == nil then
+			return
+		end
 
-	table.insert(data.Base.Pieces, newPiece)
-	spawnPieceForPlayer(player, newPiece)
-	syncBaseState(player)
+		if #data.Base.Pieces >= BuildingConfig.MaxPiecesPerBase then
+			return
+		end
+
+		if hasPlacementCollision(data.Base.Pieces, pieceType, gridX, gridY, gridZ, rotY) then
+			return
+		end
+
+		local costBatch = costMapToBatch(pieceConfig.Cost)
+		if not InventoryService.RemoveItems(player, costBatch) then
+			return
+		end
+
+		lastBuildActionTime[player] = now
+
+		local newPiece: SavedBuildPiece = {
+			Uid = HttpService:GenerateGUID(false),
+			PieceType = pieceType,
+			Tier = "wood",
+			GridX = gridX,
+			GridY = gridY,
+			GridZ = gridZ,
+			RotY = rotY,
+			Hp = pieceConfig.BaseHp,
+			Storage = if pieceConfig.StorageSlots ~= nil then {} else nil,
+		}
+
+		table.insert(data.Base.Pieces, newPiece)
+		spawnPieceForPlayer(player, newPiece)
+		syncBaseState(player)
+	end)
 end
 
 local function onBuildUpgradeRequest(player: Player, uidAny: any, targetTierAny: any)
+	if not SecurityService.CheckRateLimit(player, Net.Events.BuildUpgradeRequest) then
+		return
+	end
 	if not BaseService.IsBaseMode() then
 		return
 	end
+	if DataService.IsTeleporting(player) or SecurityService.IsTransactionLocked(player) then
+		return
+	end
 
-	if typeof(uidAny) ~= "string" or #uidAny == 0 or #uidAny > 64 then
+	if not SecurityService.IsValidString(uidAny, 1, 64) then
 		return
 	end
 	if targetTierAny ~= "stone" and targetTierAny ~= "metal" then
 		return
 	end
+	local uid = uidAny :: string
 	local targetTier = targetTierAny :: BuildTier
 
-	local data = DataService.GetData(player)
-	if data == nil then
+	local _, hrp = SecurityService.GetAliveCharacterRoot(player)
+	if not hrp then
 		return
 	end
 
-	local targetPiece: SavedBuildPiece? = nil
-	for _, piece in data.Base.Pieces do
-		if piece.Uid == uidAny then
-			targetPiece = piece
-			break
+	SecurityService.RunLocked(player, "BuildUpgrade", function()
+		local _, innerHrp = SecurityService.GetAliveCharacterRoot(player)
+		if not innerHrp then
+			return
 		end
-	end
-	if targetPiece == nil then
-		return
-	end
 
-	local pieceConfig = BuildingConfig.Pieces[targetPiece.PieceType]
-	if pieceConfig == nil or not pieceConfig.Upgradeable then
-		return
-	end
+		local now = os.clock()
+		local prevAction = lastBuildActionTime[player]
+		if prevAction ~= nil and (now - prevAction) < BUILD_ACTION_COOLDOWN then
+			return
+		end
 
-	local expectedNextTier: BuildTier? = if targetPiece.Tier == "wood"
-		then "stone"
-		elseif targetPiece.Tier == "stone" then "metal"
-		else nil
-	if expectedNextTier ~= targetTier then
-		return
-	end
+		local data = DataService.GetData(player)
+		if data == nil then
+			return
+		end
 
-	local tierConfig = BuildingConfig.Tiers[targetTier]
-	if tierConfig == nil or tierConfig.UpgradeCost == nil then
-		return
-	end
+		local targetPiece: SavedBuildPiece? = nil
+		for _, piece in data.Base.Pieces do
+			if piece.Uid == uid then
+				targetPiece = piece
+				break
+			end
+		end
+		if targetPiece == nil then
+			return
+		end
 
-	local costBatch = costMapToBatch(tierConfig.UpgradeCost)
-	if not InventoryService.RemoveItems(player, costBatch) then
-		return
-	end
+		local piecePos = getPieceWorldPosition(targetPiece.GridX, targetPiece.GridY, targetPiece.GridZ)
+		if (innerHrp.Position - piecePos).Magnitude > Types.MAX_BUILD_DISTANCE + Types.PING_DISTANCE_TOLERANCE then
+			return
+		end
 
-	local maxHp = math.floor(pieceConfig.BaseHp * tierConfig.HpMultiplier + 0.5)
-	targetPiece.Tier = targetTier
-	targetPiece.Hp = maxHp
+		local pieceConfig = BuildingConfig.Pieces[targetPiece.PieceType]
+		if pieceConfig == nil or not pieceConfig.Upgradeable then
+			return
+		end
 
-	local playerRecords = spawnedByPlayer[player]
-	local record = if playerRecords then playerRecords[targetPiece.Uid] else nil
-	if record ~= nil and record.Model.Parent then
-		applyTierVisuals(record.Model, targetPiece.PieceType, targetTier)
-		record.Model:SetAttribute("Tier", targetTier)
-		record.Model:SetAttribute("Hp", maxHp)
-		record.Model:SetAttribute("MaxHp", maxHp)
-	end
+		local expectedNextTier: BuildTier? = if targetPiece.Tier == "wood"
+			then "stone"
+			elseif targetPiece.Tier == "stone" then "metal"
+			else nil
+		if expectedNextTier ~= targetTier then
+			return
+		end
 
-	syncBaseState(player)
+		local tierConfig = BuildingConfig.Tiers[targetTier]
+		if tierConfig == nil or tierConfig.UpgradeCost == nil then
+			return
+		end
+
+		local costBatch = costMapToBatch(tierConfig.UpgradeCost)
+		if not InventoryService.RemoveItems(player, costBatch) then
+			return
+		end
+
+		lastBuildActionTime[player] = now
+
+		local maxHp = math.floor(pieceConfig.BaseHp * tierConfig.HpMultiplier + 0.5)
+		targetPiece.Tier = targetTier
+		targetPiece.Hp = maxHp
+
+		local playerRecords = spawnedByPlayer[player]
+		local record = if playerRecords then playerRecords[targetPiece.Uid] else nil
+		if record ~= nil and record.Model.Parent then
+			applyTierVisuals(record.Model, targetPiece.PieceType, targetTier)
+			record.Model:SetAttribute("Tier", targetTier)
+			record.Model:SetAttribute("Hp", maxHp)
+			record.Model:SetAttribute("MaxHp", maxHp)
+		end
+
+		syncBaseState(player)
+	end)
 end
 
 local function onBuildDemolishRequest(player: Player, uidAny: any)
+	if not SecurityService.CheckRateLimit(player, Net.Events.BuildDemolishRequest) then
+		return
+	end
 	if not BaseService.IsBaseMode() then
 		return
 	end
-
-	if typeof(uidAny) ~= "string" or #uidAny == 0 or #uidAny > 64 then
+	if DataService.IsTeleporting(player) or SecurityService.IsTransactionLocked(player) then
 		return
 	end
 
-	local data = DataService.GetData(player)
-	if data == nil then
+	if not SecurityService.IsValidString(uidAny, 1, 64) then
+		return
+	end
+	local uid = uidAny :: string
+
+	local _, hrp = SecurityService.GetAliveCharacterRoot(player)
+	if not hrp then
 		return
 	end
 
-	local targetIndex: number? = nil
-	for index, piece in data.Base.Pieces do
-		if piece.Uid == uidAny then
-			targetIndex = index
-			break
+	SecurityService.RunLocked(player, "BuildDemolish", function()
+		local _, innerHrp = SecurityService.GetAliveCharacterRoot(player)
+		if not innerHrp then
+			return
 		end
-	end
-	if targetIndex == nil then
-		return
-	end
 
-	local playerRecords = spawnedByPlayer[player]
-	if playerRecords ~= nil then
-		local record = playerRecords[uidAny]
-		if record ~= nil then
-			cleanupPieceRuntime(record)
-			playerRecords[uidAny] = nil
+		local now = os.clock()
+		local prevAction = lastBuildActionTime[player]
+		if prevAction ~= nil and (now - prevAction) < BUILD_ACTION_COOLDOWN then
+			return
 		end
-	end
 
-	table.remove(data.Base.Pieces, targetIndex)
-	syncBaseState(player)
+		local data = DataService.GetData(player)
+		if data == nil then
+			return
+		end
+
+		local targetIndex: number? = nil
+		local targetPiece: SavedBuildPiece? = nil
+		for index, piece in data.Base.Pieces do
+			if piece.Uid == uid then
+				targetIndex = index
+				targetPiece = piece
+				break
+			end
+		end
+		if targetIndex == nil or targetPiece == nil then
+			return
+		end
+
+		local piecePos = getPieceWorldPosition(targetPiece.GridX, targetPiece.GridY, targetPiece.GridZ)
+		if (innerHrp.Position - piecePos).Magnitude > Types.MAX_BUILD_DISTANCE + Types.PING_DISTANCE_TOLERANCE then
+			return
+		end
+
+		lastBuildActionTime[player] = now
+
+		local playerRecords = spawnedByPlayer[player]
+		if playerRecords ~= nil then
+			local record = playerRecords[uid]
+			if record ~= nil then
+				cleanupPieceRuntime(record)
+				playerRecords[uid] = nil
+			end
+		end
+
+		table.remove(data.Base.Pieces, targetIndex)
+		syncBaseState(player)
+	end)
 end
 
 local function sendReturnBanner(player: Player, active: boolean, statusText: string?)
@@ -553,14 +652,22 @@ local function sendReturnBanner(player: Player, active: boolean, statusText: str
 end
 
 local function onRequestReturnToMap(player: Player)
+	if not SecurityService.CheckRateLimit(player, Net.Events.RequestReturnToMap) then
+		return
+	end
 	if not BaseService.IsBaseMode() then
 		return
 	end
-	if teleportInProgress[player] or DataService.GetData(player) == nil then
+	if teleportInProgress[player] or SecurityService.IsTeleportLocked(player) or DataService.GetData(player) == nil then
+		return
+	end
+	if SecurityService.GetAliveCharacterRoot(player) == nil then
 		return
 	end
 
 	teleportInProgress[player] = true
+	SecurityService.SetTeleportLock(player, true)
+	LootService.CloseContainerForPlayer(player, true)
 
 	if RunService:IsStudio() then
 		local released = DataService.ReleaseForTeleport(player)
@@ -596,6 +703,7 @@ local function onRequestReturnToMap(player: Player)
 
 		if player.Parent ~= Players then
 			teleportInProgress[player] = nil
+			SecurityService.SetTeleportLock(player, false)
 			return
 		end
 
@@ -730,6 +838,7 @@ function BaseService.Init()
 
 	Players.PlayerRemoving:Connect(function(player: Player)
 		despawnBaseForPlayer(player)
+		lastBuildActionTime[player] = nil
 		teleportInProgress[player] = nil
 		pendingTeleports[player] = nil
 	end)

@@ -34,7 +34,7 @@
 - `BaseData = { Pieces: { SavedBuildPiece } }`
 - `BuildPieceConfig = { Name: string, Cost: { [string]: number }, BaseHp: number, Upgradeable: boolean, StorageSlots: number? }`
 - `BuildTierConfig = { Name: string, HpMultiplier: number, UpgradeCost: { [string]: number }? }`
-- `PlayerData = { Version: number, Inventory: Inventory, Stats: SurvivalStats, Base: BaseData }`
+- `PlayerData = { DataVersion: number, Version: number, Inventory: Inventory, Stats: SurvivalStats, Base: BaseData }`
 - `ItemBatchEntry = { Id: string, Count: number }`
 - `ToolCategory = "Tree" | "Rock" | "Ore"`
 - `ToolConfig = { Power: number, Cooldown: number, PreferredNodeType: ToolCategory, BonusMultiplier: number }`
@@ -64,6 +64,8 @@
 - `SURVIVAL_TICK_INTERVAL = 2.0`, `MAX_LOOT_DISTANCE = 14`, `LOOT_CONTAINER_LIFETIME = 300`
 - `MAX_ATTACK_ORIGIN_OFFSET = 8`
 - `MAX_EXPLOSIVE_PLACE_DISTANCE = 14`, `RAID_DURATION = 300`
+- `CURRENT_DATA_VERSION = 1`, `PING_DISTANCE_TOLERANCE = 2`
+- `MAX_BUILD_DISTANCE = 72`, `MAX_RAID_TERMINAL_DISTANCE = 24`
 
 ### `Signal` (`src/shared/Signal.luau`)
 - `Signal.new<T...>(): Signal<T...>`
@@ -128,19 +130,37 @@
 
 ## 3. Серверные сервисы (`ServerScriptService.Server.Services`)
 
+### `SecurityService` (`src/server/Services/SecurityService.luau`)
+- `RateLimitRule = { Capacity: number, RefillPerSec: number, Category: string }`
+- `SecurityService.CheckRateLimit(player: Player, remoteName: string, cost: number?): boolean` — Token Bucket limiter по `(player.UserId, remoteName)`; при исчерпании токенов дропает вызов и пишет throttled `warn` (`<= 1` раз в `2.0` сек).
+- `SecurityService.GetRateLimitRules(): { [string]: RateLimitRule }` — возвращает копию таблицы правил лимитов.
+- `SecurityService.LogSuspicious(player: Player, remoteName: string, reason: string)` — throttled-логирование подозрительных вызовов.
+- `SecurityService.IsFiniteNumber(val: any): boolean` — проверка числа на `typeof == "number"`, отсутствие `NaN` и `math.abs(val) < math.huge`.
+- `SecurityService.IsValidInteger(val: any, minVal: number?, maxVal: number?): boolean` — проверка конечного целого числа и диапазона.
+- `SecurityService.IsValidString(val: any, minLen: number?, maxLen: number?): boolean` — проверка строки и длины (`1..64` по умолчанию).
+- `SecurityService.IsValidVector3(val: any, maxCoordAbs: number?): boolean` — проверка `Vector3` на `NaN`/`inf` и ограничение координат (`<= 1e6`).
+- `SecurityService.GetAliveCharacterRoot(player: Player): (Model?, BasePart?, Humanoid?)` — проверяет `player.Parent == Players`, наличие `Character`, `HumanoidRootPart` и живого `Humanoid` (`Health > 0`).
+- `SecurityService.IsWithinDistance(player: Player, targetPosition: Vector3, maxDistance: number, pingTolerance: number?): boolean` — серверная проверка `Magnitude` от `HumanoidRootPart` до цели с допуском под пинг.
+- `SecurityService.IsTeleportLocked(player: Player): boolean` / `SecurityService.SetTeleportLock(player: Player, locked: boolean)` — блокировка операций при телепорте и закрытии сессии.
+- `SecurityService.IsTransactionLocked(player: Player): boolean` / `SecurityService.AcquireTransactionLock(player: Player, reason: string): boolean` / `SecurityService.ReleaseTransactionLock(player: Player)` — per-player мьютекс транзакций.
+- `SecurityService.RunLocked(player: Player, reason: string, fn: () -> ()): boolean` — выполняет критическую транзакцию под `pcall` с гарантированным снятием блокировки.
+- `SecurityService.SetActiveContainer(player: Player, containerId: string, primaryPart: BasePart)` / `SecurityService.ClearActiveContainer(player: Player, containerId: string?)` / `SecurityService.IsActiveContainerOutOfRange(player: Player, maxDistance: number, pingTolerance: number?): boolean` — трекинг активного контейнера и проверка дистанции для `InventoryMove`.
+- `SecurityService.Init()` — инициализирует `Net` и очищает все per-`UserId` таблицы при `Players.PlayerRemoving`.
+
 ### `DataService` (`src/server/Services/DataService.luau`)
 - `DataService.DataLoaded: Signal.Signal<Player, PlayerData>` — событие завершения загрузки профиля игрока.
 - `DataService.MOCK_RAID_TARGET_USER_ID: number` — идентификатор тестовой цели рейда в Studio (`-1001`).
+- `DataService.MigrateProfileData(rawData: { [string]: any }): { [string]: any }` — чистая функция глубокого клонирования и пошаговой миграции профиля (`DataVersion`, актуальная версия `1`), вызываемая сразу после `profile:Reconcile()`.
 - `DataService.GetData(player: Player): PlayerData?` — возвращает данные игрока или `nil`, если профиль ещё не загружен/не активен.
 - `DataService.OnDataLoaded(callback: (player: Player, data: PlayerData) -> ()): Signal.Connection` — подписывается на `DataLoaded` и немедленно вызывает `callback` для уже загруженных игроков.
 - `DataService.OnBeforeUnload(callback: (player: Player, data: PlayerData) -> ())` — синхронный хук перед сериализацией и закрытием сессии (`PlayerRemoving` / `OnLastSave`).
 - `DataService.IsTeleporting(player: Player): boolean` — возвращает `true`, если профиль игрока освобождён для штатного телепорта (чтобы `OnSessionEnd` не кикал игрока).
-- `DataService.ReleaseForTeleport(player: Player): boolean` — синхронизирует `RuntimeData` в `profile.Data`, вызывает `profile:EndSession()`, ожидает снятия `SessionLock` (`profile:IsActive() == false` и завершение `OnAfterSave` в пределах `5` сек) и возвращает результат.
-- `DataService.RestoreAfterFailedTeleport(player: Player): boolean` — перезагружает профиль игрока при сбое телепортации (`TeleportInitFailed` / таймаут).
+- `DataService.ReleaseForTeleport(player: Player): boolean` — выставляет `SecurityService.SetTeleportLock(player, true)`, синхронизирует `RuntimeData` в `profile.Data`, вызывает `profile:EndSession()`, ожидает `profile:IsActive() == false` и завершения `OnLastSave`/`OnAfterSave` (таймаут `8` сек) и возвращает результат.
+- `DataService.RestoreAfterFailedTeleport(player: Player): boolean` — перезагружает профиль игрока при сбое телепортации (`TeleportInitFailed` / таймаут) и снимает блокировку `SecurityService.SetTeleportLock(player, false)`.
 - `DataService.RegisterRaidableBase(player: Player)` — при наличии построек на базе игрока записывает `UserId` и их количество в `OrderedDataStore("RaidableBases_v1")` (внутри `pcall`).
 - `DataService.GetRaidTargets(excludeUserId: number, limit: number): { Types.RaidTargetInfo }` — возвращает топ целей из `RaidableBases_v1` (в Studio при отсутствии реальных целей добавляет `MockRaidTarget`).
 - `DataService.LoadBaseSnapshot(targetUserId: number): Types.BaseData?` — загружает read-only снимок базы цели через `PlayerStore:GetAsync("Player_" .. targetUserId)` без захвата `SessionLock`.
-- `DataService.Init()` — подключает `PlayerAdded` / `PlayerRemoving` (безусловная очистка всех таблиц игрока и `lastRegisteredPieceCount` при выходе, ограниченный кэш имён `nameCache <= 256`), управляет сессиями `ProfileStore` (`PlayerData_v1`, включая `Stats: SurvivalStats` и `Base: BaseData` со строковой сериализацией слотов сундуков, автоматическим обновлением `RaidableBases_v1` при сохранении и `Reconcile` для старых профилей).
+- `DataService.Init()` — подключает `PlayerAdded` / `PlayerRemoving` (безусловная очистка таблиц игрока и `SecurityService.SetTeleportLock(player, false)`, ограниченный кэш имён `nameCache <= 256`), управляет сессиями `ProfileStore` (`PlayerData_v1`, `DataVersion = 1`, `Reconcile` -> `MigrateProfileData`, кик при неожиданном `OnSessionEnd` с предварительной блокировкой транзакций).
 
 ### `InventoryService` (`src/server/Services/InventoryService.luau`)
 - `InventoryService.GetEquippedSlot(player: Player): number` — возвращает текущий слот хотбара игрока (`1..6`, по умолчанию `1`).
@@ -156,21 +176,22 @@
 - `InventoryService.RemoveItems(player: Player, items: { Types.ItemBatchEntry }): boolean` — транзакционное списание набора предметов (с откатом по снимку при сбое) + одна отправка `InventorySync`.
 - `InventoryService.ConsumeSlot(player: Player, slotIndex: number, count: number): boolean` — списывает `count` единиц из конкретного слота `1..30`, удаляет слот при `<= 0` и отправляет `InventorySync`.
 - `InventoryService.ClearInventory(player: Player): Types.Inventory` — очищает все 30 слотов игрока, отправляет `InventorySync` и возвращает копию изъятых предметов.
-- `InventoryService.Init()` — инициализирует `Net`, слушает `InventoryMove` (`1..30`), `HotbarSelect` (`1..6`), безопасно пропускает `InventorySync` для выходящих игроков (`player.Parent ~= Players`), очищает `equippedSlots` в `PlayerRemoving` и выдаёт стартовый набор в Studio (включая `water_bottle`, `hunting_bow`, `satchel_charge` x3, `arrow`).
+- `InventoryService.Init()` — инициализирует `Net`, слушает `InventoryMove` (`1..30`, под Rate Limiter, блокировками `SecurityService`, проверкой жизни и дистанции открытого контейнера, атомарное списание-зачисление) и `HotbarSelect` (`1..6`, проверка жизни и блокировки телепорта), безопасно пропускает `InventorySync` для выходящих игроков (`player.Parent ~= Players`), очищает `equippedSlots` в `PlayerRemoving` и выдаёт стартовый набор в Studio.
 
 ### `ResourceService` (`src/server/Services/ResourceService.luau`)
-- `ResourceService.Init()` — сканирует `Workspace.ResourceNodes`, обрабатывает `HitNode` (валидация дистанции `<= 14`, кулдаун по инструменту, множители, `BonusOnDestroy`, истощение/респавн) и рассылает `NodeUpdated` ближайшим игрокам в радиусе `120` studs (и всем при истощении/респавне).
+- `ResourceService.Init()` — сканирует `Workspace.ResourceNodes`, обрабатывает `HitNode` (Rate Limiter, строгая проверка типа/длины строки, блокировок `SecurityService`, жизни, дистанции `<= 14`, серверного кулдауна `os.clock()`, атомарное обновление под `RunLocked`) и рассылает `NodeUpdated` ближайшим игрокам в радиусе `120` studs (и всем при истощении/респавне).
 
 ### `CraftingService` (`src/server/Services/CraftingService.luau`)
 - `CraftingService.RegisterStation(stationId: string, stationType: string, position: Vector3)` — регистрирует динамически размещённый верстак (например, на базе игрока).
 - `CraftingService.UnregisterStation(stationId: string)` — удаляет динамический верстак по `stationId`.
 - `CraftingService.GetActiveCraft(player: Player): Types.CraftingState?` — возвращает текущий активный крафт игрока или `nil`.
-- `CraftingService.Init()` — сканирует `Workspace.Workbenches` (атрибут `StationType`, дистанция `<= 14` studs, а также проверяет `dynamicStations`), обрабатывает `CraftRequest` (транзакционное списание, `task.delay` с токеном сессии и отменой потока через `task.cancel` при отмене/выходе, выдача результата) и `CraftCancel`, а также возвращает ресурсы через `DataService.OnBeforeUnload` и `PlayerRemoving`.
+- `CraftingService.CancelCraftForPlayer(player: Player, syncClient: boolean, bypassLock: boolean?)` — отменяет активный крафт и возвращает ингредиенты (под `SecurityService.RunLocked` либо с `bypassLock = true` внутри транзакций смерти/выгрузки).
+- `CraftingService.Init()` — сканирует `Workspace.Workbenches` (атрибут `StationType`, дистанция `<= 14 + PING_DISTANCE_TOLERANCE` studs, а также проверяет `dynamicStations`), обрабатывает `CraftRequest` и `CraftCancel` (под Rate Limiter, проверкой жизни и блокировок `SecurityService`, списанием ресурсов до старта `task.delay`, атомарным завершением) и возвращает ресурсы через `DataService.OnBeforeUnload` и `PlayerRemoving`.
 
 ### `SurvivalService` (`src/server/Services/SurvivalService.luau`)
 - `SurvivalService.GetStats(player: Player): Types.SurvivalStats?` — возвращает копию текущих статов выживания игрока.
 - `SurvivalService.GetContainerState(containerId: string): Types.LootContainerState?` — делегирует в `LootService.GetContainerState(containerId)`.
-- `SurvivalService.Init()` — запускает цикл выживания раз в `2.0` сек (`-0.35` голода, `-0.5` жажды, пассивный реген `+1.5 HP` при `> 70`, урон `1.5 HP` при `<= 0`), реплицирует `Hunger` / `Thirst` / `Starving` / `Dehydrated` через атрибуты `Player` с diff-проверкой `GetAttribute ~= value`, очищает пер-персонажные ресурсы по `CharacterRemoving` и `PlayerRemoving` через `Janitor`, обрабатывает `UseConsumable`, спавнит Greybox-рюкзак в `Workspace.LootContainers` при смерти (`Humanoid.Died`) на `300` сек (регистрация и логика контейнера делегированы `LootService`) и сбрасывает статы после респавна (`100 / 80 / 80`).
+- `SurvivalService.Init()` — запускает цикл выживания раз в `2.0` сек (`-0.35` голода, `-0.5` жажды, пассивный реген `+1.5 HP` при `> 70`, урон `1.5 HP` при `<= 0`), реплицирует `Hunger` / `Thirst` / `Starving` / `Dehydrated` через атрибуты `Player` с diff-проверкой `GetAttribute ~= value`, очищает пер-персонажные ресурсы по `CharacterRemoving` и `PlayerRemoving` через `Janitor`, обрабатывает `UseConsumable` (Rate Limiter, проверка жизни, блокировок `SecurityService`, серверный кулдаун `os.clock()`, атомарное списание до применения эффекта), при смерти (`Humanoid.Died`) под блокировкой `PlayerDeath` (с пропуском при активном телепорте) отменяет крафт, очищает инвентарь и спавнит Greybox-рюкзак в `Workspace.LootContainers` на `300` сек и сбрасывает статы после респавна (`100 / 80 / 80`).
 
 ### `LootService` (`src/server/Services/LootService.luau`)
 - `LootService.RollLootTable(tableId: string): Types.Inventory` — взвешенная генерация лута по таблице из `LootTables`.
@@ -178,12 +199,12 @@
 - `LootService.RegisterStorageContainer(model: Model, title: string, ownerUserId: number?, maxSlots: number, initialSlots: Types.Inventory, onChanged: ((slots: Types.Inventory) -> ())?, allowDeposit: boolean?): string` — регистрирует постоянный или рейдовый сундук (`Kind = "Storage"`, опциональная проверка владельца `OwnerUserId`, флаг `allowDeposit`, `ProximityPrompt`).
 - `LootService.UnregisterContainer(containerId: string)` — отвязывает контейнер, отключает `PromptConn` / отменяет `ExpireThread` и закрывает UI у зрителей без уничтожения модели.
 - `LootService.SpawnTemporaryContainer(model: Model, title: string, tableId: string, lifeTime: number): string` — генерирует лут по `tableId` и регистрирует временный контейнер.
-- `LootService.OpenContainerForPlayer(player: Player, containerId: string): boolean` — открывает контейнер игроку после проверки владельца, состояния и дистанции `<= MAX_LOOT_DISTANCE` (`14` studs).
-- `LootService.CloseContainerForPlayer(player: Player, notifyClient: boolean)` — закрывает активный контейнер игрока.
+- `LootService.OpenContainerForPlayer(player: Player, containerId: string): boolean` — открывает контейнер игроку после проверки владельца, блокировок `SecurityService`, состояния и дистанции `<= MAX_LOOT_DISTANCE` (`14` studs); регистрирует активный контейнер в `SecurityService`.
+- `LootService.CloseContainerForPlayer(player: Player, notifyClient: boolean)` — закрывает активный контейнер игрока и сбрасывает трекинг в `SecurityService`.
 - `LootService.DestroyContainer(containerId: string)` — закрывает окно у всех зрителей, отключает `PromptConn` / отменяет `ExpireThread`, удаляет контейнер и уничтожает его модель.
 - `LootService.GetContainerState(containerId: string): Types.LootContainerState?` — возвращает копию состояния контейнера или `nil`.
 - `LootService.IsContainerDepleted(containerId: string): boolean` — возвращает `true`, если POI-ящик сейчас истощён и ожидает респавна.
-- `LootService.Init()` — сканирует `Workspace.POI` (модели с атрибутом `LootTable`), наполняет ящики, привязывает `ProximityPrompt`, обрабатывает `CloseContainer`, `LootTakeSlot` и `ContainerDepositSlot` (двусторонний обмен для сундуков с проверкой дистанции `<= 14` studs), истощение/респавн POI-ящиков (`RespawnTime` или `RespawnTimeOverride` в Studio) и периодическую проверку дистанции активных зрителей (с быстрым выходом при отсутствии открытых контейнеров).
+- `LootService.Init()` — сканирует `Workspace.POI` (модели с атрибутом `LootTable`), наполняет ящики, привязывает `ProximityPrompt`, обрабатывает `CloseContainer`, `LootTakeSlot` и `ContainerDepositSlot` (Rate Limiter, проверка `openContainerByPlayer`, дистанции `<= 14 + PING_DISTANCE_TOLERANCE`, per-player и per-container `Locked` с атомарным списанием до зачисления), истощение/респавн POI-ящиков и периодическую проверку дистанции активных зрителей.
 
 ### `WorldEventService` (`src/server/Services/WorldEventService.luau`)
 - `WorldEventService.TriggerAirdropNow(descentTimeOverride: number?): Model` — немедленно запускает событие Supply Drop в случайной точке из `Workspace.AirdropZones` (или в безопасном радиусе на карте), рассылает `WorldEventNotify`, плавно спускает груз с парашютом и дымом, после посадки регистрирует контейнер через `LootService.SpawnTemporaryContainer(..., "Supply Drop", "airdrop", 180)`.
@@ -193,25 +214,25 @@
 
 ### `CombatService` (`src/server/Services/CombatService.luau`)
 - `CombatService.GetEquippedWeapon(player: Player): (string, Types.WeaponConfig)` — возвращает `weaponId` и конфиг активного оружия игрока (или `"fists", Weapons.FISTS`).
-- `CombatService.Init()` — инициализирует `Net`, подписывается на `AttackRequest` (валидация `Vector3` на `NaN`/бесконечность/длину, проверка жизни атакующего и дистанции `origin` от `HumanoidRootPart` `<= 8` studs, серверный кулдаун `Cooldown`, списание `AmmoId`, авторитетный серверный `Workspace:Raycast` с кэшированием `Workspace.LootContainers` и игнорированием не-коллизионных декораций, множитель хэдшота по `Head`, запись атрибута `LastAttackerUserId` на модель цели, таргетированная рассылка `AttackEffect`: только атакующему при melee-попадании и в радиусе `250` studs для ranged) и обновляет `HpLabel` манекенов в `Workspace.TestDummies`.
+- `CombatService.Init()` — инициализирует `Net`, подписывается на `AttackRequest` (Rate Limiter, валидация `Vector3` на `NaN`/бесконечность/длину/ограничение координат, проверка блокировок `SecurityService`, жизни атакующего и дистанции `origin` от `HumanoidRootPart` `<= 8` studs, серверный кулдаун `os.clock()` и атомарное списание `AmmoId` под `RunLocked`, авторитетный серверный `Workspace:Raycast` с кэшированием `Workspace.LootContainers`, множитель хэдшота по `Head`, запись атрибута `LastAttackerUserId`, таргетированная рассылка `AttackEffect`) и обновляет `HpLabel` манекенов в `Workspace.TestDummies`.
 
 ### `ExtractionService` (`src/server/Services/ExtractionService.luau`)
 - `ExtractionService.GetExtractionState(player: Player): Types.ExtractionState?` — возвращает текущее состояние активного экстракшена игрока или `nil`.
 - `ExtractionService.IsInCombatCooldown(player: Player): boolean` — проверяет, действуют ли ещё `Config.Extraction.CooldownAfterDamage` секунд с последнего получения урона.
 - `ExtractionService.RecordDamage(player: Player)` — фиксирует получение урона игроком и немедленно сбрасывает активный экстракшен.
-- `ExtractionService.Init()` — сканирует `Workspace.ExtractionZones` (с предвычисленным `HalfSize`), отслеживает урон/смерть игроков (`Humanoid.HealthChanged`, `Humanoid.Died`) и очищает состояние по `CharacterRemoving` / `PlayerRemoving`, проверяет нахождение живых игроков в зонах раз в `0.25` сек, рассылает `ExtractionStateSync` только игрокам в зоне/статусе, по завершении таймера вызывает `DataService.ReleaseForTeleport(player)` и выполняет симуляцию телепорта в Studio или `TeleportService:TeleportAsync` на `Config.Places.PlayerBase` (с обработкой `TeleportInitFailed`, повторами и восстановлением через `DataService.RestoreAfterFailedTeleport`).
+- `ExtractionService.Init()` — сканирует `Workspace.ExtractionZones` (с предвычисленным `HalfSize`), отслеживает урон/смерть игроков (`Humanoid.HealthChanged`, `Humanoid.Died`) и очищает состояние по `CharacterRemoving` / `PlayerRemoving`, проверяет нахождение живых игроков в зонах раз в `0.25` сек, по завершении таймера закрывает открытые контейнеры, выставляет `SecurityService.SetTeleportLock(player, true)`, вызывает `DataService.ReleaseForTeleport(player)` и выполняет симуляцию телепорта в Studio или `TeleportService:TeleportAsync` на `Config.Places.PlayerBase` (с обработкой `TeleportInitFailed`, повторами и восстановлением/разблокировкой через `DataService.RestoreAfterFailedTeleport`).
 
 ### `BaseService` (`src/server/Services/BaseService.luau`)
 - `BaseService.IsBaseMode(): boolean` — возвращает `true`, если `game.PlaceId == Config.Places.PlayerBase` (и не активен режим рейда `Workspace.RaidServerMode` / `PrivateServerOwnerId == 0`) или в Studio включён `Workspace:GetAttribute("ForceBaseMode") == true`.
 - `BaseService.GetPlayerPieces(player: Player): { Types.SavedBuildPiece }` — возвращает копию сохранённых построек игрока из `DataService`.
 - `BaseService.GetStorageContainerId(player: Player, uid: string): string?` — возвращает `containerId` заспавненного сундука базы по `uid` постройки.
-- `BaseService.Init()` — в режиме базы (игнорируя подключения с `TeleportData.Mode == "Raid"`) спавнит постройки из `data.Base.Pieces` в `Workspace.PlayerBaseStructures` (с регистрацией `storage_box` в `LootService` и `workbench_1` в `CraftingService`), обрабатывает `BuildPlaceRequest`, `BuildUpgradeRequest`, `BuildDemolishRequest` (серверная валидация сетки/коллизий/ресурсов, пересчёт HP и материалов) и `RequestReturnToMap` (освобождение профиля через `DataService.ReleaseForTeleport` и возврат на `Config.Places.MainMap`).
+- `BaseService.Init()` — в режиме базы (игнорируя подключения с `TeleportData.Mode == "Raid"`) спавнит постройки из `data.Base.Pieces` в `Workspace.PlayerBaseStructures` (с регистрацией `storage_box` в `LootService` и `workbench_1` в `CraftingService`), обрабатывает `BuildPlaceRequest`, `BuildUpgradeRequest`, `BuildDemolishRequest` (Rate Limiter, проверка жизни, дистанции `<= MAX_BUILD_DISTANCE + PING_DISTANCE_TOLERANCE`, серверного кулдауна `0.15` сек, сетки/коллизий/ресурсов под `RunLocked`) и `RequestReturnToMap` (Rate Limiter, закрытие контейнеров, блокировка через `SecurityService.SetTeleportLock`, освобождение профиля через `DataService.ReleaseForTeleport`, возврат на `Config.Places.MainMap` и разблокировка при сбое через `DataService.RestoreAfterFailedTeleport`).
 
 ### `RaidService` (`src/server/Services/RaidService.luau`)
 - `RaidService.EnterStudioMockRaid(player: Player, targetUserId: number): boolean` — запускает локальный мок-рейд в Studio, спавнит копию базы цели (или готовую тестовую базу с укреплёнными стенами и сундуком) в `Workspace.RaidTargetStructures` и запускает 300-секундный таймер.
 - `RaidService.IsPlayerInRaid(player: Player): boolean` — возвращает `true`, если игрок находится в активной рейд-сессии.
 - `RaidService.GetActiveSessionInfo(player: Player): Types.RaidHudState?` — возвращает состояние активной рейд-сессии игрока или `nil`.
-- `RaidService.Init()` — в режиме `MainMap` обрабатывает `RaidListRequest` и `StartRaidRequest` (`DataService.ReleaseForTeleport` + `ReserveServer` / `TeleportToPrivateServer` на `PlayerBase` или Studio Mock Raid); в режиме рейда спавнит копию базы цели по `LoadBaseSnapshot` без записи в профиль цели, обновляет таймер (`RaidHudSync`), обрабатывает `PlaceExplosiveRequest` (проверка предмета из `Explosives`, дистанции `<= 14` studs, списание слота, визуальный заряд с `FuseTime`, урон по постройкам в `Radius`, выпадение мешка с лутом в `Workspace.LootContainers` при разрушении `storage_box`) и эвакуирует игрока на `MainMap` (или из мок-рейда) по `RaidExtractRequest` или истечении таймера.
+- `RaidService.Init()` — в режиме `MainMap` обрабатывает `RaidListRequest` и `StartRaidRequest` (Rate Limiter, проверка жизни и близости к `Workspace.RaidTerminal` `<= 24 + 2` studs, `SecurityService.SetTeleportLock`, `DataService.ReleaseForTeleport` + `ReserveServer` + `TeleportAsync` с `ReservedServerAccessCode` или Studio Mock Raid, восстановление через `RestoreAfterFailedTeleport` при ошибке); в режиме рейда спавнит копию базы цели по `LoadBaseSnapshot` без записи в профиль цели, обновляет таймер (`RaidHudSync`), обрабатывает `PlaceExplosiveRequest` (Rate Limiter, проверка предмета из `Explosives`, дистанции `<= 14 + 2` studs, серверного кулдауна `0.5` сек и атомарного списания под `RunLocked`, визуальный заряд с `FuseTime`, урон по постройкам в `Radius`, выпадение мешка с лутом в `Workspace.LootContainers` при разрушении `storage_box`) и эвакуирует игрока на `MainMap` (или из мок-рейда) по `RaidExtractRequest` (с Rate Limiter и проверкой жизни) или истечении таймера.
 
 ---
 
@@ -330,3 +351,52 @@
   - Ошибок скриптов в `Output`: **0**.
   - Клиентский рендер (`GetTriangleCompositionAsync`): `Opaque` = `16` draw calls / `7,452` треугольников; `UI` = `12` draw calls / `210` треугольников.
   - Карта: 1 `SpawnLocation`, все папки сцен на месте, тестовые атрибуты и временные объекты отсутствуют.
+
+---
+
+## 6. Безопасность, анти-дюп и сохранность данных (Фаза B)
+
+### Лимиты Rate Limiter (`SecurityService`, Token Bucket по `(UserId, RemoteName)`)
+При превышении лимита пакет отбрасывается на сервере с логированием `warn` (throttled `<= 1` раз в `2.0` сек на пару игрок/ремоут).
+
+| Категория | RemoteEvent | Capacity (burst) | Refill (tokens/sec) |
+| :--- | :--- | :---: | :---: |
+| **Combat** | `AttackRequest` | 6 | 5.0 |
+| **Combat** | `HitNode` | 5 | 4.0 |
+| **Combat** | `PlaceExplosiveRequest` | 3 | 1.5 |
+| **Inventory** | `InventoryMove` | 12 | 8.0 |
+| **Inventory** | `HotbarSelect` | 15 | 12.0 |
+| **Inventory** | `LootTakeSlot` | 10 | 6.0 |
+| **Inventory** | `ContainerDepositSlot` | 10 | 6.0 |
+| **Inventory** | `UseConsumable` | 4 | 2.0 |
+| **Inventory** | `CraftRequest` | 4 | 2.0 |
+| **Inventory** | `CraftCancel` | 4 | 2.0 |
+| **Building** | `BuildPlaceRequest` | 8 | 4.0 |
+| **Building** | `BuildUpgradeRequest` | 8 | 4.0 |
+| **Building** | `BuildDemolishRequest` | 8 | 4.0 |
+| **UI** | `CloseContainer` | 8 | 5.0 |
+| **UI** | `RaidListRequest` | 3 | 1.0 |
+| **UI** | `StartRaidRequest` | 2 | 0.5 |
+| **UI** | `RaidExtractRequest` | 2 | 0.5 |
+| **UI** | `RequestReturnToMap` | 2 | 0.5 |
+
+По умолчанию для незарегистрированных ремоутов: `Capacity = 5`, `RefillPerSec = 3.0`.
+
+### Система блокировок от дюпа и атомарность
+- **Per-player мьютекс (`SecurityService.RunLocked`)** и **флаг телепортации (`SecurityService.SetTeleportLock`)**: все критические операции (`InventoryMove`, `LootTakeSlot`, `ContainerDepositSlot`, `CraftRequest`, `CraftCancel`, `CraftComplete`, `UseConsumable`, `HitNode`, `AttackAmmo`, `BuildPlace`, `BuildUpgrade`, `BuildDemolish`, `PlaceExplosive`, `PlayerDeath`) выполняются эксклюзивно под блокировкой игрока и немедленно отклоняются при активном `IsTeleportLocked` / `IsTransactionLocked` или смерти персонажа.
+- **Per-container блокировка (`ServerContainer.Locked`)**: в `LootService` слоты контейнера блокируются на время переноса; в `LootTakeSlot` требуется `openContainerByPlayer[player] == containerId` и дистанция `<= MAX_LOOT_DISTANCE + PING_DISTANCE_TOLERANCE`; в `InventoryMove` проверяется дистанция до открытого контейнера (`IsActiveContainerOutOfRange`).
+- **Атомарность «списание -> начисление»**:
+  - `InventoryMove`: очистка исходного слота / списание стака до записи в целевой слот.
+  - `LootTakeSlot`: удаление из `container.Slots[containerSlot]` до вызова `InventoryService.AddItem*` с возвратом `remainder` при переполнении.
+  - `ContainerDepositSlot`: вызов `InventoryService.ConsumeSlot` до записи в контейнер.
+  - `CraftingService`: `InventoryService.RemoveItems` до регистрации `activeCrafts[player]`; при отмене/смерти `activeCrafts[player] = nil` выполняется до возврата ингредиентов.
+  - `SurvivalService` (`Humanoid.Died`): пропуск дропа при активном телепорте (`IsTeleporting`/`IsTeleportLocked`), отмена активного крафта и `InventoryService.ClearInventory` до спавна рюкзака в мире.
+
+### Сохранность профиля при телепортации и миграция данных (`DataService`)
+- **Телепортация без двойной сессии**: до вызова `TeleportService:TeleportAsync` сервисы (`ExtractionService`, `BaseService`, `RaidService`) закрывают открытые контейнеры, выставляют `SecurityService.SetTeleportLock(player, true)` и вызывают `DataService.ReleaseForTeleport(player)`.
+- **`DataService.ReleaseForTeleport`**: выполняет `OnBeforeUnload`, синхронизирует `RuntimeData` в `profile.Data`, вызывает `profile:EndSession()` и ожидает `not profile:IsActive()` и завершения сохранения (`OnLastSave` + `OnAfterSave`, таймаут `8` сек).
+- **Обработка `Profile.OnSessionEnd`**: при неожиданном завершении сессии (пока `not teleportingPlayers[player]`) немедленно блокирует операции игрока и вызывает `player:Kick(...)`, исключая работу на сервере без активной блокировки сессии.
+- **Откат при сбое `TeleportAsync`**: при таймауте сохранения, ошибке `ReserveServer` / `TeleportAsync` или событии `TeleportInitFailed` вызывается `DataService.RestoreAfterFailedTeleport(player)`, который восстанавливает профиль и снимает `SecurityService.SetTeleportLock(player, false)`.
+- **Версионирование и миграция (`ProfileStore` `"PlayerData_v1"`)**:
+  - Актуальная схема задаётся константой `Types.CURRENT_DATA_VERSION = 1`; шаблон профиля содержит `DataVersion = 1` (и зеркальное поле `Version` для обратной совместимости).
+  - Сразу после `profile:Reconcile()` вызывается чистая функция `DataService.MigrateProfileData(rawData)`, которая клонирует таблицу и пошагово применяет миграции (`if data.DataVersion < 1 then ... data.DataVersion = 1 end`, заготовка для `if Types.CURRENT_DATA_VERSION >= 2 and data.DataVersion < 2 then ... end`).

@@ -70,6 +70,7 @@ export type BuildTierConfig = {
 }
 
 export type PlayerData = {
+	DataVersion: number,
 	Version: number,
 	Inventory: Inventory,
 	Stats: SurvivalStats,
@@ -207,6 +208,10 @@ local Types = {
 	MAX_ATTACK_ORIGIN_OFFSET = 8,
 	MAX_EXPLOSIVE_PLACE_DISTANCE = 14,
 	RAID_DURATION = 300,
+	CURRENT_DATA_VERSION = 1,
+	PING_DISTANCE_TOLERANCE = 2,
+	MAX_BUILD_DISTANCE = 72,
+	MAX_RAID_TERMINAL_DISTANCE = 24,
 }
 
 return Types

@@ -12,6 +12,8 @@ local Janitor = require(ReplicatedStorage.Shared.Janitor)
 local DataService = require(ServerScriptService.Server.Services.DataService)
 local InventoryService = require(ServerScriptService.Server.Services.InventoryService)
 local LootService = require(ServerScriptService.Server.Services.LootService)
+local CraftingService = require(ServerScriptService.Server.Services.CraftingService)
+local SecurityService = require(ServerScriptService.Server.Services.SecurityService)
 
 type Inventory = Types.Inventory
 type SurvivalStats = Types.SurvivalStats
@@ -33,10 +35,6 @@ local nextBagId = 0
 local isInitialized = false
 
 local SurvivalService = {}
-
-local function isValidInteger(val: any): boolean
-	return typeof(val) == "number" and val == val and val % 1 == 0 and math.abs(val) ~= math.huge
-end
 
 local function roundStat(val: number): number
 	return math.floor(val * 100 + 0.5) / 100
@@ -77,16 +75,7 @@ local function syncPlayerAttributes(player: Player, stats: SurvivalStats)
 end
 
 local function getAliveCharacterParts(player: Player): (Model?, BasePart?, Humanoid?)
-	local character = player.Character
-	if not character then
-		return nil, nil, nil
-	end
-	local hrp = character:FindFirstChild("HumanoidRootPart")
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	if not hrp or not hrp:IsA("BasePart") or not humanoid or humanoid.Health <= 0 then
-		return nil, nil, nil
-	end
-	return character, hrp, humanoid
+	return SecurityService.GetAliveCharacterRoot(player)
 end
 
 local function findDropPosition(deathPosition: Vector3, ignoreCharacter: Model?, lootFolder: Folder): Vector3
@@ -251,10 +240,21 @@ local function bindCharacter(player: Player, character: Model)
 		local hrp = character:FindFirstChild("HumanoidRootPart")
 		local deathPosition = if hrp and hrp:IsA("BasePart") then hrp.Position else character:GetPivot().Position
 
-		local droppedSlots = InventoryService.ClearInventory(player)
-		if hasAnySlots(droppedSlots) then
-			spawnLootContainer(player.Name, deathPosition, droppedSlots, character)
+		if
+			DataService.IsTeleporting(player)
+			or SecurityService.IsTeleportLocked(player)
+			or DataService.GetData(player) == nil
+		then
+			return
 		end
+
+		SecurityService.RunLocked(player, "PlayerDeath", function()
+			CraftingService.CancelCraftForPlayer(player, true, true)
+			local droppedSlots = InventoryService.ClearInventory(player)
+			if hasAnySlots(droppedSlots) then
+				spawnLootContainer(player.Name, deathPosition, droppedSlots, character)
+			end
+		end)
 	end))
 end
 
@@ -292,55 +292,67 @@ local function onPlayerDataLoaded(player: Player, data: PlayerData)
 end
 
 local function onUseConsumable(player: Player, slotIndexAny: any)
-	if not isValidInteger(slotIndexAny) then
+	if not SecurityService.CheckRateLimit(player, Net.Events.UseConsumable) then
+		return
+	end
+	if not SecurityService.IsValidInteger(slotIndexAny, 1, Types.INVENTORY_SIZE) then
 		return
 	end
 	local slotIndex = slotIndexAny :: number
-	if slotIndex < 1 or slotIndex > Types.INVENTORY_SIZE then
+
+	if DataService.IsTeleporting(player) or SecurityService.IsTransactionLocked(player) then
+		return
+	end
+	if DataService.GetData(player) == nil then
+		return
+	end
+	if SecurityService.GetAliveCharacterRoot(player) == nil then
 		return
 	end
 
-	local data = DataService.GetData(player)
-	if not data then
-		return
-	end
+	SecurityService.RunLocked(player, "UseConsumable", function()
+		local data = DataService.GetData(player)
+		if not data then
+			return
+		end
 
-	local _, _, humanoid = getAliveCharacterParts(player)
-	if not humanoid then
-		return
-	end
+		local _, _, humanoid = getAliveCharacterParts(player)
+		if not humanoid then
+			return
+		end
 
-	local slot = InventoryService.GetSlot(player, slotIndex)
-	if slot == nil or slot.Count <= 0 then
-		return
-	end
+		local slot = InventoryService.GetSlot(player, slotIndex)
+		if slot == nil or slot.Count <= 0 then
+			return
+		end
 
-	local itemConfig = Items[slot.Id]
-	local consumableConfig = Consumables[slot.Id]
-	if not itemConfig or itemConfig.Type ~= "Consumable" or not consumableConfig then
-		return
-	end
+		local itemConfig = Items[slot.Id]
+		local consumableConfig = Consumables[slot.Id]
+		if not itemConfig or itemConfig.Type ~= "Consumable" or not consumableConfig then
+			return
+		end
 
-	local now = os.clock()
-	local readyAt = nextConsumeTime[player] or 0
-	if now < readyAt then
-		return
-	end
+		local now = os.clock()
+		local readyAt = nextConsumeTime[player] or 0
+		if now < readyAt then
+			return
+		end
 
-	if not InventoryService.ConsumeSlot(player, slotIndex, 1) then
-		return
-	end
+		if not InventoryService.ConsumeSlot(player, slotIndex, 1) then
+			return
+		end
 
-	nextConsumeTime[player] = now + consumableConfig.UseCooldown
+		nextConsumeTime[player] = now + consumableConfig.UseCooldown
 
-	if consumableConfig.Health ~= 0 then
-		humanoid.Health = math.clamp(humanoid.Health + consumableConfig.Health, 0, humanoid.MaxHealth)
-		data.Stats.Health = humanoid.Health
-	end
+		if consumableConfig.Health ~= 0 then
+			humanoid.Health = math.clamp(humanoid.Health + consumableConfig.Health, 0, humanoid.MaxHealth)
+			data.Stats.Health = humanoid.Health
+		end
 
-	data.Stats.Hunger = math.clamp(data.Stats.Hunger + consumableConfig.Hunger, 0, Types.MAX_HUNGER)
-	data.Stats.Thirst = math.clamp(data.Stats.Thirst + consumableConfig.Thirst, 0, Types.MAX_THIRST)
-	syncPlayerAttributes(player, data.Stats)
+		data.Stats.Hunger = math.clamp(data.Stats.Hunger + consumableConfig.Hunger, 0, Types.MAX_HUNGER)
+		data.Stats.Thirst = math.clamp(data.Stats.Thirst + consumableConfig.Thirst, 0, Types.MAX_THIRST)
+		syncPlayerAttributes(player, data.Stats)
+	end)
 end
 
 local function stepSurvivalLoop()

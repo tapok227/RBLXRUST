@@ -9,6 +9,7 @@ local Recipes = require(ReplicatedStorage.Shared.configs.Recipes)
 local Net = require(ReplicatedStorage.Shared.Net)
 local DataService = require(ServerScriptService.Server.Services.DataService)
 local InventoryService = require(ServerScriptService.Server.Services.InventoryService)
+local SecurityService = require(ServerScriptService.Server.Services.SecurityService)
 
 type Ingredient = Types.Ingredient
 type CraftingState = Types.CraftingState
@@ -65,15 +66,16 @@ local function scanWorkbenches()
 end
 
 local function hasNearbyStation(player: Player, stationType: string): boolean
-	local character = player.Character
-	local hrp = if character then character:FindFirstChild("HumanoidRootPart") else nil
-	if not hrp or not hrp:IsA("BasePart") then
+	local _, hrp = SecurityService.GetAliveCharacterRoot(player)
+	if not hrp then
 		return false
 	end
 
+	local maxDistance = Types.MAX_STATION_DISTANCE + Types.PING_DISTANCE_TOLERANCE
+
 	for _, entry in stations do
 		if entry.StationType == stationType then
-			if (hrp.Position - entry.Position).Magnitude <= Types.MAX_STATION_DISTANCE then
+			if (hrp.Position - entry.Position).Magnitude <= maxDistance then
 				return true
 			end
 		end
@@ -81,7 +83,7 @@ local function hasNearbyStation(player: Player, stationType: string): boolean
 
 	for _, entry in dynamicStations do
 		if entry.StationType == stationType then
-			if (hrp.Position - entry.Position).Magnitude <= Types.MAX_STATION_DISTANCE then
+			if (hrp.Position - entry.Position).Magnitude <= maxDistance then
 				return true
 			end
 		end
@@ -90,7 +92,7 @@ local function hasNearbyStation(player: Player, stationType: string): boolean
 	return false
 end
 
-local function cancelCraft(player: Player, syncClient: boolean)
+local function cancelCraftInternal(player: Player, syncClient: boolean)
 	local active = activeCrafts[player]
 	if active == nil then
 		return
@@ -113,83 +115,131 @@ local function cancelCraft(player: Player, syncClient: boolean)
 	end
 end
 
+function CraftingService.CancelCraftForPlayer(player: Player, syncClient: boolean, bypassLock: boolean?)
+	if bypassLock == true then
+		cancelCraftInternal(player, syncClient)
+		return
+	end
+	SecurityService.RunLocked(player, "CraftCancel", function()
+		cancelCraftInternal(player, syncClient)
+	end)
+end
+
 local function onCraftRequest(player: Player, recipeIdAny: any)
-	if typeof(recipeIdAny) ~= "string" or #recipeIdAny == 0 or #recipeIdAny > 64 then
+	if not SecurityService.CheckRateLimit(player, Net.Events.CraftRequest) then
+		return
+	end
+	if not SecurityService.IsValidString(recipeIdAny, 1, 64) then
 		return
 	end
 
-	local recipe = Recipes[recipeIdAny]
+	local recipe = Recipes[recipeIdAny :: string]
 	if not recipe then
 		return
 	end
 
-	if activeCrafts[player] ~= nil then
+	if DataService.IsTeleporting(player) or SecurityService.IsTransactionLocked(player) then
 		return
 	end
-
 	if DataService.GetData(player) == nil then
 		return
 	end
-
-	if recipe.Station ~= nil and not hasNearbyStation(player, recipe.Station) then
+	if SecurityService.GetAliveCharacterRoot(player) == nil then
 		return
 	end
 
-	if not InventoryService.CanCraftTransaction(player, recipe.Ingredients, recipe.ResultId, recipe.ResultCount) then
-		return
-	end
-
-	if not InventoryService.RemoveItems(player, recipe.Ingredients) then
-		return
-	end
-
-	nextToken += 1
-	local token = nextToken
-	local startTime = Workspace:GetServerTimeNow()
-	local endTime = startTime + recipe.CraftTime
-
-	local consumed: { Ingredient } = {}
-	for _, ing in recipe.Ingredients do
-		table.insert(consumed, {
-			Id = ing.Id,
-			Count = ing.Count,
-		})
-	end
-
-	local craftRecord: ActiveCraft = {
-		Token = token,
-		RecipeId = recipe.Id,
-		StartTime = startTime,
-		EndTime = endTime,
-		ConsumedIngredients = consumed,
-		DelayThread = nil,
-	}
-	activeCrafts[player] = craftRecord
-
-	local statePayload: CraftingState = {
-		RecipeId = recipe.Id,
-		StartTime = startTime,
-		EndTime = endTime,
-	}
-	Net.GetEvent(Net.Events.CraftStateSync):FireClient(player, statePayload)
-
-	craftRecord.DelayThread = task.delay(recipe.CraftTime, function()
-		craftRecord.DelayThread = nil
-		local current = activeCrafts[player]
-		if current == nil or current.Token ~= token then
+	SecurityService.RunLocked(player, "CraftRequest", function()
+		if activeCrafts[player] ~= nil or DataService.GetData(player) == nil then
+			return
+		end
+		if SecurityService.GetAliveCharacterRoot(player) == nil then
+			return
+		end
+		if recipe.Station ~= nil and not hasNearbyStation(player, recipe.Station) then
+			return
+		end
+		if
+			not InventoryService.CanCraftTransaction(player, recipe.Ingredients, recipe.ResultId, recipe.ResultCount)
+		then
+			return
+		end
+		if not InventoryService.RemoveItems(player, recipe.Ingredients) then
 			return
 		end
 
-		activeCrafts[player] = nil
-		if player.Parent == Players and DataService.GetData(player) ~= nil then
-			InventoryService.AddItem(player, recipe.ResultId, recipe.ResultCount)
-			Net.GetEvent(Net.Events.CraftStateSync):FireClient(player, nil)
+		nextToken += 1
+		local token = nextToken
+		local startTime = Workspace:GetServerTimeNow()
+		local endTime = startTime + recipe.CraftTime
+
+		local consumed: { Ingredient } = {}
+		for _, ing in recipe.Ingredients do
+			table.insert(consumed, {
+				Id = ing.Id,
+				Count = ing.Count,
+			})
 		end
+
+		local craftRecord: ActiveCraft = {
+			Token = token,
+			RecipeId = recipe.Id,
+			StartTime = startTime,
+			EndTime = endTime,
+			ConsumedIngredients = consumed,
+			DelayThread = nil,
+		}
+		activeCrafts[player] = craftRecord
+
+		local statePayload: CraftingState = {
+			RecipeId = recipe.Id,
+			StartTime = startTime,
+			EndTime = endTime,
+		}
+		Net.GetEvent(Net.Events.CraftStateSync):FireClient(player, statePayload)
+
+		craftRecord.DelayThread = task.delay(recipe.CraftTime, function()
+			craftRecord.DelayThread = nil
+			local current = activeCrafts[player]
+			if current == nil or current.Token ~= token then
+				return
+			end
+
+			if
+				player.Parent ~= Players
+				or DataService.GetData(player) == nil
+				or DataService.IsTeleporting(player)
+				or SecurityService.IsTeleportLocked(player)
+				or SecurityService.GetAliveCharacterRoot(player) == nil
+			then
+				return
+			end
+
+			SecurityService.RunLocked(player, "CraftComplete", function()
+				local latest = activeCrafts[player]
+				if latest == nil or latest.Token ~= token then
+					return
+				end
+				activeCrafts[player] = nil
+				if player.Parent == Players and DataService.GetData(player) ~= nil then
+					InventoryService.AddItem(player, recipe.ResultId, recipe.ResultCount)
+					Net.GetEvent(Net.Events.CraftStateSync):FireClient(player, nil)
+				end
+			end)
+		end)
 	end)
 end
 
 local function onCraftCancel(player: Player)
-	cancelCraft(player, true)
+	if not SecurityService.CheckRateLimit(player, Net.Events.CraftCancel) then
+		return
+	end
+	if DataService.IsTeleporting(player) or SecurityService.IsTransactionLocked(player) then
+		return
+	end
+	if SecurityService.GetAliveCharacterRoot(player) == nil then
+		return
+	end
+	CraftingService.CancelCraftForPlayer(player, true, false)
 end
 
 function CraftingService.RegisterStation(stationId: string, stationType: string, position: Vector3)
@@ -231,11 +281,11 @@ function CraftingService.Init()
 	Net.GetEvent(Net.Events.CraftCancel).OnServerEvent:Connect(onCraftCancel)
 
 	DataService.OnBeforeUnload(function(player: Player, _data: Types.PlayerData)
-		cancelCraft(player, false)
+		CraftingService.CancelCraftForPlayer(player, false, true)
 	end)
 
 	Players.PlayerRemoving:Connect(function(player: Player)
-		cancelCraft(player, false)
+		CraftingService.CancelCraftForPlayer(player, false, true)
 	end)
 end
 
