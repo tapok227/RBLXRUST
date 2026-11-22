@@ -12,6 +12,7 @@ local Projectiles = require(ReplicatedStorage.Shared.configs.Projectiles)
 local Consumables = require(ReplicatedStorage.Shared.configs.Consumables)
 local Explosives = require(ReplicatedStorage.Shared.configs.Explosives)
 local Net = require(ReplicatedStorage.Shared.Net)
+local Ballistics = require(ReplicatedStorage.Shared.Ballistics)
 local HotbarController = require(script.Parent.HotbarController)
 local InventoryController = require(script.Parent.InventoryController)
 local InventoryUIController = require(script.Parent.InventoryUIController)
@@ -29,6 +30,8 @@ type WeaponConfig = Types.WeaponConfig
 local TRACER_DURATION = 0.12
 local HITMARKER_DURATION = 0.15
 local AIM_RAY_MIN_DISTANCE = 250
+local MAX_RECOIL_PITCH_RAD = math.rad(18)
+local MAX_RECOIL_YAW_RAD = math.rad(12)
 
 local lastLocalAttack = 0
 local hitmarkerToken = 0
@@ -36,9 +39,16 @@ local bowDrawing = false
 local bowDrawStart = 0
 local bowDrawSlot = 0
 local bowDrawWeaponId = ""
+local isCrouching = false
+local recoilPendingPitch = 0
+local recoilPendingYaw = 0
+local recoilRecoveryRate = 7.5
+local recoilShotIndex = 0
+local lastRecoilShotTime = 0
 local isInitialized = false
 
 local crosshairContainer: Frame? = nil
+local crosshairLines: { [string]: Frame } = {}
 local hitmarkerContainer: Frame? = nil
 local hitmarkerBars: { Frame } = {}
 local bowDrawBarBg: Frame? = nil
@@ -137,6 +147,7 @@ local function createCrosshairGui()
 		{ Name = "Right", Pos = UDim2.new(0.5, 7, 0.5, 0), Size = UDim2.fromOffset(6, 2) },
 	}
 
+	table.clear(crosshairLines)
 	for _, spec in lineSpecs do
 		local line = Instance.new("Frame")
 		line.Name = spec.Name
@@ -147,6 +158,7 @@ local function createCrosshairGui()
 		line.BackgroundTransparency = 0.25
 		line.BorderSizePixel = 0
 		line.Parent = container
+		crosshairLines[spec.Name] = line
 	end
 
 	local hitFrame = Instance.new("Frame")
@@ -289,6 +301,84 @@ local function getAliveCharacter(): (Model?, BasePart?)
 	return character, hrp
 end
 
+local function computeDynamicSpreadDeg(weapon: WeaponConfig, character: Model): number
+	local base = weapon.BaseSpreadDeg or 0
+	if base <= 0 and (weapon.MoveSpreadDeg or 0) <= 0 then
+		return 0
+	end
+
+	local spread = base
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	if humanoid ~= nil and hrp ~= nil and hrp:IsA("BasePart") then
+		local state = humanoid:GetState()
+		local airborne = humanoid.FloorMaterial == Enum.Material.Air
+			or state == Enum.HumanoidStateType.Freefall
+			or state == Enum.HumanoidStateType.Jumping
+		local horizSpeed = Vector3.new(hrp.AssemblyLinearVelocity.X, 0, hrp.AssemblyLinearVelocity.Z).Magnitude
+		if airborne then
+			spread += weapon.AirSpreadDeg or 4.0
+		elseif horizSpeed > 1.5 then
+			spread += weapon.MoveSpreadDeg or 1.8
+		elseif isCrouching then
+			spread *= (weapon.CrouchSpreadMultiplier or 0.55)
+		end
+	end
+	return math.max(0, spread)
+end
+
+local function applySpreadToDirection(unitDir: Vector3, spreadDeg: number): Vector3
+	if spreadDeg <= 0.01 then
+		return unitDir
+	end
+	local spreadRad = math.rad(spreadDeg)
+	local angle = math.random() * math.pi * 2
+	local radius = math.sqrt(math.random()) * spreadRad
+	local rx = math.cos(angle) * radius
+	local ry = math.sin(angle) * radius
+	return (CFrame.lookAt(Vector3.zero, unitDir) * CFrame.Angles(rx, ry, 0)).LookVector
+end
+
+local function applyRecoilKick(weapon: WeaponConfig)
+	local pitchDeg = weapon.RecoilPitchDeg
+	if pitchDeg == nil or pitchDeg <= 0 then
+		return
+	end
+
+	local now = os.clock()
+	if (now - lastRecoilShotTime) > 0.75 then
+		recoilShotIndex = 0
+	end
+	recoilShotIndex += 1
+	lastRecoilShotTime = now
+
+	local yawDeg = 0
+	local pattern = weapon.RecoilYawPattern
+	if pattern ~= nil and #pattern > 0 then
+		yawDeg = pattern[((recoilShotIndex - 1) % #pattern) + 1]
+	end
+
+	recoilRecoveryRate = weapon.RecoilRecoveryRate or 7.5
+	recoilPendingPitch = math.clamp(recoilPendingPitch + math.rad(pitchDeg), 0, MAX_RECOIL_PITCH_RAD)
+	recoilPendingYaw = math.clamp(recoilPendingYaw + math.rad(yawDeg), -MAX_RECOIL_YAW_RAD, MAX_RECOIL_YAW_RAD)
+end
+
+local function updateCrosshairSpreadOffset(spreadDeg: number)
+	local offset = math.floor(7 + spreadDeg * 2.4 + 0.5)
+	if crosshairLines.Top then
+		crosshairLines.Top.Position = UDim2.new(0.5, 0, 0.5, -offset)
+	end
+	if crosshairLines.Bottom then
+		crosshairLines.Bottom.Position = UDim2.new(0.5, 0, 0.5, offset)
+	end
+	if crosshairLines.Left then
+		crosshairLines.Left.Position = UDim2.new(0.5, -offset, 0.5, 0)
+	end
+	if crosshairLines.Right then
+		crosshairLines.Right.Position = UDim2.new(0.5, offset, 0.5, 0)
+	end
+end
+
 local function computeAimData(weapon: WeaponConfig): (Vector3?, Vector3?, Model?, boolean, Model?)
 	local camera = Workspace.CurrentCamera
 	local character, hrp = getAliveCharacter()
@@ -299,13 +389,31 @@ local function computeAimData(weapon: WeaponConfig): (Vector3?, Vector3?, Model?
 	local mouseLoc = UserInputService:GetMouseLocation()
 	local unitRay = camera:ViewportPointToRay(mouseLoc.X, mouseLoc.Y)
 
+	local excludeList: { Instance } = { character }
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
 	params.IgnoreWater = true
-	params.FilterDescendantsInstances = { character }
+	params.FilterDescendantsInstances = excludeList
 
 	local rayDist = math.max(weapon.Range, AIM_RAY_MIN_DISTANCE)
-	local result = Workspace:Raycast(unitRay.Origin, unitRay.Direction * rayDist, params)
+	local result: RaycastResult? = nil
+	for _ = 1, 6 do
+		local hit = Workspace:Raycast(unitRay.Origin, unitRay.Direction * rayDist, params)
+		if hit == nil then
+			break
+		end
+		if
+			Ballistics.IsIgnoredCharacterPart(hit.Instance)
+			or (hit.Instance.CanCollide == false and findTargetCharacterFromPart(hit.Instance) == nil)
+		then
+			table.insert(excludeList, hit.Instance)
+			params.FilterDescendantsInstances = excludeList
+		else
+			result = hit
+			break
+		end
+	end
+
 	local aimPoint = if result then result.Position else (unitRay.Origin + unitRay.Direction * rayDist)
 
 	local targetModel: Model? = nil
@@ -338,6 +446,9 @@ local function fireWeaponWithCharge(weapon: WeaponConfig, chargeRatio: number)
 		return
 	end
 
+	local spreadDeg = computeDynamicSpreadDeg(weapon, character)
+	local finalDir = applySpreadToDirection(direction, spreadDeg)
+
 	lastLocalAttack = os.clock()
 	if weapon.ProjectileId ~= nil then
 		local projCfg = Projectiles[weapon.ProjectileId]
@@ -345,9 +456,10 @@ local function fireWeaponWithCharge(weapon: WeaponConfig, chargeRatio: number)
 		if projCfg ~= nil and projCfg.MinSpeed ~= nil and projCfg.MaxSpeed ~= nil then
 			speedOverride = projCfg.MinSpeed + (projCfg.MaxSpeed - projCfg.MinSpeed) * math.clamp(chargeRatio, 0, 1)
 		end
-		ProjectileController.SpawnLocalProjectile(weapon.ProjectileId, origin, direction, character, speedOverride)
+		ProjectileController.SpawnLocalProjectile(weapon.ProjectileId, origin, finalDir, character, speedOverride)
 	end
-	Net.GetEvent(Net.Events.AttackRequest):FireServer(origin, direction, targetModel, isHeadshotHint, chargeRatio)
+	Net.GetEvent(Net.Events.AttackRequest):FireServer(origin, finalDir, targetModel, isHeadshotHint, chargeRatio)
+	applyRecoilKick(weapon)
 end
 
 local function handleAttackPress()
@@ -459,14 +571,36 @@ function CombatController.Init()
 		if UserInputService:GetFocusedTextBox() ~= nil then
 			return
 		end
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		if input.KeyCode == Enum.KeyCode.LeftControl then
+			isCrouching = true
+		elseif input.UserInputType == Enum.UserInputType.MouseButton1 then
 			handleAttackPress()
 		end
 	end)
 
 	UserInputService.InputEnded:Connect(function(input: InputObject)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		if input.KeyCode == Enum.KeyCode.LeftControl then
+			isCrouching = false
+		elseif input.UserInputType == Enum.UserInputType.MouseButton1 then
 			handleAttackRelease()
+		end
+	end)
+
+	RunService:BindToRenderStep("CombatRecoil", Enum.RenderPriority.Camera.Value + 1, function(dt: number)
+		if math.abs(recoilPendingPitch) > 1e-4 or math.abs(recoilPendingYaw) > 1e-4 then
+			local alpha = math.clamp(dt * recoilRecoveryRate, 0, 1)
+			recoilPendingPitch *= (1 - alpha)
+			recoilPendingYaw *= (1 - alpha)
+			if math.abs(recoilPendingPitch) <= 1e-4 then
+				recoilPendingPitch = 0
+			end
+			if math.abs(recoilPendingYaw) <= 1e-4 then
+				recoilPendingYaw = 0
+			end
+			local camera = Workspace.CurrentCamera
+			if camera ~= nil and (recoilPendingPitch ~= 0 or recoilPendingYaw ~= 0) then
+				camera.CFrame = camera.CFrame * CFrame.Angles(recoilPendingPitch, recoilPendingYaw, 0)
+			end
 		end
 	end)
 
@@ -476,8 +610,12 @@ function CombatController.Init()
 			crosshairContainer.Visible = not uiOpen
 		end
 
+		local weaponId, weapon = getEquippedWeapon()
+		local char = getAliveCharacter()
+		local curSpread = if char ~= nil then computeDynamicSpreadDeg(weapon, char) else 0
+		updateCrosshairSpreadOffset(curSpread)
+
 		if bowDrawing then
-			local weaponId, weapon = getEquippedWeapon()
 			local invalidState = uiOpen
 				or BuildingController.IsBuildMode()
 				or isCombatBlockedByItem()
@@ -485,7 +623,7 @@ function CombatController.Init()
 				or weaponId ~= bowDrawWeaponId
 				or weapon.DrawMinTime == nil
 				or weapon.DrawFullTime == nil
-				or getAliveCharacter() == nil
+				or char == nil
 				or (weapon.AmmoId ~= nil and not hasAmmoInInventory(weapon.AmmoId))
 			if invalidState then
 				cancelBowDraw()

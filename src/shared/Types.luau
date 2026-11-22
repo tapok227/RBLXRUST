@@ -289,6 +289,8 @@ export type VendorTradeFeedback = {
 
 export type WeaponCategory = "Melee" | "Ranged"
 
+export type HitZone = "Head" | "Torso" | "Limb"
+
 export type WeaponConfig = {
 	Category: WeaponCategory,
 	Damage: number,
@@ -300,6 +302,14 @@ export type WeaponConfig = {
 	ProjectileId: string?,
 	DrawMinTime: number?,
 	DrawFullTime: number?,
+	RecoilPitchDeg: number?,
+	RecoilYawPattern: { number }?,
+	RecoilRecoveryRate: number?,
+	BaseSpreadDeg: number?,
+	MoveSpreadDeg: number?,
+	AirSpreadDeg: number?,
+	CrouchSpreadMultiplier: number?,
+	MeleeConeHalfAngleDeg: number?,
 }
 
 export type LootDropEntry = {
@@ -431,6 +441,11 @@ export type NPCConfig = {
 	SpreadDeg: number?,
 	ProjectileSpeed: number?,
 	ProjectileGravity: number?,
+	ReactionDelayMin: number?,
+	ReactionDelayMax: number?,
+	FirstShotSpreadMultiplier: number?,
+	MagazineSize: number?,
+	ReloadDuration: number?,
 	BleedDuration: number?,
 	BleedDps: number?,
 	DefaultPatrolRadius: number,

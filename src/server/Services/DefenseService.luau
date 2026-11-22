@@ -636,6 +636,8 @@ local function tickShotgunTrap(record: ActiveDefenseRecord, now: number)
 
 	local maxAngleDeg = cfg.ConeHalfAngleDeg or 35
 	local chosenTargetPos: Vector3? = nil
+	local chosenTargetModel: Model? = nil
+	local chosenTargetRoot: BasePart? = nil
 	local bestDist = cfg.Range + 0.01
 
 	for _, target in collectCandidateTargets(record) do
@@ -648,11 +650,19 @@ local function tickShotgunTrap(record: ActiveDefenseRecord, now: number)
 			if angleDeg <= maxAngleDeg and hasLineOfSight(muzzlePos, target.Root, target.Model, record.Model) then
 				bestDist = dist
 				chosenTargetPos = targetPos
+				chosenTargetModel = target.Model
+				chosenTargetRoot = target.Root
 			end
 		end
 	end
 
-	if chosenTargetPos == nil then
+	if chosenTargetPos == nil or chosenTargetModel == nil or chosenTargetRoot == nil then
+		return
+	end
+	if
+		isCharacterInvulnerable(chosenTargetModel)
+		or not hasLineOfSight(muzzlePos, chosenTargetRoot, chosenTargetModel, record.Model)
+	then
 		return
 	end
 	if not consumeStorageAmmo(record, 1) then
@@ -703,21 +713,41 @@ local function tickShotgunTrap(record: ActiveDefenseRecord, now: number)
 	broadcastDefenseEffect("Shotgun", muzzlePos, endPositions)
 end
 
-local function fireTurretRound(record: ActiveDefenseRecord, targetPos: Vector3)
+local function fireTurretRound(record: ActiveDefenseRecord, targetModel: Model, targetPart: BasePart): boolean
 	local cfg = record.Config
-	if not consumeStorageAmmo(record, 1) then
-		return
+	if targetModel.Parent == nil or targetPart.Parent == nil or isCharacterInvulnerable(targetModel) then
+		return false
 	end
-	syncDefenseUiForOwner(record)
+	local targetHum = targetModel:FindFirstChildOfClass("Humanoid")
+	if targetHum == nil or targetHum.Health <= 0 then
+		return false
+	end
 
+	local targetPos = targetPart.Position
 	local muzzlePart = record.Model:FindFirstChild("Muzzle")
 	local pivotPos = (record.BaseWorldCF * CFrame.new(0, TURRET_PIVOT_HEIGHT, 0)).Position
+	if (targetPos - pivotPos).Magnitude > cfg.Range then
+		return false
+	end
+
 	local muzzlePos = if muzzlePart and muzzlePart:IsA("BasePart")
 		then muzzlePart.Position
 		else (pivotPos + (targetPos - pivotPos).Unit * 2.5)
 	if not isSegmentClear(pivotPos, muzzlePos, record.Model) then
 		muzzlePos = pivotPos
 	end
+
+	if
+		not hasLineOfSight(pivotPos, targetPart, targetModel, record.Model)
+		or not hasLineOfSight(muzzlePos, targetPart, targetModel, record.Model)
+	then
+		return false
+	end
+
+	if not consumeStorageAmmo(record, 1) then
+		return false
+	end
+	syncDefenseUiForOwner(record)
 
 	local delta = targetPos - muzzlePos
 	local aimDir = if delta.Magnitude > 0.1 then delta.Unit else record.BaseWorldCF.LookVector
@@ -750,6 +780,7 @@ local function fireTurretRound(record: ActiveDefenseRecord, targetPos: Vector3)
 			end
 		end,
 	})
+	return true
 end
 
 local function tickAutoTurret(record: ActiveDefenseRecord, now: number)
@@ -807,7 +838,12 @@ local function tickAutoTurret(record: ActiveDefenseRecord, now: number)
 		if now >= record.NextBurstShotTime then
 			record.BurstRemaining -= 1
 			record.NextBurstShotTime = now + (cfg.BurstInterval or 0.14)
-			fireTurretRound(record, targetPos)
+			if not fireTurretRound(record, bestTarget.Model, bestTarget.Root) then
+				record.BurstRemaining = 0
+				record.LockTarget = nil
+				setSensorColor(record, Color3.fromRGB(65, 225, 110))
+				return
+			end
 			if record.BurstRemaining <= 0 then
 				record.LastFireTime = now
 			end
@@ -818,7 +854,12 @@ local function tickAutoTurret(record: ActiveDefenseRecord, now: number)
 	if (now - record.LastFireTime) >= cfg.Cooldown then
 		record.BurstRemaining = math.max(0, (cfg.BurstCount or 3) - 1)
 		record.NextBurstShotTime = now + (cfg.BurstInterval or 0.14)
-		fireTurretRound(record, targetPos)
+		if not fireTurretRound(record, bestTarget.Model, bestTarget.Root) then
+			record.BurstRemaining = 0
+			record.LockTarget = nil
+			setSensorColor(record, Color3.fromRGB(65, 225, 110))
+			return
+		end
 		if record.BurstRemaining <= 0 then
 			record.LastFireTime = now
 		end

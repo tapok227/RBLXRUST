@@ -439,8 +439,33 @@ local function freezeArrowAndCleanup(record: ActiveVisualProjectile)
 		end
 	end
 	task.delay(ARROW_STICK_DURATION, function()
-		cleanupVisualRecord(record)
+		if record.CleanedUp then
+			return
+		end
+		for _, desc in record.Model:GetDescendants() do
+			if desc:IsA("BasePart") and desc.Name ~= "Body" then
+				TweenService:Create(
+					desc,
+					TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+					{ Transparency = 1 }
+				):Play()
+			end
+		end
+		task.delay(0.38, function()
+			cleanupVisualRecord(record)
+		end)
 	end)
+end
+
+local function isCharacterHitInstance(inst: Instance): boolean
+	local current: Instance? = inst
+	while current ~= nil and current ~= Workspace do
+		if current:IsA("Model") and current:FindFirstChildOfClass("Humanoid") ~= nil then
+			return true
+		end
+		current = current.Parent
+	end
+	return false
 end
 
 local function spawnVisualBallistic(
@@ -488,7 +513,7 @@ local function spawnVisualBallistic(
 		OnHit = function(hitResult: RaycastResult, vel: Vector3)
 			if not record.CleanedUp and record.Model.Parent then
 				record.Model:PivotTo(Ballistics.ComputeCFrame(hitResult.Position, vel))
-				if projectileConfigId == "arrow" then
+				if projectileConfigId == "arrow" and not isCharacterHitInstance(hitResult.Instance) then
 					freezeArrowAndCleanup(record)
 				else
 					hideVisualBodyAndFadeTrail(record)

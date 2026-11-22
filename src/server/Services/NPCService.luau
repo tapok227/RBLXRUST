@@ -51,6 +51,12 @@ type ActiveNpcRecord = {
 	StrafeSign: number,
 	BurstActive: boolean,
 	ActiveBurstThread: thread?,
+	AmmoInMag: number,
+	ReloadingUntil: number,
+	LastStuckCheckTime: number,
+	LastStuckPos: Vector3,
+	AvoidanceUntil: number,
+	AvoidanceGoal: Vector3?,
 	Alive: boolean,
 	PrevHealth: number,
 	HpFill: Frame?,
@@ -65,6 +71,9 @@ local GUARD_ALERT_DELAY = 0.45
 local FLEE_DURATION = 6.0
 local OUT_OF_COMBAT_REGEN_PER_TICK = 2.0
 local MAX_LOS_FILTER_PASSES = 6
+local STUCK_CHECK_INTERVAL = 0.75
+local STUCK_MIN_MOVE_DIST = 1.1
+local AVOIDANCE_DURATION = 1.35
 
 local rng = Random.new()
 local nextNpcSeq = 0
@@ -875,6 +884,8 @@ local function fireGuardBurst(record: ActiveNpcRecord, targetChar: Model, target
 	local burstCount = cfg.BurstCount or 3
 	local burstInterval = cfg.BurstInterval or 0.16
 	local spreadDeg = cfg.SpreadDeg or 4.0
+	local firstShotMult = cfg.FirstShotSpreadMultiplier or 1.6
+	local reloadDuration = cfg.ReloadDuration or 2.3
 	local speed = cfg.ProjectileSpeed or 210
 	local gravity = cfg.ProjectileGravity or 12
 
@@ -889,7 +900,7 @@ local function fireGuardBurst(record: ActiveNpcRecord, targetChar: Model, target
 	local burstThread: thread
 	burstThread = task.spawn(function()
 		for i = 1, burstCount do
-			if not record.Alive or record.State ~= "Combat" then
+			if not record.Alive or record.State ~= "Combat" or record.AmmoInMag <= 0 then
 				break
 			end
 			if targetChar.Parent == nil or targetHrp.Parent == nil then
@@ -900,16 +911,23 @@ local function fireGuardBurst(record: ActiveNpcRecord, targetChar: Model, target
 				break
 			end
 
+			local exclude = buildEnvironmentExcludeList()
+			if not hasLineOfSight(record.Head.Position, targetHrp, targetChar, exclude) then
+				break
+			end
+
 			local muzzlePos = if record.Muzzle and record.Muzzle.Parent
 				then record.Muzzle.Position
 				else record.Head.Position
 			local aimPoint = targetHrp.Position + Vector3.new(0, 0.5, 0)
 			local rawDir = aimPoint - muzzlePos
 			if rawDir.Magnitude > 0.1 then
-				local shotDir = computeSpreadDirection(rawDir.Unit, spreadDeg)
+				record.AmmoInMag = math.max(0, record.AmmoInMag - 1)
+				local progress = if burstCount > 1 then (i - 1) / (burstCount - 1) else 1
+				local shotSpread = spreadDeg * (firstShotMult + (1.0 - firstShotMult) * progress)
+				local shotDir = computeSpreadDirection(rawDir.Unit, shotSpread)
 				nextBulletSeq += 1
 				local bulletId = string.format("npc_%s_%d", record.Id, nextBulletSeq)
-				local exclude = buildEnvironmentExcludeList()
 
 				Ballistics.Spawn({
 					Id = bulletId,
@@ -937,6 +955,14 @@ local function fireGuardBurst(record: ActiveNpcRecord, targetChar: Model, target
 						broadcastNpcTracer(muzzlePos, endPos)
 					end,
 				})
+			end
+
+			if record.AmmoInMag <= 0 then
+				record.ReloadingUntil = os.clock() + reloadDuration
+				if record.HpLabel ~= nil then
+					record.HpLabel.Text = "RELOADING..."
+				end
+				break
 			end
 
 			if i < burstCount then
@@ -991,7 +1017,11 @@ local function updateHpBar(record: ActiveNpcRecord, currentHp: number)
 	else
 		record.HpFill.BackgroundColor3 = Color3.fromRGB(220, 65, 65)
 	end
-	record.HpLabel.Text = string.format("%d / %d", math.ceil(currentHp), math.ceil(maxHp))
+	if record.ReloadingUntil > os.clock() then
+		record.HpLabel.Text = "RELOADING..."
+	else
+		record.HpLabel.Text = string.format("%d / %d", math.ceil(currentHp), math.ceil(maxHp))
+	end
 end
 
 local function cleanupActiveNpc(record: ActiveNpcRecord)
@@ -1085,6 +1115,12 @@ local function spawnNpcInternal(marker: SpawnMarkerRecord): Model?
 		StrafeSign = if rng:NextNumber() < 0.5 then -1 else 1,
 		BurstActive = false,
 		ActiveBurstThread = nil,
+		AmmoInMag = cfg.MagazineSize or 9,
+		ReloadingUntil = 0,
+		LastStuckCheckTime = os.clock(),
+		LastStuckPos = spawnPos,
+		AvoidanceUntil = 0,
+		AvoidanceGoal = nil,
 		Alive = true,
 		PrevHealth = cfg.MaxHealth,
 		HpFill = hpFill,
@@ -1182,7 +1218,90 @@ local function stepPatrol(record: ActiveNpcRecord, now: number, exclude: { Insta
 	end
 end
 
-local function stepReturn(record: ActiveNpcRecord, now: number)
+local function isForwardPathClear(origin: Vector3, dirUnit: Vector3, checkDist: number, exclude: { Instance }): boolean
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.IgnoreWater = true
+	params.FilterDescendantsInstances = exclude
+
+	local probeOrigin = origin + Vector3.new(0, 1.5, 0)
+	local hit = Workspace:Raycast(probeOrigin, dirUnit * checkDist, params)
+	if hit == nil then
+		return true
+	end
+	if hit.Instance.CanCollide == false or hit.Instance:IsA("Terrain") then
+		return hit.Instance.CanCollide == false
+	end
+	return false
+end
+
+local function pickAvoidanceWaypoint(
+	myPos: Vector3,
+	forwardDir: Vector3,
+	stepDist: number,
+	exclude: { Instance }
+): Vector3?
+	for _, angleDeg in { 55, -55, 95, -95, 130, -130 } do
+		local rotated = (CFrame.Angles(0, math.rad(angleDeg), 0) * forwardDir).Unit
+		if isForwardPathClear(myPos, rotated, math.min(7.5, stepDist), exclude) then
+			local cand = myPos + rotated * stepDist
+			local gy = raycastGroundY(cand.X, myPos.Y, cand.Z, exclude)
+			if gy ~= nil then
+				return Vector3.new(cand.X, gy, cand.Z)
+			end
+		end
+	end
+	return nil
+end
+
+local function resolveStuckAndMove(record: ActiveNpcRecord, now: number, desiredGoal: Vector3, exclude: { Instance })
+	local myPos = record.RootPart.Position
+	if now < record.AvoidanceUntil and record.AvoidanceGoal ~= nil then
+		local horizToAvoid =
+			Vector3.new(record.AvoidanceGoal.X - myPos.X, 0, record.AvoidanceGoal.Z - myPos.Z).Magnitude
+		if horizToAvoid > 3.0 then
+			record.Humanoid:MoveTo(record.AvoidanceGoal)
+			return
+		end
+		record.AvoidanceGoal = nil
+		record.AvoidanceUntil = 0
+	end
+
+	local flatDelta = Vector3.new(desiredGoal.X - myPos.X, 0, desiredGoal.Z - myPos.Z)
+	local goalDist = flatDelta.Magnitude
+	if (now - record.LastStuckCheckTime) >= STUCK_CHECK_INTERVAL then
+		local movedHoriz = Vector3.new(myPos.X - record.LastStuckPos.X, 0, myPos.Z - record.LastStuckPos.Z).Magnitude
+		record.LastStuckCheckTime = now
+		record.LastStuckPos = myPos
+
+		if goalDist > 4.0 and movedHoriz < STUCK_MIN_MOVE_DIST then
+			local dir = flatDelta.Unit
+			local detour = pickAvoidanceWaypoint(myPos, dir, 12, exclude)
+			if detour ~= nil then
+				record.AvoidanceGoal = detour
+				record.AvoidanceUntil = now + AVOIDANCE_DURATION
+				record.Humanoid.Jump = true
+				record.Humanoid:MoveTo(detour)
+				return
+			end
+			record.Humanoid.Jump = true
+		end
+	end
+
+	if goalDist > 4.0 and not isForwardPathClear(myPos, flatDelta.Unit, 3.5, exclude) then
+		local detour = pickAvoidanceWaypoint(myPos, flatDelta.Unit, 10, exclude)
+		if detour ~= nil then
+			record.AvoidanceGoal = detour
+			record.AvoidanceUntil = now + 0.9
+			record.Humanoid:MoveTo(detour)
+			return
+		end
+	end
+
+	record.Humanoid:MoveTo(desiredGoal)
+end
+
+local function stepReturn(record: ActiveNpcRecord, now: number, exclude: { Instance })
 	record.Humanoid.AutoRotate = true
 	record.Humanoid.WalkSpeed = record.Config.RunSpeed
 
@@ -1191,11 +1310,13 @@ local function stepReturn(record: ActiveNpcRecord, now: number)
 	if distHome <= 6 or (now - record.ReturnStartedAt) >= 10 then
 		record.State = "Patrol"
 		record.TargetPlayer = nil
+		record.AvoidanceGoal = nil
+		record.AvoidanceUntil = 0
 		record.NextMoveTime = now + 1.0
 		return
 	end
 
-	record.Humanoid:MoveTo(spawnPos)
+	resolveStuckAndMove(record, now, spawnPos, exclude)
 end
 
 local function faceTargetYaw(hrp: BasePart, targetPos: Vector3)
@@ -1211,13 +1332,16 @@ local function stepRangedGuard(record: ActiveNpcRecord, now: number, exclude: { 
 	local myPos = record.RootPart.Position
 	local eyeOrigin = record.Head.Position
 
+	local delayMin = cfg.ReactionDelayMin or GUARD_ALERT_DELAY
+	local delayMax = cfg.ReactionDelayMax or 0.6
+
 	if record.State == "Patrol" then
 		stepPatrol(record, now, exclude)
 		local foundPlayer = findNearestPlayer(eyeOrigin, cfg.DetectionRadius, true, exclude)
 		if foundPlayer ~= nil then
 			record.TargetPlayer = foundPlayer
 			record.State = "Alert"
-			record.AlertUntil = now + GUARD_ALERT_DELAY
+			record.AlertUntil = now + rng:NextNumber(delayMin, delayMax)
 			record.LastSeenTime = now
 			record.Humanoid:MoveTo(myPos)
 		end
@@ -1225,14 +1349,16 @@ local function stepRangedGuard(record: ActiveNpcRecord, now: number, exclude: { 
 	end
 
 	if record.State == "Return" then
-		local foundPlayer = findNearestPlayer(eyeOrigin, cfg.DetectionRadius * 0.8, true, exclude)
+		local foundPlayer = findNearestPlayer(eyeOrigin, cfg.DetectionRadius * 0.85, true, exclude)
 		if foundPlayer ~= nil then
 			record.TargetPlayer = foundPlayer
-			record.State = "Combat"
+			record.State = "Alert"
+			record.AlertUntil = now + rng:NextNumber(delayMin, delayMax)
 			record.LastSeenTime = now
+			record.Humanoid:MoveTo(myPos)
 			return
 		end
-		stepReturn(record, now)
+		stepReturn(record, now, exclude)
 		return
 	end
 
@@ -1311,7 +1437,23 @@ local function stepRangedGuard(record: ActiveNpcRecord, now: number, exclude: { 
 		end
 	end
 
+	if record.ReloadingUntil > 0 then
+		if now < record.ReloadingUntil then
+			return
+		end
+		record.ReloadingUntil = 0
+		record.AmmoInMag = cfg.MagazineSize or 9
+		updateHpBar(record, record.Humanoid.Health)
+	end
+
 	if hasLos and dist <= cfg.AttackRange and now >= record.NextAttackTime and not record.BurstActive then
+		if record.AmmoInMag <= 0 then
+			record.ReloadingUntil = now + (cfg.ReloadDuration or 2.3)
+			if record.HpLabel ~= nil then
+				record.HpLabel.Text = "RELOADING..."
+			end
+			return
+		end
 		record.NextAttackTime = now + cfg.AttackCooldown
 		fireGuardBurst(record, targetChar, targetHrp)
 	end
@@ -1334,7 +1476,7 @@ local function stepMeleeAnimal(record: ActiveNpcRecord, now: number, exclude: { 
 	end
 
 	if record.State == "Return" then
-		stepReturn(record, now)
+		stepReturn(record, now, exclude)
 		return
 	end
 
@@ -1363,7 +1505,7 @@ local function stepMeleeAnimal(record: ActiveNpcRecord, now: number, exclude: { 
 	end
 
 	record.Humanoid.WalkSpeed = cfg.RunSpeed
-	record.Humanoid:MoveTo(targetPos)
+	resolveStuckAndMove(record, now, targetPos, exclude)
 
 	if dist <= cfg.AttackRange and now >= record.NextAttackTime then
 		if hasLineOfSight(record.Head.Position, targetHrp, targetChar, exclude) then
@@ -1396,32 +1538,41 @@ local function stepPassiveAnimal(record: ActiveNpcRecord, now: number, exclude: 
 		end
 
 		if now >= record.NextMoveTime then
-			record.NextMoveTime = now + 0.9
+			record.NextMoveTime = now + 0.8
 			local threatPos = record.ThreatPosition or (myPos + Vector3.new(1, 0, 0))
 			local away = Vector3.new(myPos.X - threatPos.X, 0, myPos.Z - threatPos.Z)
 			local awayDir = if away.Magnitude > 0.1
 				then away.Unit
 				else Vector3.new(rng:NextNumber(-1, 1), 0, rng:NextNumber(-1, 1)).Unit
 
-			local chosenGoal: Vector3? = nil
-			for _, angleDeg in { 0, 35, -35, 75, -75 } do
+			local spawnPos = record.Marker.SpawnPosition
+			local maxDrift = record.Marker.PatrolRadius * 1.8
+			local curThreatDist = Vector3.new(myPos.X - threatPos.X, 0, myPos.Z - threatPos.Z).Magnitude
+
+			local bestGoal: Vector3? = nil
+			local bestScore = -1e9
+			for _, angleDeg in { 0, 30, -30, 60, -60, 90, -90, 120, -120 } do
 				local rotated = (CFrame.Angles(0, math.rad(angleDeg), 0) * awayDir).Unit
-				local candidate = myPos + rotated * 22
-				local spawnPos = record.Marker.SpawnPosition
-				local homeDelta = Vector3.new(candidate.X - spawnPos.X, 0, candidate.Z - spawnPos.Z)
-				local maxDrift = record.Marker.PatrolRadius * 1.6
-				if homeDelta.Magnitude > maxDrift then
-					candidate = spawnPos + homeDelta.Unit * maxDrift
-				end
-				local gy = raycastGroundY(candidate.X, myPos.Y, candidate.Z, exclude)
-				if gy ~= nil then
-					chosenGoal = Vector3.new(candidate.X, gy, candidate.Z)
-					break
+				if isForwardPathClear(myPos, rotated, 8.0, exclude) then
+					local candidate = myPos + rotated * 22
+					local gy = raycastGroundY(candidate.X, myPos.Y, candidate.Z, exclude)
+					if gy ~= nil then
+						local candThreatDist =
+							Vector3.new(candidate.X - threatPos.X, 0, candidate.Z - threatPos.Z).Magnitude
+						local candHomeDist =
+							Vector3.new(candidate.X - spawnPos.X, 0, candidate.Z - spawnPos.Z).Magnitude
+						local driftPenalty = math.max(0, candHomeDist - maxDrift) * 0.6
+						local score = (candThreatDist - curThreatDist) - driftPenalty
+						if score > bestScore then
+							bestScore = score
+							bestGoal = Vector3.new(candidate.X, gy, candidate.Z)
+						end
+					end
 				end
 			end
 
-			if chosenGoal ~= nil then
-				record.Humanoid:MoveTo(chosenGoal)
+			if bestGoal ~= nil then
+				resolveStuckAndMove(record, now, bestGoal, exclude)
 			end
 		end
 		return
@@ -1435,7 +1586,7 @@ local function stepPassiveAnimal(record: ActiveNpcRecord, now: number, exclude: 
 			record.StateUntil = now + FLEE_DURATION
 			return
 		end
-		stepReturn(record, now)
+		stepReturn(record, now, exclude)
 		return
 	end
 

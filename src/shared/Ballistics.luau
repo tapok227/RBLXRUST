@@ -1,6 +1,9 @@
 --!strict
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
+
+local Types = require(ReplicatedStorage.Shared.Types)
 
 export type SpawnOptions = {
 	Id: string,
@@ -32,11 +35,65 @@ type ActiveProjectile = {
 local MAX_STEP_DT = 0.1
 local MAX_SEGMENT_FILTER_PASSES = 6
 
+local IGNORED_PROP_NAMES: { [string]: boolean } = {
+	GunBody = true,
+	GunBarrel = true,
+	Muzzle = true,
+	HpBillboard = true,
+}
+
+local HEAD_PART_NAMES: { [string]: boolean } = {
+	Head = true,
+	Helmet = true,
+	Visor = true,
+	Snout = true,
+	Ear = true,
+	Ear_L = true,
+	Ear_R = true,
+	Eye = true,
+	Eye_L = true,
+	Eye_R = true,
+}
+
+local TORSO_PART_NAMES: { [string]: boolean } = {
+	UpperTorso = true,
+	LowerTorso = true,
+	Torso = true,
+	HumanoidRootPart = true,
+	Vest = true,
+	Body = true,
+	Neck = true,
+	Hump = true,
+}
+
 local activeProjectiles: { [string]: ActiveProjectile } = {}
 local activeCount = 0
 local heartbeatConnection: RBXScriptConnection? = nil
 
 local Ballistics = {}
+
+function Ballistics.IsIgnoredCharacterPart(inst: Instance): boolean
+	if IGNORED_PROP_NAMES[inst.Name] == true then
+		return true
+	end
+	if inst:FindFirstAncestorOfClass("Accessory") ~= nil then
+		return true
+	end
+	if inst:FindFirstAncestor("EquippedWeaponVisual") ~= nil then
+		return true
+	end
+	return false
+end
+
+function Ballistics.ClassifyHitZone(hitPart: BasePart): Types.HitZone
+	if HEAD_PART_NAMES[hitPart.Name] == true then
+		return "Head"
+	end
+	if TORSO_PART_NAMES[hitPart.Name] == true then
+		return "Torso"
+	end
+	return "Limb"
+end
 
 local function findCharacterModel(inst: Instance): Model?
 	local current: Instance? = inst
@@ -69,10 +126,13 @@ local function castSegment(origin: Vector3, delta: Vector3, baseExclude: { Insta
 		end
 
 		if findCharacterModel(result.Instance) ~= nil then
-			return result
-		end
-
-		if result.Instance.CanCollide == false and not result.Instance:IsA("Terrain") then
+			if Ballistics.IsIgnoredCharacterPart(result.Instance) then
+				table.insert(excludeCopy, result.Instance)
+				params.FilterDescendantsInstances = excludeCopy
+			else
+				return result
+			end
+		elseif result.Instance.CanCollide == false and not result.Instance:IsA("Terrain") then
 			table.insert(excludeCopy, result.Instance)
 			params.FilterDescendantsInstances = excludeCopy
 		else

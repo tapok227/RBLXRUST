@@ -11,6 +11,7 @@ local FISTS: WeaponConfig = table.freeze({
 	Range = 6,
 	Cooldown = 0.7,
 	AmmoId = nil,
+	MeleeConeHalfAngleDeg = 40,
 })
 
 local Weapons: { [string]: WeaponConfig } = {
@@ -21,6 +22,7 @@ local Weapons: { [string]: WeaponConfig } = {
 		Range = 10,
 		Cooldown = 0.75,
 		AmmoId = nil,
+		MeleeConeHalfAngleDeg = 32,
 	}),
 	hatchet = table.freeze({
 		Category = "Melee" :: Types.WeaponCategory,
@@ -29,6 +31,7 @@ local Weapons: { [string]: WeaponConfig } = {
 		Range = 7,
 		Cooldown = 0.6,
 		AmmoId = nil,
+		MeleeConeHalfAngleDeg = 42,
 	}),
 	metal_hatchet = table.freeze({
 		Category = "Melee" :: Types.WeaponCategory,
@@ -37,6 +40,7 @@ local Weapons: { [string]: WeaponConfig } = {
 		Range = 7,
 		Cooldown = 0.55,
 		AmmoId = nil,
+		MeleeConeHalfAngleDeg = 42,
 	}),
 	pickaxe = table.freeze({
 		Category = "Melee" :: Types.WeaponCategory,
@@ -45,6 +49,7 @@ local Weapons: { [string]: WeaponConfig } = {
 		Range = 7,
 		Cooldown = 0.7,
 		AmmoId = nil,
+		MeleeConeHalfAngleDeg = 42,
 	}),
 	hunting_bow = table.freeze({
 		Category = "Ranged" :: Types.WeaponCategory,
@@ -65,6 +70,13 @@ local Weapons: { [string]: WeaponConfig } = {
 		Range = 140,
 		Cooldown = 0.45,
 		AmmoId = "pistol_ammo",
+		RecoilPitchDeg = 1.65,
+		RecoilYawPattern = table.freeze({ 0.35, -0.45, 0.55, -0.3, 0.4, -0.5 }),
+		RecoilRecoveryRate = 7.5,
+		BaseSpreadDeg = 0.6,
+		MoveSpreadDeg = 2.4,
+		AirSpreadDeg = 5.2,
+		CrouchSpreadMultiplier = 0.55,
 	}),
 	rocket_launcher = table.freeze({
 		Category = "Ranged" :: Types.WeaponCategory,
@@ -74,6 +86,13 @@ local Weapons: { [string]: WeaponConfig } = {
 		Cooldown = 3.2,
 		AmmoId = "rocket",
 		ProjectileId = "rocket",
+		RecoilPitchDeg = 3.2,
+		RecoilYawPattern = table.freeze({ 0.2, -0.2 }),
+		RecoilRecoveryRate = 5.0,
+		BaseSpreadDeg = 0.3,
+		MoveSpreadDeg = 1.0,
+		AirSpreadDeg = 2.2,
+		CrouchSpreadMultiplier = 0.6,
 	}),
 	FISTS = FISTS,
 }

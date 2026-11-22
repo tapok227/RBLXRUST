@@ -20,6 +20,8 @@ type WeaponConfig = Types.WeaponConfig
 local MAX_RAY_FILTER_PASSES = 8
 local ATTACK_EFFECT_BROADCAST_RADIUS = 250
 local PROJECTILE_BROADCAST_RADIUS = 400
+local LIMB_DAMAGE_MULTIPLIER = 0.75
+local DEFAULT_MELEE_CONE_HALF_ANGLE_DEG = 42
 
 local lastAttackTime: { [Player]: number } = {}
 local activeProjectilesByPlayer: { [Player]: number } = {}
@@ -91,6 +93,20 @@ local function findRaidPieceUid(inst: Instance): string?
 	return nil
 end
 
+local function resolveDamageMultiplier(
+	weapon: WeaponConfig,
+	hitPart: BasePart,
+	overrideHeadMult: number?
+): (number, boolean)
+	local zone = Ballistics.ClassifyHitZone(hitPart)
+	if zone == "Head" then
+		return (overrideHeadMult or weapon.HeadshotMultiplier), true
+	elseif zone == "Limb" then
+		return LIMB_DAMAGE_MULTIPLIER, false
+	end
+	return 1.0, false
+end
+
 local function performServerRaycast(
 	origin: Vector3,
 	unitDir: Vector3,
@@ -118,10 +134,13 @@ local function performServerRaycast(
 
 		local targetModel = findTargetCharacter(result.Instance)
 		if targetModel ~= nil then
-			return result
-		end
-
-		if result.Instance.CanCollide == false then
+			if Ballistics.IsIgnoredCharacterPart(result.Instance) then
+				table.insert(excludeList, result.Instance)
+				params.FilterDescendantsInstances = excludeList
+			else
+				return result
+			end
+		elseif result.Instance.CanCollide == false then
 			table.insert(excludeList, result.Instance)
 			params.FilterDescendantsInstances = excludeList
 		else
@@ -130,6 +149,139 @@ local function performServerRaycast(
 	end
 
 	return nil
+end
+
+local function collectMeleeCandidateModels(attackerCharacter: Model): { Model }
+	local list: { Model } = {}
+	local seen: { [Model]: boolean } = {}
+
+	local function tryAdd(inst: Instance?)
+		if inst == nil or not inst:IsA("Model") or inst == attackerCharacter or seen[inst] then
+			return
+		end
+		local hum = inst:FindFirstChildOfClass("Humanoid")
+		if hum ~= nil and hum.Health > 0 then
+			seen[inst] = true
+			table.insert(list, inst)
+		end
+	end
+
+	for _, plr in Players:GetPlayers() do
+		tryAdd(plr.Character)
+	end
+
+	local folderNames = { "ActiveNPCs", "TestDummies" }
+	for _, folderName in folderNames do
+		local folder = Workspace:FindFirstChild(folderName)
+		if folder ~= nil then
+			for _, child in folder:GetChildren() do
+				tryAdd(child)
+			end
+		end
+	end
+
+	local qaArena = Workspace:FindFirstChild("QA_TestArena")
+	local sector5 = if qaArena then qaArena:FindFirstChild("Sector5_CombatRange") else nil
+	if sector5 ~= nil then
+		for _, subName in { "BowRangeTargets", "CombatHitboxRange" } do
+			local subFolder = sector5:FindFirstChild(subName)
+			if subFolder ~= nil then
+				for _, child in subFolder:GetChildren() do
+					tryAdd(child)
+				end
+			end
+		end
+	end
+
+	return list
+end
+
+local function hasClearLineToTarget(
+	origin: Vector3,
+	targetPoint: Vector3,
+	maxRange: number,
+	attackerCharacter: Model,
+	targetModel: Model
+): RaycastResult?
+	local delta = targetPoint - origin
+	local dist = delta.Magnitude
+	if dist <= 0.01 or dist > maxRange then
+		return nil
+	end
+
+	local unitDir = delta / dist
+	local hit = performServerRaycast(origin, unitDir, math.min(maxRange, dist + 0.5), attackerCharacter)
+	if hit == nil then
+		return nil
+	end
+	if hit.Instance:IsDescendantOf(targetModel) and (hit.Position - origin).Magnitude <= maxRange then
+		return hit
+	end
+	return nil
+end
+
+local function performServerMeleeSweep(
+	origin: Vector3,
+	unitDir: Vector3,
+	range: number,
+	coneHalfAngleDeg: number,
+	attackerCharacter: Model
+): RaycastResult?
+	local directHit = performServerRaycast(origin, unitDir, range, attackerCharacter)
+	if directHit ~= nil then
+		local directModel, directHum = findTargetCharacter(directHit.Instance)
+		if directModel ~= nil and directHum ~= nil and directModel ~= attackerCharacter and directHum.Health > 0 then
+			return directHit
+		end
+	end
+
+	local maxAllowedRange = range + Types.PING_DISTANCE_TOLERANCE
+	local bestHit: RaycastResult? = nil
+	local bestAngle = coneHalfAngleDeg + 0.01
+	local bestDist = maxAllowedRange + 0.01
+
+	local probeNames = { "Head", "UpperTorso", "Torso", "HumanoidRootPart", "LowerTorso", "Body" }
+	for _, candidate in collectMeleeCandidateModels(attackerCharacter) do
+		local root = candidate:FindFirstChild("HumanoidRootPart") or candidate.PrimaryPart
+		if root ~= nil and root:IsA("BasePart") then
+			local broadDist = (root.Position - origin).Magnitude
+			if broadDist <= maxAllowedRange + 3.0 then
+				for _, partName in probeNames do
+					local part = candidate:FindFirstChild(partName)
+					if part ~= nil and part:IsA("BasePart") then
+						local toPart = part.Position - origin
+						local partDist = toPart.Magnitude
+						if partDist > 0.05 and partDist <= maxAllowedRange + 2.0 then
+							local angleDeg = math.deg(math.acos(math.clamp(unitDir:Dot(toPart / partDist), -1, 1)))
+							if angleDeg <= coneHalfAngleDeg then
+								local clearHit = hasClearLineToTarget(
+									origin,
+									part.Position,
+									maxAllowedRange,
+									attackerCharacter,
+									candidate
+								)
+								if clearHit ~= nil then
+									local hitDist = (clearHit.Position - origin).Magnitude
+									if
+										angleDeg < bestAngle - 0.5
+										or (math.abs(angleDeg - bestAngle) <= 0.5 and hitDist < bestDist)
+									then
+										bestAngle = angleDeg
+										bestDist = hitDist
+										bestHit = clearHit
+									end
+									break
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+
+	return bestHit or directHit
 end
 
 local function broadcastAttackEffect(
@@ -168,7 +320,7 @@ local function broadcastAttackEffect(
 	end
 end
 
-local function validateProjectileOrigin(character: Model, hrp: BasePart, requestedOrigin: Vector3): Vector3
+local function validateAttackOrigin(character: Model, hrp: BasePart, requestedOrigin: Vector3): Vector3
 	local head = character:FindFirstChild("Head")
 	local basePos = if head and head:IsA("BasePart") then head.Position else (hrp.Position + Vector3.new(0, 1.5, 0))
 	local delta = requestedOrigin - basePos
@@ -251,9 +403,10 @@ local function launchServerProjectile(
 	local headMult = weapon.HeadshotMultiplier or projCfg.HeadshotMultiplier or 1.5
 	local isDirect = projCfg.ImpactKind == "Direct"
 
-	local safeOrigin = validateProjectileOrigin(character, hrp, requestedOrigin)
+	local safeOrigin = validateAttackOrigin(character, hrp, requestedOrigin)
 	local initialVelocity = unitDir * speed
 	local maxLifetime = math.min(projCfg.MaxLifetime, Types.MAX_PROJECTILE_LIFETIME)
+	local hitTargets: { [Model]: boolean } = {}
 
 	local excludeInstances: { Instance } = { character }
 	if isDirect then
@@ -299,10 +452,12 @@ local function launchServerProjectile(
 					and targetHumanoid ~= nil
 					and targetModel ~= character
 					and targetHumanoid.Health > 0
+					and not hitTargets[targetModel]
 				then
+					hitTargets[targetModel] = true
 					didHit = true
-					isHeadshot = hitResult.Instance.Name == "Head"
-					local multiplier = if isHeadshot then headMult else 1.0
+					local multiplier, headshot = resolveDamageMultiplier(weapon, hitResult.Instance, headMult)
+					isHeadshot = headshot
 					local finalDamage = math.max(1, math.floor(baseDamage * multiplier + 0.5))
 					targetModel:SetAttribute("LastAttackerUserId", player.UserId)
 					targetHumanoid:TakeDamage(finalDamage)
@@ -472,6 +627,9 @@ local function onAttackRequest(
 			then math.max(weapon.DrawMinTime, weapon.Cooldown)
 			else weapon.Cooldown
 		if prevAttack ~= nil and (now - prevAttack) < cooldownRequired then
+			if (now - prevAttack) < cooldownRequired * 0.5 then
+				SecurityService.LogSuspicious(player, Net.Events.AttackRequest, "RapidFire")
+			end
 			return
 		end
 
@@ -502,6 +660,7 @@ local function onAttackRequest(
 		return
 	end
 
+	local safeOrigin = validateAttackOrigin(character, hrp, origin)
 	local unitDir = direction.Unit
 	if weapon.ProjectileId ~= nil then
 		launchServerProjectile(
@@ -511,55 +670,73 @@ local function onAttackRequest(
 			weaponId,
 			weapon,
 			weapon.ProjectileId,
-			origin,
+			safeOrigin,
 			unitDir,
 			chargeRatio
 		)
 		return
 	end
 
-	local hitResult = performServerRaycast(origin, unitDir, weapon.Range, character)
+	local hitResult: RaycastResult?
+	if weapon.Category == "Melee" then
+		local coneHalf = weapon.MeleeConeHalfAngleDeg or DEFAULT_MELEE_CONE_HALF_ANGLE_DEG
+		hitResult = performServerMeleeSweep(safeOrigin, unitDir, weapon.Range, coneHalf, character)
+	else
+		hitResult = performServerRaycast(safeOrigin, unitDir, weapon.Range, character)
+	end
 
 	local didHit = false
 	local isHeadshot = false
-	local endPos = origin + unitDir * weapon.Range
+	local endPos = safeOrigin + unitDir * weapon.Range
+	local hitTargets: { [Model]: boolean } = {}
 
 	if hitResult ~= nil then
 		endPos = hitResult.Position
-		local targetModel, targetHumanoid = findTargetCharacter(hitResult.Instance)
-		if targetModel ~= nil and targetHumanoid ~= nil and targetModel ~= character and targetHumanoid.Health > 0 then
-			didHit = true
-			isHeadshot = hitResult.Instance.Name == "Head"
-			local multiplier = if isHeadshot then weapon.HeadshotMultiplier else 1.0
-			local finalDamage = weapon.Damage * multiplier
-			targetModel:SetAttribute("LastAttackerUserId", player.UserId)
-			targetHumanoid:TakeDamage(finalDamage)
-			local targetPlayer = Players:GetPlayerFromCharacter(targetModel)
-			if targetPlayer ~= nil then
-				RaidService.NotifyRaiderDamaged(targetPlayer)
-			end
-		else
-			local buildUid = findBuildPieceUid(hitResult.Instance)
-			if buildUid ~= nil then
-				local damageKind: BaseService.DamageKind = if weapon.Category == "Melee" then "Tool" else "Bullet"
-				local hitPiece = BaseService.DamagePiece(buildUid, weapon.Damage, damageKind, player)
-				if hitPiece then
-					didHit = true
+		if (endPos - safeOrigin).Magnitude <= (weapon.Range + Types.PING_DISTANCE_TOLERANCE) then
+			local targetModel, targetHumanoid = findTargetCharacter(hitResult.Instance)
+			if
+				targetModel ~= nil
+				and targetHumanoid ~= nil
+				and targetModel ~= character
+				and targetHumanoid.Health > 0
+				and not hitTargets[targetModel]
+			then
+				hitTargets[targetModel] = true
+				didHit = true
+				local multiplier, headshot = resolveDamageMultiplier(weapon, hitResult.Instance, nil)
+				isHeadshot = headshot
+				local finalDamage = math.max(1, math.floor(weapon.Damage * multiplier + 0.5))
+				targetModel:SetAttribute("LastAttackerUserId", player.UserId)
+				targetHumanoid:TakeDamage(finalDamage)
+				local targetPlayer = Players:GetPlayerFromCharacter(targetModel)
+				if targetPlayer ~= nil then
+					RaidService.NotifyRaiderDamaged(targetPlayer)
 				end
 			else
-				local raidUid = findRaidPieceUid(hitResult.Instance)
-				if raidUid ~= nil then
+				local buildUid = findBuildPieceUid(hitResult.Instance)
+				if buildUid ~= nil then
 					local damageKind: BaseService.DamageKind = if weapon.Category == "Melee" then "Tool" else "Bullet"
-					local hitRaidPiece = RaidService.DamageRaidPiece(raidUid, weapon.Damage, damageKind, player)
-					if hitRaidPiece then
+					local hitPiece = BaseService.DamagePiece(buildUid, weapon.Damage, damageKind, player)
+					if hitPiece then
 						didHit = true
+					end
+				else
+					local raidUid = findRaidPieceUid(hitResult.Instance)
+					if raidUid ~= nil then
+						local damageKind: BaseService.DamageKind = if weapon.Category == "Melee"
+							then "Tool"
+							else "Bullet"
+						local hitRaidPiece = RaidService.DamageRaidPiece(raidUid, weapon.Damage, damageKind, player)
+						if hitRaidPiece then
+							didHit = true
+						end
 					end
 				end
 			end
 		end
 	end
 
-	broadcastAttackEffect(player, weaponId, weapon.Category, origin, endPos, didHit, isHeadshot)
+	broadcastAttackEffect(player, weaponId, weapon.Category, safeOrigin, endPos, didHit, isHeadshot)
 end
 
 function CombatService.GetEquippedWeapon(player: Player): (string, WeaponConfig)
