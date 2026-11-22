@@ -123,4 +123,18 @@ return table.freeze({
 			}),
 		}),
 	}),
+	DefenseCapacity = table.freeze({
+		MaxByBaseTier = table.freeze({
+			[0] = 30,
+			[1] = 60,
+			[2] = 100,
+			[3] = 150,
+		}),
+		Costs = table.freeze({
+			floor_spikes = 5,
+			landmine = 10,
+			shotgun_trap = 15,
+			auto_turret = 25,
+		}),
+	}),
 })

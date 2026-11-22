@@ -20,6 +20,7 @@ type BuildPieceType = Types.BuildPieceType
 type BuildTier = Types.BuildTier
 type SavedBuildPiece = Types.SavedBuildPiece
 type BaseData = Types.BaseData
+type DefenseMountSurface = Types.DefenseMountSurface
 type RaidTargetInfo = Types.RaidTargetInfo
 type RaidDefenseReport = Types.RaidDefenseReport
 
@@ -168,6 +169,10 @@ local function serializeStats(stats: SurvivalStats): SurvivalStats
 		Hunger = sanitizeStat(stats.Hunger, Types.MAX_HUNGER, 0, Types.MAX_HUNGER),
 		Thirst = sanitizeStat(stats.Thirst, Types.MAX_THIRST, 0, Types.MAX_THIRST),
 	}
+end
+
+local function isValidMountSurface(val: any): boolean
+	return val == "Floor" or val == "Wall" or val == "Ceiling"
 end
 
 local function isValidFiniteInteger(val: any): boolean
@@ -374,6 +379,10 @@ local function deserializeBase(rawBase: any): BaseData
 			storage = deserializeStorage(rawPiece.Storage, pieceConfig.StorageSlots)
 		end
 
+		local mountSurface: DefenseMountSurface? = if isValidMountSurface(rawPiece.MountSurface)
+			then rawPiece.MountSurface :: DefenseMountSurface
+			else nil
+
 		seenUids[uid] = true
 		table.insert(pieces, {
 			Uid = uid,
@@ -386,6 +395,7 @@ local function deserializeBase(rawBase: any): BaseData
 			ParentUid = rawParent,
 			AnchorUid = rawParent,
 			SocketId = socketId,
+			MountSurface = mountSurface,
 			Hp = hp,
 			LastDamagedAt = lastDamagedAt,
 			Storage = storage,
@@ -425,6 +435,9 @@ local function serializeBase(baseData: BaseData): BaseData
 		end
 
 		local parentUid = piece.ParentUid or piece.AnchorUid
+		local mountSurface: DefenseMountSurface? = if isValidMountSurface(piece.MountSurface)
+			then piece.MountSurface :: DefenseMountSurface
+			else nil
 		local serializedPiece: SavedBuildPiece = {
 			Uid = piece.Uid,
 			PieceType = canonicalType,
@@ -436,6 +449,7 @@ local function serializeBase(baseData: BaseData): BaseData
 			ParentUid = parentUid,
 			AnchorUid = parentUid,
 			SocketId = piece.SocketId,
+			MountSurface = mountSurface,
 			Hp = piece.Hp,
 			LastDamagedAt = piece.LastDamagedAt,
 			Storage = if pieceConfig.StorageSlots ~= nil
@@ -574,6 +588,28 @@ function DataService.MigrateProfileData(rawData: { [string]: any }): { [string]:
 			end
 		end
 		data.DataVersion = 3
+	end
+
+	-- Step 4: Defense system support (MountSurface + Defense ammo storage) (v3 -> v4)
+	if Types.CURRENT_DATA_VERSION >= 4 and data.DataVersion < 4 then
+		if type(data.Base) == "table" and type(data.Base.Pieces) == "table" then
+			for _, rawPiece in data.Base.Pieces do
+				if type(rawPiece) == "table" and type(rawPiece.PieceType) == "string" then
+					local canonical = BuildingGeometry.CanonicalPieceType(rawPiece.PieceType)
+					rawPiece.PieceType = canonical
+					local pCfg = BuildingConfig.Pieces[canonical]
+					if pCfg ~= nil and pCfg.IsDefense == true then
+						if not isValidMountSurface(rawPiece.MountSurface) then
+							rawPiece.MountSurface = if pCfg.AllowedMount == "WallOrCeiling" then "Wall" else "Floor"
+						end
+						if pCfg.StorageSlots ~= nil and type(rawPiece.Storage) ~= "table" then
+							rawPiece.Storage = {}
+						end
+					end
+				end
+			end
+		end
+		data.DataVersion = 4
 	end
 
 	data.Version = data.DataVersion

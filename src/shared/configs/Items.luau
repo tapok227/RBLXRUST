@@ -150,6 +150,31 @@ local Items: { [string]: ItemConfig } = {
 		Type = "Resource",
 		MaxStack = 100,
 	},
+	shotgun_shell = {
+		Name = "Shotgun Shell",
+		Type = "Resource",
+		MaxStack = 32,
+	},
+	floor_spikes = {
+		Name = "Floor Spikes",
+		Type = "Tool",
+		MaxStack = 5,
+	},
+	landmine = {
+		Name = "Landmine",
+		Type = "Tool",
+		MaxStack = 5,
+	},
+	shotgun_trap = {
+		Name = "Shotgun Trap",
+		Type = "Tool",
+		MaxStack = 3,
+	},
+	auto_turret = {
+		Name = "Auto Turret",
+		Type = "Tool",
+		MaxStack = 2,
+	},
 }
 
 return table.freeze(Items)

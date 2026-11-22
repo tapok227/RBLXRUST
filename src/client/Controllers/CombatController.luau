@@ -18,6 +18,7 @@ local CraftingController = require(script.Parent.CraftingController)
 local LootController = require(script.Parent.LootController)
 local GatheringController = require(script.Parent.GatheringController)
 local BuildingController = require(script.Parent.BuildingController)
+local DefenseController = require(script.Parent.DefenseController)
 local ProjectileController = require(script.Parent.ProjectileController)
 
 type WeaponConfig = Types.WeaponConfig
@@ -39,7 +40,11 @@ local CombatController = {}
 local function isAnyUiOpen(): boolean
 	local localPlayer = Players.LocalPlayer
 	local raidSelectOpen = localPlayer ~= nil and localPlayer:GetAttribute("RaidSelectOpen") == true
-	return raidSelectOpen or InventoryUIController.IsOpen() or CraftingController.IsOpen() or LootController.IsOpen()
+	return raidSelectOpen
+		or InventoryUIController.IsOpen()
+		or CraftingController.IsOpen()
+		or LootController.IsOpen()
+		or DefenseController.IsOpen()
 end
 
 local function hasAmmoInInventory(ammoId: string): boolean

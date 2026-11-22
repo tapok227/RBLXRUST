@@ -52,6 +52,10 @@ export type BuildPieceType =
 	| "workbench_3"
 	| "assault_ladder"
 	| "barricade"
+	| "floor_spikes"
+	| "landmine"
+	| "shotgun_trap"
+	| "auto_turret"
 	| "TriangleFoundation"
 	| "WindowWall"
 	| "TriangleFloor"
@@ -77,6 +81,51 @@ export type BuildOverlapBox = {
 	Size: Vector3,
 }
 
+export type DefenseMountSurface = "Floor" | "Wall" | "Ceiling"
+
+export type DefenseAllowedMount = "Floor" | "WallOrCeiling"
+
+export type DefenseConfig = {
+	Id: BuildPieceType,
+	Name: string,
+	CapacityCost: number,
+	AllowedMount: DefenseAllowedMount,
+	BaseHp: number,
+	Range: number,
+	ConeHalfAngleDeg: number?,
+	LockOnDuration: number?,
+	Cooldown: number,
+	BurstCount: number?,
+	BurstInterval: number?,
+	PelletCount: number?,
+	SpreadDeg: number?,
+	Damage: number,
+	SlowMultiplier: number?,
+	SlowDuration: number?,
+	SelfDamageOnTrigger: number?,
+	ExplosionRadius: number?,
+	ExplosionStructureDamage: number?,
+	ExplosionPlayerDamage: number?,
+	AmmoId: string?,
+	AmmoSlots: number?,
+	ProjectileSpeed: number?,
+	ProjectileGravity: number?,
+}
+
+export type DefenseUiState = {
+	Uid: string,
+	PieceType: BuildPieceType,
+	Name: string,
+	Hp: number,
+	MaxHp: number,
+	AmmoId: string,
+	AmmoCount: number,
+	AmmoSlots: number,
+	Slots: Inventory,
+	DefenseUsed: number,
+	DefenseMax: number,
+}
+
 export type SavedBuildPiece = {
 	Uid: string,
 	PieceType: BuildPieceType,
@@ -88,6 +137,7 @@ export type SavedBuildPiece = {
 	ParentUid: string?,
 	AnchorUid: string?,
 	SocketId: string?,
+	MountSurface: DefenseMountSurface?,
 	Hp: number,
 	LastDamagedAt: number?,
 	Storage: { [string]: Slot }?,
@@ -109,6 +159,8 @@ export type ToolCupboardState = {
 	ProtectedHours: number,
 	PathValid: boolean,
 	PathMessage: string?,
+	DefenseUsed: number?,
+	DefenseMax: number?,
 	Slots: Inventory,
 }
 
@@ -129,6 +181,9 @@ export type BuildPieceConfig = {
 	RequiredBaseTier: number?,
 	MaxPerBase: number?,
 	AssaultDeployable: boolean?,
+	DefenseCost: number?,
+	IsDefense: boolean?,
+	AllowedMount: DefenseAllowedMount?,
 }
 
 export type BuildTierConfig = {
@@ -336,7 +391,7 @@ local Types = {
 	MAX_ATTACK_ORIGIN_OFFSET = 8,
 	MAX_EXPLOSIVE_PLACE_DISTANCE = 14,
 	RAID_DURATION = 300,
-	CURRENT_DATA_VERSION = 3,
+	CURRENT_DATA_VERSION = 4,
 	PING_DISTANCE_TOLERANCE = 2,
 	MAX_BUILD_DISTANCE = 20,
 	MAX_RAID_TERMINAL_DISTANCE = 24,

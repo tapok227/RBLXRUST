@@ -11,10 +11,12 @@ local Config = require(ReplicatedStorage.Shared.Config)
 local Types = require(ReplicatedStorage.Shared.Types)
 local Items = require(ReplicatedStorage.Shared.configs.Items)
 local BuildingConfig = require(ReplicatedStorage.Shared.configs.BuildingConfig)
+local Defenses = require(ReplicatedStorage.Shared.configs.Defenses)
 local BuildingGeometry = require(ReplicatedStorage.Shared.BuildingGeometry)
 local Net = require(ReplicatedStorage.Shared.Net)
 local BuildingValidator = require(ServerScriptService.Server.Services.BuildingValidator)
 local DataService = require(ServerScriptService.Server.Services.DataService)
+local DefenseService = require(ServerScriptService.Server.Services.DefenseService)
 local ExtractionService = require(ServerScriptService.Server.Services.ExtractionService)
 local InventoryService = require(ServerScriptService.Server.Services.InventoryService)
 local LootService = require(ServerScriptService.Server.Services.LootService)
@@ -261,6 +263,7 @@ function BaseService.BuildToolCupboardState(player: Player): Types.ToolCupboardS
 	)
 
 	local maxSlots = Config.Upkeep.TcStorageSlots
+	local defUsed, defMax = BuildingValidator.ComputeDefenseCapacity(data.Base.Pieces, data.Base.BaseTier)
 	return {
 		Uid = tcPiece.Uid,
 		ContainerId = tcPiece.Uid,
@@ -270,6 +273,8 @@ function BaseService.BuildToolCupboardState(player: Player): Types.ToolCupboardS
 		ProtectedHours = protectedHours,
 		PathValid = pathValid,
 		PathMessage = pathMessage,
+		DefenseUsed = defUsed,
+		DefenseMax = defMax,
 		Slots = storageMapToInventory(tcPiece.Storage, maxSlots),
 	}
 end
@@ -311,6 +316,7 @@ end
 local function cleanupPieceRuntime(record: LivePieceRecord)
 	recordsByUid[record.Piece.Uid] = nil
 	decayFractions[record.Piece.Uid] = nil
+	DefenseService.UnregisterDefense(record.Piece.Uid)
 	BuildingValidator.UnregisterSocketsForPiece(record.Piece.Uid, occupiedSockets, occupiedWorldKeys)
 	if record.ContainerId ~= nil then
 		LootService.UnregisterContainer(record.ContainerId)
@@ -335,13 +341,16 @@ local function createPieceModel(owner: Player, piece: SavedBuildPiece): (Model, 
 	piece.PieceType = canonicalType
 	local worldCF = BuildingGeometry.GetPieceWorldCFrame(piece)
 	local modelName = string.format("%s_%s", canonicalType, string.sub(piece.Uid, 1, 8))
-	local model = BuildingGeometry.CreateModel(canonicalType, worldCF, false, modelName)
+	local model = BuildingGeometry.CreateModel(canonicalType, worldCF, false, modelName, piece.MountSurface)
 	BuildingGeometry.ApplyTierVisuals(model, canonicalType, piece.Tier)
 
 	local maxHp = BuildingGeometry.ComputeMaxHp(canonicalType, piece.Tier)
 	model:SetAttribute("BuildUid", piece.Uid)
 	model:SetAttribute("PieceType", canonicalType)
 	model:SetAttribute("Tier", piece.Tier)
+	if piece.MountSurface ~= nil then
+		model:SetAttribute("MountSurface", piece.MountSurface)
+	end
 	model:SetAttribute("OwnerUserId", owner.UserId)
 	model:SetAttribute("PosX", piece.PosX)
 	model:SetAttribute("PosY", piece.PosY)
@@ -354,6 +363,16 @@ local function createPieceModel(owner: Player, piece: SavedBuildPiece): (Model, 
 	model:SetAttribute("LastDamagedAt", piece.LastDamagedAt or 0)
 	model:SetAttribute("LastDamagedServerTime", 0)
 	return model, worldCF
+end
+
+local function syncBaseState(player: Player)
+	if player.Parent ~= Players then
+		return
+	end
+	local data = DataService.GetData(player)
+	if data ~= nil then
+		Net.GetEvent(Net.Events.BaseStateSync):FireClient(player, data.Base.Pieces)
+	end
 end
 
 local function spawnPieceForPlayer(player: Player, piece: SavedBuildPiece)
@@ -413,6 +432,33 @@ local function spawnPieceForPlayer(player: Player, piece: SavedBuildPiece)
 		end)
 	elseif isWorkbenchType(canonicalType) and model.PrimaryPart then
 		CraftingService.RegisterStation(piece.Uid, canonicalType, model.PrimaryPart.Position)
+	elseif Defenses.Get(canonicalType) ~= nil then
+		local maxHp = BuildingGeometry.ComputeMaxHp(canonicalType, piece.Tier)
+		DefenseService.RegisterDefense({
+			Uid = piece.Uid,
+			PieceType = canonicalType,
+			Model = model,
+			BaseWorldCF = worldCF,
+			OwnerUserId = player.UserId,
+			OwnerPlayer = player,
+			IsRaidInstance = false,
+			IsQaTest = false,
+			PieceRef = piece,
+			Hp = piece.Hp,
+			MaxHp = maxHp,
+			OnSelfDamage = function(defUid: string, dmg: number)
+				BaseService.DamagePiece(defUid, dmg, "Tool", nil)
+			end,
+			OnSelfDestroy = function(defUid: string)
+				local rec = recordsByUid[defUid]
+				if rec ~= nil then
+					BaseService.DamagePiece(defUid, rec.Piece.Hp + 1000, "Explosion", nil)
+				end
+			end,
+			OnStorageChanged = function(_defUid: string)
+				syncBaseState(player)
+			end,
+		})
 	end
 
 	local record: LivePieceRecord = {
@@ -441,16 +487,6 @@ local function despawnBaseForPlayer(player: Player)
 	spawnedByPlayer[player] = nil
 	for _, record in playerRecords do
 		cleanupPieceRuntime(record)
-	end
-end
-
-local function syncBaseState(player: Player)
-	if player.Parent ~= Players then
-		return
-	end
-	local data = DataService.GetData(player)
-	if data ~= nil then
-		Net.GetEvent(Net.Events.BaseStateSync):FireClient(player, data.Base.Pieces)
 	end
 end
 
@@ -486,7 +522,8 @@ local function onBuildPlaceRequest(
 	targetCFrameAny: any,
 	parentUidAny: any,
 	socketIdAny: any,
-	rotStepAny: any
+	rotStepAny: any,
+	mountSurfaceAny: any
 )
 	if player:GetAttribute("InRaid") == true then
 		return
@@ -532,6 +569,11 @@ local function onBuildPlaceRequest(
 		explicitRotStep = rotStepAny :: number
 	end
 
+	local mountSurfaceHint: Types.DefenseMountSurface? = nil
+	if mountSurfaceAny == "Floor" or mountSurfaceAny == "Wall" or mountSurfaceAny == "Ceiling" then
+		mountSurfaceHint = mountSurfaceAny :: Types.DefenseMountSurface
+	end
+
 	local _, hrp = SecurityService.GetAliveCharacterRoot(player)
 	if not hrp then
 		return
@@ -572,6 +614,7 @@ local function onBuildPlaceRequest(
 			ParentUid = parentUid,
 			SocketId = socketId,
 			ExplicitRotStep = explicitRotStep,
+			MountSurface = mountSurfaceHint,
 			PlayerRecords = (playerRecords :: any) :: { [string]: BuildingValidator.LivePieceEntry },
 			AllRecordsByUid = (recordsByUid :: any) :: { [string]: BuildingValidator.LivePieceEntry },
 			OccupiedSockets = occupiedSockets,
@@ -590,9 +633,23 @@ local function onBuildPlaceRequest(
 			return
 		end
 
-		if not InventoryService.RemoveItems(player, costMapToBatch(pieceConfig.Cost)) then
-			sendBuildFeedback(player, false, "Недостаточно ресурсов", data.Base.BaseTier)
-			return
+		local equippedSlotIdx = InventoryService.GetEquippedSlot(player)
+		local equippedSlot = InventoryService.GetEquippedItem(player)
+		local isUsingEquippedDefenseItem = pieceConfig.IsDefense == true
+			and equippedSlot ~= nil
+			and BuildingGeometry.CanonicalPieceType(equippedSlot.Id) == pieceType
+			and equippedSlot.Count > 0
+
+		if isUsingEquippedDefenseItem then
+			if not InventoryService.ConsumeSlot(player, equippedSlotIdx, 1) then
+				sendBuildFeedback(player, false, "Недостаточно предметов", data.Base.BaseTier)
+				return
+			end
+		else
+			if not InventoryService.RemoveItems(player, costMapToBatch(pieceConfig.Cost)) then
+				sendBuildFeedback(player, false, "Недостаточно ресурсов", data.Base.BaseTier)
+				return
+			end
 		end
 
 		lastBuildActionTime[player] = now
@@ -611,6 +668,7 @@ local function onBuildPlaceRequest(
 			ParentUid = validation.ResolvedParentUid,
 			AnchorUid = validation.ResolvedParentUid,
 			SocketId = validation.ResolvedSocketId,
+			MountSurface = validation.ResolvedMountSurface,
 			Hp = pieceConfig.BaseHp,
 			LastDamagedAt = 0,
 			Storage = if pieceConfig.StorageSlots ~= nil then {} else nil,
@@ -778,6 +836,25 @@ local function onBuildDemolishRequest(player: Player, uidAny: any)
 		end
 
 		lastBuildActionTime[player] = now
+		local canonicalRemoved = BuildingGeometry.CanonicalPieceType(record.Piece.PieceType)
+		local isDefense = Defenses.Get(canonicalRemoved) ~= nil
+		if isDefense then
+			if type(record.Piece.Storage) == "table" then
+				for _, slot in record.Piece.Storage do
+					if
+						type(slot) == "table"
+						and type(slot.Id) == "string"
+						and type(slot.Count) == "number"
+						and slot.Count > 0
+					then
+						InventoryService.AddItem(player, slot.Id, math.floor(slot.Count))
+					end
+				end
+				record.Piece.Storage = nil
+			end
+			InventoryService.AddItem(player, canonicalRemoved, 1)
+		end
+
 		local playerRecords = spawnedByPlayer[player]
 		if playerRecords ~= nil then
 			playerRecords[uid] = nil
@@ -786,6 +863,116 @@ local function onBuildDemolishRequest(player: Player, uidAny: any)
 		table.remove(data.Base.Pieces, targetIndex)
 		recalculateAndSyncBaseTier(player)
 		syncBaseState(player)
+	end)
+end
+
+local function onBuildRepairRequest(player: Player, uidAny: any)
+	if not SecurityService.CheckRateLimit(player, Net.Events.BuildRepairRequest) then
+		return
+	end
+	if
+		not BaseService.CanBuild(player)
+		or DataService.IsTeleporting(player)
+		or SecurityService.IsTransactionLocked(player)
+	then
+		return
+	end
+	if not SecurityService.IsValidString(uidAny, 1, 64) or SecurityService.GetAliveCharacterRoot(player) == nil then
+		return
+	end
+	local uid = uidAny :: string
+
+	SecurityService.RunLocked(player, "BuildRepair", function()
+		if not BaseService.CanBuild(player) then
+			return
+		end
+		local _, innerHrp = SecurityService.GetAliveCharacterRoot(player)
+		if not innerHrp then
+			return
+		end
+
+		local now = os.clock()
+		local prevAction = lastBuildActionTime[player]
+		if prevAction ~= nil and (now - prevAction) < BUILD_ACTION_COOLDOWN then
+			return
+		end
+
+		local data = DataService.GetData(player)
+		local record = recordsByUid[uid]
+		if data == nil or record == nil or record.Owner ~= player or not record.Model.Parent then
+			return
+		end
+
+		if
+			(innerHrp.Position - record.CFrame.Position).Magnitude
+			> BuildingConfig.MaxBuildDistance + Types.PING_DISTANCE_TOLERANCE
+		then
+			return
+		end
+
+		local targetPiece = record.Piece
+		local pieceConfig = BuildingConfig.Pieces[targetPiece.PieceType]
+		if pieceConfig == nil then
+			return
+		end
+
+		local maxHp = BuildingGeometry.ComputeMaxHp(targetPiece.PieceType, targetPiece.Tier)
+		if targetPiece.Hp >= maxHp then
+			return
+		end
+
+		local attrDamaged = record.Model:GetAttribute("LastDamagedAt")
+		local lastDamagedAt = math.max(
+			targetPiece.LastDamagedAt or 0,
+			record.LastDamagedAt or 0,
+			if typeof(attrDamaged) == "number" then attrDamaged else 0
+		)
+		if lastDamagedAt > 0 and (now - lastDamagedAt) < BuildingConfig.UpgradeRaidBlockSeconds then
+			sendBuildFeedback(
+				player,
+				false,
+				"Нельзя чинить сразу после урона",
+				data.Base.BaseTier
+			)
+			return
+		end
+
+		local missingRatio = math.clamp((maxHp - targetPiece.Hp) / math.max(1, maxHp), 0.05, 1.0)
+		local repairCostMap: { [string]: number } = {}
+		for resId, costCount in pieceConfig.Cost do
+			local amt = math.max(1, math.ceil(costCount * missingRatio * 0.5))
+			repairCostMap[resId] = (repairCostMap[resId] or 0) + amt
+		end
+		local tierCfg = BuildingConfig.Tiers[targetPiece.Tier]
+		if tierCfg ~= nil and tierCfg.UpgradeCost ~= nil then
+			for resId, costCount in tierCfg.UpgradeCost do
+				local amt = math.max(1, math.ceil(costCount * missingRatio * 0.5))
+				repairCostMap[resId] = (repairCostMap[resId] or 0) + amt
+			end
+		end
+
+		if not InventoryService.RemoveItems(player, costMapToBatch(repairCostMap)) then
+			sendBuildFeedback(
+				player,
+				false,
+				"Недостаточно ресурсов для ремонта",
+				data.Base.BaseTier
+			)
+			return
+		end
+
+		lastBuildActionTime[player] = now
+		targetPiece.Hp = maxHp
+		record.Model:SetAttribute("Health", maxHp)
+		record.Model:SetAttribute("Hp", maxHp)
+		DefenseService.UpdateDefenseHp(uid, maxHp, maxHp)
+		syncBaseState(player)
+		sendBuildFeedback(
+			player,
+			true,
+			string.format("%s отремонтирован (%d HP)", pieceConfig.Name, maxHp),
+			data.Base.BaseTier
+		)
 	end)
 end
 
@@ -986,6 +1173,7 @@ function BaseService.ProcessUpkeepAndDecay(player: Player, elapsedSeconds: numbe
 				elseif record ~= nil and record.Model.Parent ~= nil then
 					record.Model:SetAttribute("Health", piece.Hp)
 					record.Model:SetAttribute("Hp", piece.Hp)
+					DefenseService.UpdateDefenseHp(piece.Uid, piece.Hp, nil)
 				end
 			end
 		end
@@ -1333,6 +1521,7 @@ function BaseService.DamagePiece(
 
 	record.Model:SetAttribute("Health", record.Piece.Hp)
 	record.Model:SetAttribute("Hp", record.Piece.Hp)
+	DefenseService.UpdateDefenseHp(uid, record.Piece.Hp, nil)
 	syncBaseState(record.Owner)
 	return true, false
 end
@@ -1469,6 +1658,7 @@ function BaseService.Init()
 	Net.GetEvent(Net.Events.BuildPlaceRequest).OnServerEvent:Connect(onBuildPlaceRequest)
 	Net.GetEvent(Net.Events.BuildUpgradeRequest).OnServerEvent:Connect(onBuildUpgradeRequest)
 	Net.GetEvent(Net.Events.BuildDemolishRequest).OnServerEvent:Connect(onBuildDemolishRequest)
+	Net.GetEvent(Net.Events.BuildRepairRequest).OnServerEvent:Connect(onBuildRepairRequest)
 	Net.GetEvent(Net.Events.RequestReturnToMap).OnServerEvent:Connect(onRequestReturnToMap)
 	Net.GetEvent(Net.Events.ToolCupboardAction).OnServerEvent:Connect(onToolCupboardAction)
 	TeleportService.TeleportInitFailed:Connect(onTeleportInitFailed)

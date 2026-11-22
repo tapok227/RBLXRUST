@@ -1,5 +1,6 @@
 --!strict
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Config = require(ReplicatedStorage.Shared.Config)
 local Types = require(ReplicatedStorage.Shared.Types)
 
 export type BuildPieceType = Types.BuildPieceType
@@ -170,6 +171,52 @@ local Pieces: { [BuildPieceType]: BuildPieceConfig } = table.freeze({
 		Upgradeable = false,
 		AssaultDeployable = true,
 	}),
+	floor_spikes = table.freeze({
+		Name = "Floor Spikes",
+		Category = "Deployable",
+		Shape = "Deployable",
+		Cost = table.freeze({ wood = 60, metal_ore = 20 }),
+		BaseHp = 100,
+		Upgradeable = false,
+		IsDefense = true,
+		DefenseCost = Config.DefenseCapacity.Costs.floor_spikes,
+		AllowedMount = "Floor",
+	}),
+	landmine = table.freeze({
+		Name = "Landmine",
+		Category = "Deployable",
+		Shape = "Deployable",
+		Cost = table.freeze({ metal_ore = 35, scrap = 20 }),
+		BaseHp = 40,
+		Upgradeable = false,
+		IsDefense = true,
+		DefenseCost = Config.DefenseCapacity.Costs.landmine,
+		AllowedMount = "Floor",
+	}),
+	shotgun_trap = table.freeze({
+		Name = "Shotgun Trap",
+		Category = "Deployable",
+		Shape = "Deployable",
+		Cost = table.freeze({ wood = 50, metal_ore = 60, scrap = 25 }),
+		BaseHp = 180,
+		Upgradeable = false,
+		StorageSlots = 3,
+		IsDefense = true,
+		DefenseCost = Config.DefenseCapacity.Costs.shotgun_trap,
+		AllowedMount = "WallOrCeiling",
+	}),
+	auto_turret = table.freeze({
+		Name = "Auto Turret",
+		Category = "Deployable",
+		Shape = "Deployable",
+		Cost = table.freeze({ high_quality_metal = 15, tech_parts = 3, metal_ore = 80 }),
+		BaseHp = 350,
+		Upgradeable = false,
+		StorageSlots = 4,
+		IsDefense = true,
+		DefenseCost = Config.DefenseCapacity.Costs.auto_turret,
+		AllowedMount = "Floor",
+	}),
 })
 
 local CanonicalPieceMap: { [string]: BuildPieceType } = table.freeze({
@@ -194,6 +241,10 @@ local CanonicalPieceMap: { [string]: BuildPieceType } = table.freeze({
 	workbench_3 = "workbench_3",
 	assault_ladder = "assault_ladder",
 	barricade = "barricade",
+	floor_spikes = "floor_spikes",
+	landmine = "landmine",
+	shotgun_trap = "shotgun_trap",
+	auto_turret = "auto_turret",
 })
 
 local Tiers: { [BuildTier]: BuildTierConfig } = table.freeze({
@@ -271,6 +322,10 @@ local PieceOrder: { BuildPieceType } = table.freeze({
 	"workbench_3",
 	"assault_ladder",
 	"barricade",
+	"floor_spikes",
+	"landmine",
+	"shotgun_trap",
+	"auto_turret",
 })
 
 local TierOrder: { BuildTier } = table.freeze({

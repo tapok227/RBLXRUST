@@ -12,6 +12,7 @@ local Config = require(ReplicatedStorage.Shared.Config)
 local Types = require(ReplicatedStorage.Shared.Types)
 local Items = require(ReplicatedStorage.Shared.configs.Items)
 local BuildingConfig = require(ReplicatedStorage.Shared.configs.BuildingConfig)
+local Defenses = require(ReplicatedStorage.Shared.configs.Defenses)
 local BuildingGeometry = require(ReplicatedStorage.Shared.BuildingGeometry)
 local Explosives = require(ReplicatedStorage.Shared.configs.Explosives)
 local Janitor = require(ReplicatedStorage.Shared.Janitor)
@@ -20,6 +21,7 @@ local BaseService = require(ServerScriptService.Server.Services.BaseService)
 local BuildingValidator = require(ServerScriptService.Server.Services.BuildingValidator)
 local CraftingService = require(ServerScriptService.Server.Services.CraftingService)
 local DataService = require(ServerScriptService.Server.Services.DataService)
+local DefenseService = require(ServerScriptService.Server.Services.DefenseService)
 local InventoryService = require(ServerScriptService.Server.Services.InventoryService)
 local LootService = require(ServerScriptService.Server.Services.LootService)
 local SecurityService = require(ServerScriptService.Server.Services.SecurityService)
@@ -364,6 +366,28 @@ local function buildPresetRaidBase(tier: number): BaseData
 					["5"] = { Id = "cooked_meat", Count = 5 },
 				},
 			},
+			{
+				Uid = "preset1_spikes_1",
+				PieceType = "floor_spikes",
+				Tier = "wood",
+				PosX = 0,
+				PosY = 1,
+				PosZ = -2,
+				RotY = 0,
+				MountSurface = "Floor",
+				Hp = 100,
+			},
+			{
+				Uid = "preset1_mine_1",
+				PieceType = "landmine",
+				Tier = "wood",
+				PosX = 3,
+				PosY = 1,
+				PosZ = 2,
+				RotY = 0,
+				MountSurface = "Floor",
+				Hp = 40,
+			},
 		}
 		return {
 			Pieces = pieces,
@@ -538,6 +562,31 @@ local function buildPresetRaidBase(tier: number): BaseData
 					["5"] = { Id = "pistol_ammo", Count = 48 },
 				},
 			},
+			{
+				Uid = "p2_spikes_1",
+				PieceType = "floor_spikes",
+				Tier = "wood",
+				PosX = 0,
+				PosY = 1,
+				PosZ = -2,
+				RotY = 0,
+				MountSurface = "Floor",
+				Hp = 100,
+			},
+			{
+				Uid = "p2_shotgun_1",
+				PieceType = "shotgun_trap",
+				Tier = "wood",
+				PosX = -5.6,
+				PosY = 5.5,
+				PosZ = -12,
+				RotY = 270,
+				MountSurface = "Wall",
+				Hp = 180,
+				Storage = {
+					["1"] = { Id = "shotgun_shell", Count = 12 },
+				},
+			},
 		}
 		return {
 			Pieces = pieces,
@@ -659,6 +708,45 @@ local function buildPresetRaidBase(tier: number): BaseData
 				["5"] = { Id = "rocket", Count = 3 },
 			},
 		},
+		{
+			Uid = "p3_turret_1",
+			PieceType = "auto_turret",
+			Tier = "wood",
+			PosX = 12,
+			PosY = 1,
+			PosZ = 0,
+			RotY = 0,
+			MountSurface = "Floor",
+			Hp = 350,
+			Storage = {
+				["1"] = { Id = "pistol_ammo", Count = 48 },
+			},
+		},
+		{
+			Uid = "p3_mine_1",
+			PieceType = "landmine",
+			Tier = "wood",
+			PosX = 0,
+			PosY = 1,
+			PosZ = -1,
+			RotY = 0,
+			MountSurface = "Floor",
+			Hp = 40,
+		},
+		{
+			Uid = "p3_shotgun_1",
+			PieceType = "shotgun_trap",
+			Tier = "wood",
+			PosX = 0,
+			PosY = 10.2,
+			PosZ = -12,
+			RotY = 180,
+			MountSurface = "Ceiling",
+			Hp = 180,
+			Storage = {
+				["1"] = { Id = "shotgun_shell", Count = 12 },
+			},
+		},
 	}
 	return {
 		Pieces = pieces,
@@ -672,7 +760,7 @@ local function createRaidPieceModel(piece: SavedBuildPiece, origin: Vector3): (M
 	piece.PieceType = canonicalType
 	local worldCF = BuildingGeometry.GetPieceWorldCFrame(piece, origin)
 	local modelName = string.format("Raid_%s_%s", canonicalType, string.sub(piece.Uid, 1, 12))
-	local model = BuildingGeometry.CreateModel(canonicalType, worldCF, false, modelName)
+	local model = BuildingGeometry.CreateModel(canonicalType, worldCF, false, modelName, piece.MountSurface)
 	BuildingGeometry.ApplyTierVisuals(model, canonicalType, piece.Tier)
 
 	local maxHp = BuildingGeometry.ComputeMaxHp(canonicalType, piece.Tier)
@@ -681,6 +769,9 @@ local function createRaidPieceModel(piece: SavedBuildPiece, origin: Vector3): (M
 	model:SetAttribute("BuildUid", piece.Uid)
 	model:SetAttribute("PieceType", canonicalType)
 	model:SetAttribute("Tier", piece.Tier)
+	if piece.MountSurface ~= nil then
+		model:SetAttribute("MountSurface", piece.MountSurface)
+	end
 	model:SetAttribute("Health", piece.Hp)
 	model:SetAttribute("Hp", piece.Hp)
 	model:SetAttribute("MaxHealth", maxHp)
@@ -1094,6 +1185,7 @@ local function destroyRaidPiece(session: RaidSession, uid: string, dropStorageLo
 		return
 	end
 	session.Pieces[uid] = nil
+	DefenseService.UnregisterDefense(uid)
 
 	local dropPos = if record.Model.PrimaryPart then record.Model.PrimaryPart.Position else session.Origin
 	local canonical = BuildingGeometry.CanonicalPieceType(record.Piece.PieceType)
@@ -1190,6 +1282,16 @@ local function spawnRaidTargetBase(session: RaidSession, baseData: BaseData)
 			continue
 		end
 
+		local copiedStorage: { [string]: Slot }? = nil
+		if type(savedPiece.Storage) == "table" then
+			copiedStorage = {}
+			for k, s in savedPiece.Storage do
+				if type(s) == "table" and type(s.Id) == "string" and type(s.Count) == "number" then
+					(copiedStorage :: { [string]: Slot })[k] = { Id = s.Id, Count = s.Count }
+				end
+			end
+		end
+
 		local pieceCopy: SavedBuildPiece = {
 			Uid = savedPiece.Uid,
 			PieceType = savedPiece.PieceType,
@@ -1200,8 +1302,9 @@ local function spawnRaidTargetBase(session: RaidSession, baseData: BaseData)
 			RotY = savedPiece.RotY,
 			AnchorUid = savedPiece.AnchorUid,
 			SocketId = savedPiece.SocketId,
+			MountSurface = savedPiece.MountSurface,
 			Hp = savedPiece.Hp,
-			Storage = savedPiece.Storage,
+			Storage = copiedStorage,
 			GridX = savedPiece.GridX,
 			GridY = savedPiece.GridY,
 			GridZ = savedPiece.GridZ,
@@ -1240,6 +1343,26 @@ local function spawnRaidTargetBase(session: RaidSession, baseData: BaseData)
 					end
 				end))
 			end
+		elseif Defenses.Get(canonical) ~= nil then
+			local worldCF = BuildingGeometry.GetPieceWorldCFrame(pieceCopy, session.Origin)
+			DefenseService.RegisterDefense({
+				Uid = pieceCopy.Uid,
+				PieceType = canonical,
+				Model = model,
+				BaseWorldCF = worldCF,
+				OwnerUserId = session.TargetUserId,
+				IsRaidInstance = true,
+				IsQaTest = false,
+				PieceRef = pieceCopy,
+				Hp = pieceCopy.Hp,
+				MaxHp = maxHp,
+				OnSelfDamage = function(defUid: string, dmg: number)
+					RaidService.DamageRaidPiece(defUid, dmg, "Tool", nil)
+				end,
+				OnSelfDestroy = function(defUid: string)
+					destroyRaidPiece(session, defUid, false)
+				end,
+			})
 		end
 
 		session.Pieces[pieceCopy.Uid] = {
@@ -2317,6 +2440,7 @@ function RaidService.TriggerExplosion(params: ExplosionParams): ExplosionResult
 			else
 				record.Model:SetAttribute("Health", record.Piece.Hp)
 				record.Model:SetAttribute("Hp", record.Piece.Hp)
+				DefenseService.UpdateDefenseHp(record.Piece.Uid, record.Piece.Hp, nil)
 				updatePieceDamageBillboard(record)
 			end
 		end
@@ -2389,6 +2513,7 @@ function RaidService.DamageRaidPiece(
 			else
 				record.Model:SetAttribute("Health", record.Piece.Hp)
 				record.Model:SetAttribute("Hp", record.Piece.Hp)
+				DefenseService.UpdateDefenseHp(uid, record.Piece.Hp, nil)
 				updatePieceDamageBillboard(record)
 				return true, false
 			end
@@ -3255,6 +3380,11 @@ function RaidService.Init()
 	isInitialized = true
 
 	Net.InitServer()
+
+	DefenseService.BindRaidHooks({
+		TriggerExplosion = RaidService.TriggerExplosion,
+		NotifyRaiderDamaged = RaidService.NotifyRaiderDamaged,
+	})
 
 	Net.GetEvent(Net.Events.RaidListRequest).OnServerEvent:Connect(onRaidListRequest)
 	Net.GetEvent(Net.Events.StartRaidRequest).OnServerEvent:Connect(onStartRaidRequest)

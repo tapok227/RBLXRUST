@@ -568,6 +568,8 @@ local function onPlayerDataLoaded(player: Player, data: Types.PlayerData)
 				{ Id = "rocket_launcher", Count = 1 },
 				{ Id = "satchel_charge", Count = 3 },
 				{ Id = "arrow", Count = 20 },
+				{ Id = "pistol_ammo", Count = 32 },
+				{ Id = "shotgun_shell", Count = 24 },
 				{ Id = "rocket", Count = 6 },
 				{ Id = "wood", Count = 500 },
 				{ Id = "stone", Count = 300 },
@@ -620,6 +622,12 @@ local function onPlayerDataLoaded(player: Player, data: Types.PlayerData)
 			end
 			if InventoryService.GetItemCount(player, "arrow") == 0 then
 				table.insert(topUp, { Id = "arrow", Count = 20 })
+			end
+			if InventoryService.GetItemCount(player, "pistol_ammo") == 0 then
+				table.insert(topUp, { Id = "pistol_ammo", Count = 32 })
+			end
+			if InventoryService.GetItemCount(player, "shotgun_shell") == 0 then
+				table.insert(topUp, { Id = "shotgun_shell", Count = 24 })
 			end
 			if InventoryService.GetItemCount(player, "rocket") == 0 then
 				table.insert(topUp, { Id = "rocket", Count = 6 })

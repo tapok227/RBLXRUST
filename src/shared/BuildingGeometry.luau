@@ -11,6 +11,7 @@ type BuildTier = Types.BuildTier
 type BuildSocketDef = Types.BuildSocketDef
 type BuildOverlapBox = Types.BuildOverlapBox
 type SavedBuildPiece = Types.SavedBuildPiece
+type DefenseMountSurface = Types.DefenseMountSurface
 
 export type ParallelWallCandidate = { PieceType: BuildPieceType, CFrame: CFrame }
 export type OverlapCheckResult = { Allowed: boolean, Reason: string? }
@@ -189,7 +190,8 @@ function BuildingGeometry.CreateModel(
 	pieceType: BuildPieceType,
 	worldCF: CFrame,
 	isGhost: boolean,
-	nameOverride: string?
+	nameOverride: string?,
+	mountSurface: DefenseMountSurface?
 ): Model
 	local canonical = BuildingGeometry.CanonicalPieceType(pieceType)
 	local model = Instance.new("Model")
@@ -418,6 +420,209 @@ function BuildingGeometry.CreateModel(
 			worldCF * CFrame.new(2.8, 1.6, -1.5) * CFrame.Angles(0, math.rad(180), 0),
 			isGhost
 		)
+	elseif canonical == "floor_spikes" then
+		primaryLocalCF = CFrame.new(0, 0.125, 0)
+		primaryPart =
+			spawnPrim("Part", model, "BasePlate", Vector3.new(4.6, 0.25, 4.6), worldCF * primaryLocalCF, isGhost)
+		local offsets = { -1.4, 0, 1.4 }
+		local spikeIndex = 0
+		for _, ox in offsets do
+			for _, oz in offsets do
+				spikeIndex += 1
+				local spike = spawnPrim(
+					"WedgePart",
+					model,
+					string.format("Spike_%d", spikeIndex),
+					Vector3.new(0.45, 1.35, 0.45),
+					worldCF * CFrame.new(ox, 0.925, oz) * CFrame.Angles(0, math.rad((spikeIndex % 4) * 90), 0),
+					isGhost
+				)
+				spike.CanCollide = false
+			end
+		end
+	elseif canonical == "landmine" then
+		primaryLocalCF = CFrame.new(0, 0.175, 0)
+		primaryPart =
+			spawnPrim("Part", model, "MineBody", Vector3.new(2.2, 0.35, 2.2), worldCF * primaryLocalCF, isGhost)
+		spawnPrim(
+			"Part",
+			model,
+			"MineRim",
+			Vector3.new(1.8, 0.2, 1.8),
+			worldCF * CFrame.new(0, 0.35, 0) * CFrame.Angles(0, math.rad(45), 0),
+			isGhost
+		)
+		local plate = spawnPrim(
+			"Part",
+			model,
+			"PressurePlate",
+			Vector3.new(1.15, 0.15, 1.15),
+			worldCF * CFrame.new(0, 0.48, 0),
+			isGhost
+		)
+		plate.CanCollide = false
+		local indicator = spawnPrim(
+			"Part",
+			model,
+			"IndicatorLight",
+			Vector3.new(0.28, 0.14, 0.28),
+			worldCF * CFrame.new(0, 0.56, -0.35),
+			isGhost
+		)
+		indicator.CanCollide = false
+	elseif canonical == "shotgun_trap" then
+		local resolvedMount: DefenseMountSurface = if mountSurface == "Ceiling" then "Ceiling" else "Wall"
+		if resolvedMount == "Ceiling" then
+			primaryLocalCF = CFrame.new(0, -0.125, 0)
+			primaryPart =
+				spawnPrim("Part", model, "MountBracket", Vector3.new(1.6, 0.25, 1.8), worldCF * primaryLocalCF, isGhost)
+			spawnPrim(
+				"Part",
+				model,
+				"SupportStem",
+				Vector3.new(0.5, 0.65, 0.7),
+				worldCF * CFrame.new(0, -0.55, 0),
+				isGhost
+			)
+			local pitchCF = CFrame.new(0, -0.95, 0) * CFrame.Angles(math.rad(-15), 0, 0)
+			spawnPrim("Part", model, "TrapHousing", Vector3.new(1.2, 0.75, 1.9), worldCF * pitchCF, isGhost)
+			spawnPrim(
+				"Part",
+				model,
+				"BarrelLeft",
+				Vector3.new(0.22, 0.22, 1.4),
+				worldCF * pitchCF * CFrame.new(-0.22, 0.08, -1.2),
+				isGhost
+			)
+			spawnPrim(
+				"Part",
+				model,
+				"BarrelRight",
+				Vector3.new(0.22, 0.22, 1.4),
+				worldCF * pitchCF * CFrame.new(0.22, 0.08, -1.2),
+				isGhost
+			)
+			local muzzle = spawnPrim(
+				"Part",
+				model,
+				"Muzzle",
+				Vector3.new(0.45, 0.25, 0.2),
+				worldCF * pitchCF * CFrame.new(0, 0.08, -1.9),
+				isGhost
+			)
+			muzzle.CanCollide = false
+			local indicator = spawnPrim(
+				"Part",
+				model,
+				"IndicatorLight",
+				Vector3.new(0.25, 0.2, 0.25),
+				worldCF * pitchCF * CFrame.new(0, 0.42, -0.4),
+				isGhost
+			)
+			indicator.CanCollide = false
+		else
+			primaryLocalCF = CFrame.new(0, 0, -0.125)
+			primaryPart =
+				spawnPrim("Part", model, "MountBracket", Vector3.new(1.8, 1.4, 0.25), worldCF * primaryLocalCF, isGhost)
+			spawnPrim(
+				"Part",
+				model,
+				"TrapHousing",
+				Vector3.new(1.2, 0.75, 1.9),
+				worldCF * CFrame.new(0, 0, -1.1),
+				isGhost
+			)
+			spawnPrim(
+				"Part",
+				model,
+				"BarrelLeft",
+				Vector3.new(0.22, 0.22, 1.4),
+				worldCF * CFrame.new(-0.22, 0.08, -2.3),
+				isGhost
+			)
+			spawnPrim(
+				"Part",
+				model,
+				"BarrelRight",
+				Vector3.new(0.22, 0.22, 1.4),
+				worldCF * CFrame.new(0.22, 0.08, -2.3),
+				isGhost
+			)
+			local muzzle = spawnPrim(
+				"Part",
+				model,
+				"Muzzle",
+				Vector3.new(0.45, 0.25, 0.2),
+				worldCF * CFrame.new(0, 0.08, -3.0),
+				isGhost
+			)
+			muzzle.CanCollide = false
+			local indicator = spawnPrim(
+				"Part",
+				model,
+				"IndicatorLight",
+				Vector3.new(0.25, 0.2, 0.25),
+				worldCF * CFrame.new(0, 0.42, -1.5),
+				isGhost
+			)
+			indicator.CanCollide = false
+		end
+	elseif canonical == "auto_turret" then
+		primaryLocalCF = CFrame.new(0, 0.225, 0)
+		primaryPart =
+			spawnPrim("Part", model, "BasePedestal", Vector3.new(2.0, 0.45, 2.0), worldCF * primaryLocalCF, isGhost)
+		spawnPrim("Part", model, "PivotPost", Vector3.new(0.75, 1.85, 0.75), worldCF * CFrame.new(0, 1.35, 0), isGhost)
+		for legIdx = 1, 3 do
+			local angle = math.rad((legIdx - 1) * 120)
+			local legBase = (CFrame.Angles(0, angle, 0) * CFrame.new(0, 0.3, -1.05)).Position
+			local legTop = Vector3.new(0, 1.85, 0)
+			local mid = (legBase + legTop) * 0.5
+			local legLen = (legTop - legBase).Magnitude
+			local legCF = CFrame.lookAt(mid, legTop) * CFrame.Angles(math.rad(90), 0, 0)
+			spawnPrim(
+				"Part",
+				model,
+				string.format("Leg_%d", legIdx),
+				Vector3.new(0.28, legLen, 0.3),
+				worldCF * legCF,
+				isGhost
+			)
+		end
+		spawnPrim("Part", model, "TurretHead", Vector3.new(1.45, 0.9, 2.0), worldCF * CFrame.new(0, 2.55, 0), isGhost)
+		spawnPrim(
+			"Part",
+			model,
+			"AmmoDrum",
+			Vector3.new(0.75, 0.85, 0.75),
+			worldCF * CFrame.new(0.9, 2.45, 0.2),
+			isGhost
+		)
+		spawnPrim(
+			"Part",
+			model,
+			"TurretBarrel",
+			Vector3.new(0.28, 0.28, 1.8),
+			worldCF * CFrame.new(0, 2.55, -1.65),
+			isGhost
+		)
+		local muzzle = spawnPrim(
+			"Part",
+			model,
+			"Muzzle",
+			Vector3.new(0.35, 0.35, 0.2),
+			worldCF * CFrame.new(0, 2.55, -2.55),
+			isGhost
+		)
+		muzzle.CanCollide = false
+		local sensor = spawnPrim(
+			"Part",
+			model,
+			"SensorLight",
+			Vector3.new(0.35, 0.25, 0.25),
+			worldCF * CFrame.new(0, 3.05, -0.65),
+			isGhost
+		)
+		sensor.CanCollide = false
 	end
 
 	if primaryPart ~= nil then
@@ -487,6 +692,50 @@ function BuildingGeometry.ApplyTierVisuals(model: Model, pieceType: BuildPieceTy
 				else
 					child.Material = Enum.Material.Metal
 					child.Color = Color3.fromRGB(86, 94, 102)
+				end
+			elseif canonical == "floor_spikes" then
+				if child.Name == "BasePlate" then
+					child.Material = Enum.Material.WoodPlanks
+					child.Color = Color3.fromRGB(132, 92, 54)
+				else
+					child.Material = Enum.Material.Metal
+					child.Color = Color3.fromRGB(150, 158, 168)
+				end
+			elseif canonical == "landmine" then
+				if child.Name == "IndicatorLight" then
+					child.Material = Enum.Material.Neon
+					child.Color = Color3.fromRGB(255, 55, 55)
+				elseif child.Name == "PressurePlate" then
+					child.Material = Enum.Material.Metal
+					child.Color = Color3.fromRGB(98, 106, 88)
+				else
+					child.Material = Enum.Material.Metal
+					child.Color = Color3.fromRGB(64, 72, 58)
+				end
+			elseif canonical == "shotgun_trap" then
+				if child.Name == "IndicatorLight" then
+					child.Material = Enum.Material.Neon
+					child.Color = Color3.fromRGB(255, 75, 55)
+				elseif child.Name == "MountBracket" then
+					child.Material = Enum.Material.WoodPlanks
+					child.Color = Color3.fromRGB(122, 84, 48)
+				else
+					child.Material = Enum.Material.Metal
+					child.Color = Color3.fromRGB(62, 68, 76)
+				end
+			elseif canonical == "auto_turret" then
+				if child.Name == "SensorLight" then
+					child.Material = Enum.Material.Neon
+					child.Color = Color3.fromRGB(65, 225, 110)
+				elseif child.Name == "TurretBarrel" or child.Name == "Muzzle" then
+					child.Material = Enum.Material.Metal
+					child.Color = Color3.fromRGB(40, 44, 50)
+				elseif child.Name == "TurretHead" or child.Name == "AmmoDrum" then
+					child.Material = Enum.Material.Metal
+					child.Color = Color3.fromRGB(76, 84, 94)
+				else
+					child.Material = Enum.Material.DiamondPlate
+					child.Color = Color3.fromRGB(88, 92, 96)
 				end
 			else
 				child.Material = tierCfg.Material
@@ -558,6 +807,9 @@ function BuildingGeometry.IsSocketCompatible(
 		elseif canonicalChild == "triangle_stairs" then
 			return parentCfg.Shape == "Triangle"
 		elseif childCfg.Category == "Deployable" then
+			if childCfg.IsDefense == true then
+				return false
+			end
 			return parentCfg.Category == "Foundation" or parentCfg.Category == "Floor"
 		end
 	end
@@ -694,7 +946,8 @@ end
 function BuildingGeometry.GetOverlapBoxes(
 	pieceType: BuildPieceType,
 	worldCF: CFrame,
-	expandXZ: number?
+	expandXZ: number?,
+	mountSurface: DefenseMountSurface?
 ): { BuildOverlapBox }
 	local canonical = BuildingGeometry.CanonicalPieceType(pieceType)
 	local shrink = BuildingConfig.OverlapShrinkFactor
@@ -756,6 +1009,18 @@ function BuildingGeometry.GetOverlapBoxes(
 		table.insert(boxes, { CFrame = worldCF * CFrame.new(0, 4.8, 0), Size = Vector3.new(2.6, 9.2, 1.2) })
 	elseif canonical == "barricade" then
 		table.insert(boxes, { CFrame = worldCF * CFrame.new(0, 2.0, 0), Size = Vector3.new(7.4, 3.8, 1.8) })
+	elseif canonical == "floor_spikes" then
+		table.insert(boxes, { CFrame = worldCF * CFrame.new(0, 0.75, 0), Size = Vector3.new(4.2, 1.1, 4.2) })
+	elseif canonical == "landmine" then
+		table.insert(boxes, { CFrame = worldCF * CFrame.new(0, 0.4, 0), Size = Vector3.new(1.9, 0.55, 1.9) })
+	elseif canonical == "shotgun_trap" then
+		if mountSurface == "Ceiling" then
+			table.insert(boxes, { CFrame = worldCF * CFrame.new(0, -0.85, -0.5), Size = Vector3.new(1.5, 1.3, 2.5) })
+		else
+			table.insert(boxes, { CFrame = worldCF * CFrame.new(0, 0.05, -1.55), Size = Vector3.new(1.5, 1.3, 2.7) })
+		end
+	elseif canonical == "auto_turret" then
+		table.insert(boxes, { CFrame = worldCF * CFrame.new(0, 1.75, 0), Size = Vector3.new(2.2, 3.1, 2.2) })
 	end
 	return boxes
 end
@@ -944,14 +1209,15 @@ function BuildingGeometry.CheckWorldOverlap(
 	targetCF: CFrame,
 	excludeInstances: { Instance }?,
 	isDetachedFoundation: boolean,
-	allowRaidOutpostZone: boolean?
+	allowRaidOutpostZone: boolean?,
+	mountSurface: DefenseMountSurface?
 ): OverlapCheckResult
 	local cfg = BuildingConfig.Pieces[pieceType]
 	if cfg == nil then
 		return { Allowed = false, Reason = "Unknown building piece" }
 	end
 
-	local boxes = BuildingGeometry.GetOverlapBoxes(pieceType, targetCF, nil)
+	local boxes = BuildingGeometry.GetOverlapBoxes(pieceType, targetCF, nil, mountSurface)
 	if checkNoBuildVolumes(boxes, allowRaidOutpostZone) then
 		return { Allowed = false, Reason = "Blocked by restricted zone" }
 	end

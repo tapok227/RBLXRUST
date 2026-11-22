@@ -5,11 +5,13 @@ local Workspace = game:GetService("Workspace")
 
 local Types = require(ReplicatedStorage.Shared.Types)
 local BuildingConfig = require(ReplicatedStorage.Shared.configs.BuildingConfig)
+local Defenses = require(ReplicatedStorage.Shared.configs.Defenses)
 local BuildingGeometry = require(ReplicatedStorage.Shared.BuildingGeometry)
 
 type BuildPieceType = Types.BuildPieceType
 type BuildSocketDef = Types.BuildSocketDef
 type SavedBuildPiece = Types.SavedBuildPiece
+type DefenseMountSurface = Types.DefenseMountSurface
 
 export type LivePieceEntry = {
 	Owner: Player,
@@ -27,6 +29,7 @@ export type PlacementValidationInput = {
 	ParentUid: string?,
 	SocketId: string?,
 	ExplicitRotStep: number?,
+	MountSurface: DefenseMountSurface?,
 	PlayerRecords: { [string]: LivePieceEntry },
 	AllRecordsByUid: { [string]: LivePieceEntry },
 	OccupiedSockets: { [string]: { [string]: string } },
@@ -50,13 +53,28 @@ export type PlacementValidationResult = {
 	ResolvedParentUid: string?,
 	ResolvedSocketId: string?,
 	ResolvedSlotKey: string?,
+	ResolvedMountSurface: DefenseMountSurface?,
 	WorldSocketKey: string?,
 	RotY: number?,
 }
 
 local SOCKET_MATCH_EPSILON = 0.55
+local DEFENSE_MIN_SPACING = 2.0
 
 local BuildingValidator = {}
+
+function BuildingValidator.ComputeDefenseCapacity(pieces: { SavedBuildPiece }, baseTier: number): (number, number)
+	local used = 0
+	for _, piece in pieces do
+		local canonical = BuildingGeometry.CanonicalPieceType(piece.PieceType)
+		local defCfg = Defenses.Get(canonical)
+		if defCfg ~= nil then
+			used += defCfg.CapacityCost
+		end
+	end
+	local maxCapacity = Defenses.GetCapacityLimit(baseTier)
+	return used, maxCapacity
+end
 
 function BuildingValidator.QuantizeSocketWorldKey(worldPos: Vector3, slotCategory: string): string
 	local qx = math.floor(worldPos.X + 0.5)
@@ -68,7 +86,10 @@ end
 function BuildingValidator.GetWorldSocketKeyForPiece(pieceType: BuildPieceType, worldCF: CFrame): string
 	local cfg = BuildingConfig.Pieces[pieceType]
 	local category = if cfg ~= nil then cfg.Category else "Unknown"
-	local slotCategory = if category == "Stairs" or category == "Deployable" then "Interior" else category
+	local slotCategory = if cfg ~= nil and cfg.IsDefense == true
+		then "Defense"
+		elseif category == "Stairs" or category == "Deployable" then "Interior"
+		else category
 	return BuildingValidator.QuantizeSocketWorldKey(worldCF.Position, slotCategory)
 end
 
@@ -391,14 +412,16 @@ function BuildingValidator.CheckWorldOverlap(
 	targetCF: CFrame,
 	excludeInstances: { Instance }?,
 	isDetachedFoundation: boolean,
-	allowRaidOutpostZone: boolean?
+	allowRaidOutpostZone: boolean?,
+	mountSurface: DefenseMountSurface?
 ): BuildingGeometry.OverlapCheckResult
 	return BuildingGeometry.CheckWorldOverlap(
 		pieceType,
 		targetCF,
 		excludeInstances,
 		isDetachedFoundation,
-		allowRaidOutpostZone
+		allowRaidOutpostZone,
+		mountSurface
 	)
 end
 
@@ -746,11 +769,256 @@ local function findAutoMatchedSocket(
 	return bestParent, bestSocket, bestStep, bestCF
 end
 
+local function raycastDefenseSurface(origin: Vector3, direction: Vector3, playerCharacter: Model?): RaycastResult?
+	local excludeList: { Instance } = {}
+	if playerCharacter ~= nil then
+		table.insert(excludeList, playerCharacter)
+	end
+	for _, folderName in { "LootContainers", "RaidOutpostZone", "ResourceNodes" } do
+		local folder = Workspace:FindFirstChild(folderName)
+		if folder ~= nil then
+			table.insert(excludeList, folder)
+		end
+	end
+
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.IgnoreWater = true
+	params.FilterDescendantsInstances = excludeList
+
+	for _ = 1, 6 do
+		local result = Workspace:Raycast(origin, direction, params)
+		if result == nil then
+			return nil
+		end
+		if result.Instance.CanCollide == false and not result.Instance:IsA("Terrain") then
+			table.insert(excludeList, result.Instance)
+			params.FilterDescendantsInstances = excludeList
+		else
+			return result
+		end
+	end
+	return nil
+end
+
+local function findPlayerStructureEntryFromPart(
+	hitInstance: Instance,
+	playerRecords: { [string]: LivePieceEntry }
+): LivePieceEntry?
+	local current: Instance? = hitInstance
+	while current ~= nil and current ~= Workspace do
+		if current:IsA("Model") then
+			local uidAttr = current:GetAttribute("BuildUid")
+			if typeof(uidAttr) == "string" and #uidAttr > 0 then
+				return playerRecords[uidAttr]
+			end
+		end
+		current = current.Parent
+	end
+	return nil
+end
+
+local function validateDefensePlacement(
+	input: PlacementValidationInput,
+	pieceType: BuildPieceType
+): PlacementValidationResult
+	if input.IsRaidMode == true then
+		return {
+			Allowed = false,
+			Reason = "Ловушки и турели нельзя устанавливать во время рейда",
+		}
+	end
+
+	local defCfg = Defenses.Get(pieceType)
+	if defCfg == nil then
+		return { Allowed = false, Reason = "Invalid defense type" }
+	end
+
+	local usedCap, maxCap = BuildingValidator.ComputeDefenseCapacity(input.BasePieces, input.PlayerBaseTier or 0)
+	if usedCap + defCfg.CapacityCost > maxCap then
+		return {
+			Allowed = false,
+			Reason = string.format(
+				"Лимит защиты превышен: %d / %d очков (+%d)",
+				usedCap,
+				maxCap,
+				defCfg.CapacityCost
+			),
+		}
+	end
+
+	if BuildingValidator.IsInRaidOutpostZone(pieceType, input.RequestedCFrame) then
+		return {
+			Allowed = false,
+			Reason = "Установка защиты в зоне рейд-кибитки (RaidOutpostZone) запрещена",
+		}
+	end
+
+	local authoritativeCF: CFrame
+	local resolvedMount: DefenseMountSurface
+	local resolvedParentUid: string? = nil
+	local excludeOverlap: { Instance }? = nil
+
+	if defCfg.AllowedMount == "Floor" then
+		local hit = raycastDefenseSurface(
+			input.RequestedCFrame.Position + Vector3.new(0, 2.5, 0),
+			Vector3.new(0, -5.5, 0),
+			input.Character
+		)
+		if hit == nil or hit.Normal.Y < 0.7 then
+			return {
+				Allowed = false,
+				Reason = "Требуется ровная поверхность пола или фундамента",
+			}
+		end
+		if BuildingGeometry.IsNoBuildInstance(hit.Instance, false) then
+			return {
+				Allowed = false,
+				Reason = "Установка в запрещённой зоне невозможна",
+			}
+		end
+		local yawDeg = BuildingGeometry.QuantizeYaw30(BuildingGeometry.ExtractYawDegrees(input.RequestedCFrame))
+		authoritativeCF = CFrame.new(hit.Position) * CFrame.Angles(0, math.rad(yawDeg), 0)
+		resolvedMount = "Floor"
+		local hostEntry = findPlayerStructureEntryFromPart(hit.Instance, input.PlayerRecords)
+		if hostEntry ~= nil then
+			resolvedParentUid = hostEntry.Piece.Uid
+		end
+	else
+		local mountHint: DefenseMountSurface = if input.MountSurface == "Ceiling" then "Ceiling" else "Wall"
+		if mountHint == "Ceiling" then
+			local hit = raycastDefenseSurface(
+				input.RequestedCFrame.Position - Vector3.new(0, 1.5, 0),
+				Vector3.new(0, 4.0, 0),
+				input.Character
+			)
+			if hit == nil or hit.Normal.Y > -0.7 then
+				return {
+					Allowed = false,
+					Reason = "Ловушка-дробовик крепится на стену или потолок",
+				}
+			end
+			local hostEntry = findPlayerStructureEntryFromPart(hit.Instance, input.PlayerRecords)
+			if hostEntry == nil or hostEntry.Model.Parent == nil then
+				return {
+					Allowed = false,
+					Reason = "Крепление возможно только на свои постройки",
+				}
+			end
+			local hostCfg = BuildingConfig.Pieces[hostEntry.Piece.PieceType]
+			if hostCfg == nil or (hostCfg.Category ~= "Floor" and hostCfg.Category ~= "Foundation") then
+				return {
+					Allowed = false,
+					Reason = "Для потолочного крепления требуется перекрытие",
+				}
+			end
+			local yawDeg = BuildingGeometry.QuantizeYaw30(BuildingGeometry.ExtractYawDegrees(input.RequestedCFrame))
+			authoritativeCF = CFrame.new(hit.Position) * CFrame.Angles(0, math.rad(yawDeg), 0)
+			resolvedMount = "Ceiling"
+			resolvedParentUid = hostEntry.Piece.Uid
+			excludeOverlap = { hostEntry.Model }
+		else
+			local lookVec = input.RequestedCFrame.LookVector
+			local horizLook = Vector3.new(lookVec.X, 0, lookVec.Z)
+			if horizLook.Magnitude < 0.05 then
+				horizLook = Vector3.new(0, 0, -1)
+			else
+				horizLook = horizLook.Unit
+			end
+			local hit = raycastDefenseSurface(
+				input.RequestedCFrame.Position + horizLook * 1.2,
+				-horizLook * 3.2,
+				input.Character
+			)
+			if hit == nil or math.abs(hit.Normal.Y) > 0.35 then
+				return {
+					Allowed = false,
+					Reason = "Ловушка-дробовик крепится на стену или потолок",
+				}
+			end
+			local hostEntry = findPlayerStructureEntryFromPart(hit.Instance, input.PlayerRecords)
+			if hostEntry == nil or hostEntry.Model.Parent == nil then
+				return {
+					Allowed = false,
+					Reason = "Крепление возможно только на свои стены",
+				}
+			end
+			local hostCfg = BuildingConfig.Pieces[hostEntry.Piece.PieceType]
+			if hostCfg == nil or hostCfg.Category ~= "Wall" then
+				return {
+					Allowed = false,
+					Reason = "Для настенного крепления требуется стена",
+				}
+			end
+			local horizNormal = Vector3.new(hit.Normal.X, 0, hit.Normal.Z)
+			if horizNormal.Magnitude < 0.05 then
+				return { Allowed = false, Reason = "Некорректная нормаль стены" }
+			end
+			horizNormal = horizNormal.Unit
+			authoritativeCF = CFrame.lookAt(hit.Position, hit.Position + horizNormal)
+			resolvedMount = "Wall"
+			resolvedParentUid = hostEntry.Piece.Uid
+			excludeOverlap = { hostEntry.Model }
+		end
+	end
+
+	local maxAllowedDistance = BuildingConfig.MaxBuildDistance + Types.PING_DISTANCE_TOLERANCE
+	if (input.HrpPosition - authoritativeCF.Position).Magnitude > maxAllowedDistance then
+		return { Allowed = false, Reason = "Target out of build range" }
+	end
+
+	if BuildingValidator.IsInRaidOutpostZone(pieceType, authoritativeCF) then
+		return {
+			Allowed = false,
+			Reason = "Установка защиты в зоне рейд-кибитки (RaidOutpostZone) запрещена",
+		}
+	end
+
+	for _, existing in input.PlayerRecords do
+		local existingCfg = BuildingConfig.Pieces[existing.Piece.PieceType]
+		if existingCfg ~= nil and existingCfg.IsDefense == true then
+			if (existing.CFrame.Position - authoritativeCF.Position).Magnitude < DEFENSE_MIN_SPACING then
+				return {
+					Allowed = false,
+					Reason = "Слишком близко к другой ловушке или турели",
+				}
+			end
+		end
+	end
+
+	local worldSocketKey = BuildingValidator.GetWorldSocketKeyForPiece(pieceType, authoritativeCF)
+	if input.OccupiedWorldKeys[worldSocketKey] ~= nil then
+		return { Allowed = false, Reason = "Позиция уже занята другой защитой" }
+	end
+
+	local overlap =
+		BuildingValidator.CheckWorldOverlap(pieceType, authoritativeCF, excludeOverlap, false, false, resolvedMount)
+	if not overlap.Allowed then
+		return { Allowed = false, Reason = overlap.Reason or "Overlap blocked" }
+	end
+
+	local finalRotY = BuildingGeometry.QuantizeYaw30(BuildingGeometry.ExtractYawDegrees(authoritativeCF))
+	return {
+		Allowed = true,
+		AuthoritativeCFrame = authoritativeCF,
+		ResolvedParentUid = resolvedParentUid,
+		ResolvedSocketId = nil,
+		ResolvedSlotKey = nil,
+		ResolvedMountSurface = resolvedMount,
+		WorldSocketKey = worldSocketKey,
+		RotY = finalRotY,
+	}
+end
+
 function BuildingValidator.ValidatePlacement(input: PlacementValidationInput): PlacementValidationResult
 	local pieceType = BuildingGeometry.CanonicalPieceType(input.PieceType)
 	local pieceConfig = BuildingConfig.Pieces[pieceType]
 	if pieceConfig == nil then
 		return { Allowed = false, Reason = "Invalid piece type" }
+	end
+
+	if pieceConfig.IsDefense == true then
+		return validateDefensePlacement(input, pieceType)
 	end
 
 	local isRaidMode = input.IsRaidMode == true

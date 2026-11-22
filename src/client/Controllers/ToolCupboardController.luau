@@ -36,6 +36,7 @@ local tierBadgeLabel: TextLabel? = nil
 local statusBadgeLabel: TextLabel? = nil
 local pathBadgeLabel: TextLabel? = nil
 local upkeepLabel: TextLabel? = nil
+local defenseCapLabel: TextLabel? = nil
 local slotUIs: { TcSlotUI } = {}
 local depositButtons: { DepositButtonUI } = {}
 local currentState: ToolCupboardState? = nil
@@ -150,6 +151,16 @@ local function refreshUi()
 		upkeepLabel.Text = string.format("Upkeep: %s", table.concat(parts, " | "))
 	end
 
+	if defenseCapLabel then
+		local used = state.DefenseUsed or 0
+		local maxCap = state.DefenseMax or 60
+		defenseCapLabel.Text = string.format("Защита базы: %d / %d очков", used, maxCap)
+		defenseCapLabel.TextColor3 = if used >= maxCap
+			then COLOR_BAD
+			elseif used >= math.floor(maxCap * 0.8) then COLOR_WARN
+			else COLOR_OK
+	end
+
 	for _, ui in slotUIs do
 		local slot = state.Slots[ui.Index]
 		if slot ~= nil and slot.Count > 0 then
@@ -194,7 +205,7 @@ local function createGui()
 	frame.Name = "ToolCupboardPanel"
 	frame.AnchorPoint = Vector2.new(0.5, 0.5)
 	frame.Position = UDim2.fromScale(0.5, 0.48)
-	frame.Size = UDim2.fromOffset(540, 444)
+	frame.Size = UDim2.fromOffset(540, 466)
 	frame.BackgroundColor3 = COLOR_BG
 	frame.BackgroundTransparency = 0.08
 	frame.BorderSizePixel = 0
@@ -284,9 +295,22 @@ local function createGui()
 	upkeepLbl.Parent = frame
 	upkeepLabel = upkeepLbl
 
+	local defLbl = Instance.new("TextLabel")
+	defLbl.Name = "DefenseCapacitySummary"
+	defLbl.Position = UDim2.fromOffset(16, 96)
+	defLbl.Size = UDim2.new(1, -32, 0, 20)
+	defLbl.BackgroundTransparency = 1
+	defLbl.Font = Enum.Font.GothamBold
+	defLbl.TextSize = 12
+	defLbl.TextXAlignment = Enum.TextXAlignment.Left
+	defLbl.TextColor3 = COLOR_OK
+	defLbl.Text = "Защита базы: 0 / 60 очков"
+	defLbl.Parent = frame
+	defenseCapLabel = defLbl
+
 	local gridFrame = Instance.new("Frame")
 	gridFrame.Name = "SlotsGrid"
-	gridFrame.Position = UDim2.fromOffset(16, 104)
+	gridFrame.Position = UDim2.fromOffset(16, 124)
 	gridFrame.Size = UDim2.fromOffset(508, 228)
 	gridFrame.BackgroundTransparency = 1
 	gridFrame.Parent = frame
@@ -355,7 +379,7 @@ local function createGui()
 
 	local depositTitle = Instance.new("TextLabel")
 	depositTitle.Name = "DepositHeader"
-	depositTitle.Position = UDim2.fromOffset(16, 342)
+	depositTitle.Position = UDim2.fromOffset(16, 362)
 	depositTitle.Size = UDim2.new(1, -32, 0, 18)
 	depositTitle.BackgroundTransparency = 1
 	depositTitle.Font = Enum.Font.GothamMedium
@@ -367,7 +391,7 @@ local function createGui()
 
 	local depRow = Instance.new("Frame")
 	depRow.Name = "DepositRow"
-	depRow.Position = UDim2.fromOffset(16, 366)
+	depRow.Position = UDim2.fromOffset(16, 386)
 	depRow.Size = UDim2.new(1, -32, 0, 62)
 	depRow.BackgroundTransparency = 1
 	depRow.Parent = frame
@@ -441,6 +465,8 @@ local function onToolCupboardSync(payloadAny: any)
 		ProtectedHours = if type(payloadAny.ProtectedHours) == "number" then payloadAny.ProtectedHours else 0,
 		PathValid = payloadAny.PathValid == true,
 		PathMessage = if type(payloadAny.PathMessage) == "string" then payloadAny.PathMessage else nil,
+		DefenseUsed = if type(payloadAny.DefenseUsed) == "number" then payloadAny.DefenseUsed else 0,
+		DefenseMax = if type(payloadAny.DefenseMax) == "number" then payloadAny.DefenseMax else 60,
 		Slots = parseTcSlots(payloadAny.Slots),
 	}
 	isOpen = true

@@ -10,6 +10,7 @@ local Config = require(ReplicatedStorage.Shared.Config)
 local Types = require(ReplicatedStorage.Shared.Types)
 local Items = require(ReplicatedStorage.Shared.configs.Items)
 local BuildingConfig = require(ReplicatedStorage.Shared.configs.BuildingConfig)
+local Defenses = require(ReplicatedStorage.Shared.configs.Defenses)
 local BuildingGeometry = require(ReplicatedStorage.Shared.BuildingGeometry)
 local Net = require(ReplicatedStorage.Shared.Net)
 local HotbarController = require(script.Parent.HotbarController)
@@ -18,11 +19,13 @@ local InventoryUIController = require(script.Parent.InventoryUIController)
 local CraftingController = require(script.Parent.CraftingController)
 local LootController = require(script.Parent.LootController)
 local ToolCupboardController = require(script.Parent.ToolCupboardController)
+local DefenseController = require(script.Parent.DefenseController)
 
 type BuildPieceType = Types.BuildPieceType
 type BuildTier = Types.BuildTier
 type BuildSocketDef = Types.BuildSocketDef
 type SavedBuildPiece = Types.SavedBuildPiece
+type DefenseMountSurface = Types.DefenseMountSurface
 
 type PieceButtonUI = {
 	PieceType: BuildPieceType,
@@ -52,7 +55,7 @@ local selectedPieceIndex = 1
 local currentRotStep = 0
 local currentYawDeg = 0
 local manualBuildMode = false
-local toolMode: "None" | "Build" | "Hammer" = "None"
+local toolMode: "None" | "Build" | "Hammer" | "DefenseItem" = "None"
 local upgradeModeToggle = false
 local demolishModeToggle = false
 
@@ -60,6 +63,7 @@ local previewCFrame: CFrame? = nil
 local previewParentUid: string? = nil
 local previewSocketId: string? = nil
 local previewRotStep = 0
+local previewMountSurface: DefenseMountSurface? = nil
 local previewPlaceable = false
 local previewStatusMessage = ""
 local hammerStatusMessage = ""
@@ -70,6 +74,7 @@ local isInitialized = false
 
 local baseActionBar: Frame? = nil
 local baseTierBadge: TextLabel? = nil
+local defenseCapacityBadge: TextLabel? = nil
 local mapCycleBtn: TextButton? = nil
 local buildToggleBtn: TextButton? = nil
 local deployToMapBtn: TextButton? = nil
@@ -83,6 +88,7 @@ local pieceButtons: { PieceButtonUI } = {}
 
 local ghostModel: Model? = nil
 local ghostPieceType: BuildPieceType? = nil
+local ghostMountSurface: DefenseMountSurface? = nil
 local targetHighlight: Highlight? = nil
 
 -- Cached RaycastParams (updated only on character change or ghostModel recreation)
@@ -136,12 +142,25 @@ local function isAnyModalUiOpen(): boolean
 		or CraftingController.IsOpen()
 		or LootController.IsOpen()
 		or ToolCupboardController.IsOpen()
+		or DefenseController.IsOpen()
 end
 
 local function getLocalBaseTier(): number
 	local localPlayer = Players.LocalPlayer
 	local attr = if localPlayer ~= nil then localPlayer:GetAttribute("BaseTier") else nil
 	return if typeof(attr) == "number" then math.floor(attr) else 0
+end
+
+local function computeLocalDefenseCapacity(): (number, number)
+	local used = 0
+	for _, piece in savedPieces do
+		local defCfg = Defenses.Get(BuildingGeometry.CanonicalPieceType(piece.PieceType))
+		if defCfg ~= nil then
+			used += defCfg.CapacityCost
+		end
+	end
+	local maxCap = Defenses.GetCapacityLimit(getLocalBaseTier())
+	return used, maxCap
 end
 
 local function getSelectedMapKey(): string
@@ -192,21 +211,29 @@ local function canAffordCost(costMap: { [string]: number }): boolean
 	return true
 end
 
+local function canAffordPiece(pieceType: BuildPieceType, pieceCfg: Types.BuildPieceConfig): boolean
+	if toolMode == "DefenseItem" then
+		local equipped = InventoryController.GetSlot(HotbarController.GetSelectedSlot())
+		if equipped ~= nil and equipped.Count > 0 and BuildingGeometry.CanonicalPieceType(equipped.Id) == pieceType then
+			return true
+		end
+	end
+	return canAffordCost(pieceCfg.Cost)
+end
+
 local function destroyGhostModel()
 	if ghostModel then
 		ghostModel:Destroy()
 		ghostModel = nil
 	end
 	ghostPieceType = nil
+	ghostMountSurface = nil
 	refreshPreviewRaycastFilter()
 end
 
-local function ensureGhostModel(pieceType: BuildPieceType): Model
+local function ensureGhostModel(pieceType: BuildPieceType, mountSurface: DefenseMountSurface?): Model
 	local canonical = BuildingGeometry.CanonicalPieceType(pieceType)
-	if ghostModel and ghostModel.Parent ~= nil and ghostPieceType == canonical then
-		return ghostModel
-	end
-	if ghostModel and ghostPieceType == canonical then
+	if ghostModel and ghostPieceType == canonical and ghostMountSurface == mountSurface then
 		return ghostModel
 	end
 	destroyGhostModel()
@@ -214,10 +241,12 @@ local function ensureGhostModel(pieceType: BuildPieceType): Model
 		canonical,
 		CFrame.identity,
 		true,
-		string.format("ClientBuildPreview_%s", canonical)
+		string.format("ClientBuildPreview_%s", canonical),
+		mountSurface
 	)
 	ghostModel = model
 	ghostPieceType = canonical
+	ghostMountSurface = mountSurface
 	refreshPreviewRaycastFilter()
 	return model
 end
@@ -388,6 +417,21 @@ local function updateBuildUiVisuals()
 	end
 
 	local selectedType = getSelectedPieceType()
+	local selectedCfgGlobal = BuildingConfig.Pieces[selectedType]
+	local defUsed, defMax = computeLocalDefenseCapacity()
+	local selectedDefCfg = Defenses.Get(selectedType)
+
+	if defenseCapacityBadge then
+		local showBadge = inBase or toolMode == "DefenseItem" or (buildActive and selectedDefCfg ~= nil)
+		defenseCapacityBadge.Visible = showBadge
+		defenseCapacityBadge.Text = string.format("Защита: %d / %d очков", defUsed, defMax)
+		local wouldExceed = selectedDefCfg ~= nil and (defUsed + selectedDefCfg.CapacityCost) > defMax
+		defenseCapacityBadge.BackgroundColor3 = if wouldExceed or defUsed >= defMax
+			then Color3.fromRGB(155, 52, 52)
+			elseif defUsed >= math.floor(defMax * 0.8) then Color3.fromRGB(165, 115, 40)
+			else Color3.fromRGB(48, 95, 72)
+	end
+
 	for _, item in pieceButtons do
 		local isSelected = (item.PieceType == selectedType)
 		item.Button.BackgroundColor3 = if isSelected then COLOR_BTN_SELECTED else COLOR_BTN_DEFAULT
@@ -395,7 +439,7 @@ local function updateBuildUiVisuals()
 		item.Stroke.Thickness = if isSelected then 2 else 1.2
 		local pieceCfg = BuildingConfig.Pieces[item.PieceType]
 		if pieceCfg then
-			item.CostLabel.TextColor3 = if canAffordCost(pieceCfg.Cost)
+			item.CostLabel.TextColor3 = if canAffordPiece(item.PieceType, pieceCfg)
 				then Color3.fromRGB(145, 225, 150)
 				else Color3.fromRGB(235, 115, 115)
 		end
@@ -405,15 +449,22 @@ local function updateBuildUiVisuals()
 		if hammerActive then
 			statusInfoLabel.Text = if #hammerStatusMessage > 0
 				then hammerStatusMessage
-				else "Hammer: LMB Upgrade | RMB Demolish"
+				else "Hammer: LMB Upgrade/Repair | RMB Demolish"
 			statusInfoLabel.TextColor3 = if hammerStatusValid
 				then Color3.fromRGB(255, 215, 105)
 				else Color3.fromRGB(235, 110, 110)
 		else
-			local selectedCfg = BuildingConfig.Pieces[selectedType]
+			local selectedCfg = selectedCfgGlobal
 			if selectedCfg then
-				local affordable = canAffordCost(selectedCfg.Cost)
-				local costText = formatCostText(selectedCfg.Cost)
+				local affordable = canAffordPiece(selectedType, selectedCfg)
+				local costText = if toolMode == "DefenseItem" and selectedDefCfg ~= nil
+					then string.format("1x %s (+%d оч.)", selectedCfg.Name, selectedDefCfg.CapacityCost)
+					elseif selectedDefCfg ~= nil then string.format(
+						"%s (+%d оч.)",
+						formatCostText(selectedCfg.Cost),
+						selectedDefCfg.CapacityCost
+					)
+					else formatCostText(selectedCfg.Cost)
 				if #previewStatusMessage > 0 and not previewPlaceable then
 					statusInfoLabel.Text = string.format("%s | %s", selectedCfg.Name, previewStatusMessage)
 					statusInfoLabel.TextColor3 = Color3.fromRGB(235, 110, 110)
@@ -511,11 +562,25 @@ local function handleHammerAction(forceDemolish: boolean)
 	end
 
 	local pieceCfg = BuildingConfig.Pieces[pieceType]
-	if not pieceCfg or not pieceCfg.Upgradeable or getRemainingRaidBlockSeconds(hoveredModel) > 0 then
+	if not pieceCfg or getRemainingRaidBlockSeconds(hoveredModel) > 0 then
 		return
 	end
 
-	local nextTier = BuildingConfig.GetNextTier(tier)
+	local hpAttr = hoveredModel:GetAttribute("Health") or hoveredModel:GetAttribute("Hp")
+	local maxHpAttr = hoveredModel:GetAttribute("MaxHealth") or hoveredModel:GetAttribute("MaxHp")
+	local hp = if typeof(hpAttr) == "number" then math.floor(hpAttr + 0.5) else 0
+	local maxHp = if typeof(maxHpAttr) == "number" then math.floor(maxHpAttr + 0.5) else 1
+	local nextTier = if pieceCfg.Upgradeable then BuildingConfig.GetNextTier(tier) else nil
+
+	if hp < maxHp and (not pieceCfg.Upgradeable or nextTier == nil) then
+		Net.GetEvent(Net.Events.BuildRepairRequest):FireServer(uid)
+		return
+	end
+
+	if not pieceCfg.Upgradeable then
+		return
+	end
+
 	local nextTierCfg = if nextTier ~= nil then BuildingConfig.Tiers[nextTier] else nil
 	if
 		nextTier == nil
@@ -539,7 +604,14 @@ local function handleBuildLeftClick()
 	if previewPlaceable and previewCFrame ~= nil then
 		local selectedType = getSelectedPieceType()
 		Net.GetEvent(Net.Events.BuildPlaceRequest)
-			:FireServer(selectedType, previewCFrame, previewParentUid, previewSocketId, previewRotStep)
+			:FireServer(
+				selectedType,
+				previewCFrame,
+				previewParentUid,
+				previewSocketId,
+				previewRotStep,
+				previewMountSurface
+			)
 	end
 end
 
@@ -604,20 +676,50 @@ local function updateHammerHover()
 	end
 
 	if not pieceCfg or not pieceCfg.Upgradeable then
-		targetHighlight.OutlineColor = Color3.fromRGB(160, 160, 175)
-		targetHighlight.FillColor = Color3.fromRGB(120, 120, 135)
-		hammerStatusMessage = string.format("%s (%d/%d HP) | Not upgradeable", pieceName, hp, maxHp)
-		hammerStatusValid = false
+		local raidBlockRemaining = getRemainingRaidBlockSeconds(hoveredModel)
+		if hp < maxHp then
+			if raidBlockRemaining > 0 then
+				targetHighlight.OutlineColor = Color3.fromRGB(255, 75, 75)
+				targetHighlight.FillColor = Color3.fromRGB(235, 65, 65)
+				hammerStatusMessage = string.format(
+					"%s (%d/%d HP) | Raid Blocked: %ds",
+					pieceName,
+					hp,
+					maxHp,
+					math.ceil(raidBlockRemaining)
+				)
+				hammerStatusValid = false
+			else
+				targetHighlight.OutlineColor = Color3.fromRGB(95, 235, 125)
+				targetHighlight.FillColor = Color3.fromRGB(70, 200, 110)
+				hammerStatusMessage =
+					string.format("Repair: %s (%d/%d HP) [LMB Repair | RMB Remove]", pieceName, hp, maxHp)
+				hammerStatusValid = true
+			end
+		else
+			targetHighlight.OutlineColor = Color3.fromRGB(160, 160, 175)
+			targetHighlight.FillColor = Color3.fromRGB(120, 120, 135)
+			hammerStatusMessage = string.format("%s (%d/%d HP) | RMB Remove", pieceName, hp, maxHp)
+			hammerStatusValid = true
+		end
 		updateBuildUiVisuals()
 		return
 	end
 
 	local nextTier = BuildingConfig.GetNextTier(tier)
 	if nextTier == nil then
-		targetHighlight.OutlineColor = Color3.fromRGB(85, 195, 255)
-		targetHighlight.FillColor = Color3.fromRGB(70, 165, 235)
-		hammerStatusMessage = string.format("%s [Armored] (%d/%d HP) | Max Tier", pieceName, hp, maxHp)
-		hammerStatusValid = true
+		local raidBlockRemaining = getRemainingRaidBlockSeconds(hoveredModel)
+		if hp < maxHp and raidBlockRemaining <= 0 then
+			targetHighlight.OutlineColor = Color3.fromRGB(95, 235, 125)
+			targetHighlight.FillColor = Color3.fromRGB(70, 200, 110)
+			hammerStatusMessage = string.format("Repair: %s [Armored] (%d/%d HP) [LMB Repair]", pieceName, hp, maxHp)
+			hammerStatusValid = true
+		else
+			targetHighlight.OutlineColor = Color3.fromRGB(85, 195, 255)
+			targetHighlight.FillColor = Color3.fromRGB(70, 165, 235)
+			hammerStatusMessage = string.format("%s [Armored] (%d/%d HP) | Max Tier", pieceName, hp, maxHp)
+			hammerStatusValid = true
+		end
 		updateBuildUiVisuals()
 		return
 	end
@@ -732,7 +834,6 @@ local function updatePreviewAndHighlight()
 		return
 	end
 
-	local ghost = ensureGhostModel(selectedType)
 	local mouseLoc = UserInputService:GetMouseLocation()
 	local unitRay = camera:ViewportPointToRay(mouseLoc.X, mouseLoc.Y)
 
@@ -755,6 +856,152 @@ local function updatePreviewAndHighlight()
 	end
 
 	local playerModels = collectPlayerStructureModels()
+	local defCfg = Defenses.Get(selectedType)
+	if pieceCfg.IsDefense == true and defCfg ~= nil then
+		local targetCF = CFrame.new(aimPos) * CFrame.Angles(0, math.rad(currentYawDeg), 0)
+		local mountSurface: DefenseMountSurface = if defCfg.AllowedMount == "WallOrCeiling" then "Wall" else "Floor"
+		local hasValidTarget = true
+		local reason = ""
+		local overlapExcludes = table.clone(cachedPreviewExcludes)
+
+		if inRaid then
+			hasValidTarget = false
+			reason = "Ловушки и турели запрещены в рейде"
+		else
+			local usedCap, maxCap = computeLocalDefenseCapacity()
+			if (usedCap + defCfg.CapacityCost) > maxCap then
+				hasValidTarget = false
+				reason = string.format("Лимит защиты: %d/%d (+%d)", usedCap, maxCap, defCfg.CapacityCost)
+			end
+		end
+
+		if defCfg.AllowedMount == "Floor" then
+			mountSurface = "Floor"
+			local groundResult = result
+			if groundResult == nil then
+				local downOrigin = Vector3.new(aimPos.X, aimPos.Y + 2.5, aimPos.Z)
+				groundResult = Workspace:Raycast(downOrigin, Vector3.new(0, -5.5, 0), cachedPreviewRayParams)
+			end
+			if
+				groundResult ~= nil
+				and groundResult.Normal.Y >= 0.7
+				and not BuildingGeometry.IsNoBuildInstance(groundResult.Instance, false)
+			then
+				targetCF = CFrame.new(groundResult.Position) * CFrame.Angles(0, math.rad(currentYawDeg), 0)
+			else
+				hasValidTarget = false
+				if #reason == 0 then
+					reason = "Требуется ровный пол или фундамент"
+				end
+			end
+		else
+			if
+				result ~= nil
+				and hitStructureModel ~= nil
+				and hitStructureModel:GetAttribute("OwnerUserId") == localPlayer.UserId
+			then
+				local hostTypeAttr = hitStructureModel:GetAttribute("PieceType")
+				local hostType = if typeof(hostTypeAttr) == "string"
+					then BuildingGeometry.CanonicalPieceType(hostTypeAttr)
+					else nil
+				local hostCfg = if hostType ~= nil then BuildingConfig.Pieces[hostType] else nil
+				if
+					result.Normal.Y <= -0.7
+					and hostCfg ~= nil
+					and (hostCfg.Category == "Floor" or hostCfg.Category == "Foundation")
+				then
+					mountSurface = "Ceiling"
+					targetCF = CFrame.new(result.Position) * CFrame.Angles(0, math.rad(currentYawDeg), 0)
+					table.insert(overlapExcludes, hitStructureModel)
+				elseif math.abs(result.Normal.Y) <= 0.35 and hostCfg ~= nil and hostCfg.Category == "Wall" then
+					local horizNormal = Vector3.new(result.Normal.X, 0, result.Normal.Z)
+					if horizNormal.Magnitude >= 0.05 then
+						mountSurface = "Wall"
+						targetCF = CFrame.lookAt(result.Position, result.Position + horizNormal.Unit)
+						table.insert(overlapExcludes, hitStructureModel)
+					else
+						hasValidTarget = false
+						if #reason == 0 then
+							reason = "Наведите на свою стену или потолок"
+						end
+					end
+				else
+					hasValidTarget = false
+					if #reason == 0 then
+						reason =
+							"Ловушка-дробовик крепится на стену или потолок"
+					end
+				end
+			else
+				hasValidTarget = false
+				if #reason == 0 then
+					reason = "Наведите на свою стену или потолок"
+				end
+			end
+		end
+
+		if hasValidTarget then
+			if (hrp.Position - targetCF.Position).Magnitude > BuildingConfig.MaxBuildDistance then
+				hasValidTarget = false
+				reason = string.format("Too far (>%d studs)", BuildingConfig.MaxBuildDistance)
+			elseif #savedPieces >= BuildingConfig.MaxPiecesPerBase then
+				hasValidTarget = false
+				reason = "Max pieces limit reached"
+			elseif isTargetInRaidOutpostZone(selectedType, targetCF) then
+				hasValidTarget = false
+				reason = "Запрещено в RaidOutpostZone"
+			elseif not canAffordPiece(selectedType, pieceCfg) then
+				hasValidTarget = false
+				reason = "Недостаточно ресурсов/предметов"
+			else
+				for _, existing in playerModels do
+					local exTypeAttr = existing:GetAttribute("PieceType")
+					if typeof(exTypeAttr) == "string" then
+						local exCfg = BuildingConfig.Pieces[BuildingGeometry.CanonicalPieceType(exTypeAttr)]
+						if exCfg ~= nil and exCfg.IsDefense == true then
+							if (existing:GetPivot().Position - targetCF.Position).Magnitude < 2.0 then
+								hasValidTarget = false
+								reason = "Слишком близко к другой защите"
+								break
+							end
+						end
+					end
+				end
+				if hasValidTarget then
+					local overlap = BuildingGeometry.CheckWorldOverlap(
+						selectedType,
+						targetCF,
+						overlapExcludes,
+						false,
+						false,
+						mountSurface
+					)
+					if not overlap.Allowed then
+						hasValidTarget = false
+						reason = overlap.Reason or "Blocked"
+					end
+				end
+			end
+		end
+
+		local ghost = ensureGhostModel(selectedType, mountSurface)
+		previewCFrame = targetCF
+		previewParentUid = nil
+		previewSocketId = nil
+		previewRotStep = currentRotStep
+		previewMountSurface = mountSurface
+		previewPlaceable = hasValidTarget
+		previewStatusMessage = reason
+
+		ghost:PivotTo(targetCF)
+		BuildingGeometry.SetGhostColor(ghost, if hasValidTarget then COLOR_GHOST_VALID_GRID else COLOR_GHOST_INVALID)
+		ghost.Parent = Workspace
+		updateBuildUiVisuals()
+		return
+	end
+
+	previewMountSurface = nil
+	local ghost = ensureGhostModel(selectedType, nil)
 	local isFoundation = (pieceCfg.Category == "Foundation")
 	local isAssaultDeployable = (pieceCfg.AssaultDeployable == true)
 	local bestScore = if isFoundation then SOCKET_SEARCH_RADIUS_FOUNDATION else SOCKET_SEARCH_RADIUS_OTHER
@@ -976,7 +1223,7 @@ local function createBuildingGui()
 	actionBar.Name = "BaseActionBar"
 	actionBar.AnchorPoint = Vector2.new(1, 0)
 	actionBar.Position = UDim2.new(1, -16, 0, 16)
-	actionBar.Size = UDim2.fromOffset(520, 40)
+	actionBar.Size = UDim2.fromOffset(700, 40)
 	actionBar.BackgroundTransparency = 1
 	actionBar.Visible = BuildingController.CanBuild()
 	actionBar.Parent = screenGui
@@ -987,6 +1234,22 @@ local function createBuildingGui()
 	barLayout.Padding = UDim.new(0, 8)
 	barLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	barLayout.Parent = actionBar
+
+	local defBadge = Instance.new("TextLabel")
+	defBadge.Name = "DefenseCapacityBadge"
+	defBadge.LayoutOrder = -1
+	defBadge.Size = UDim2.fromOffset(162, 38)
+	defBadge.BackgroundColor3 = Color3.fromRGB(48, 95, 72)
+	defBadge.BorderSizePixel = 0
+	defBadge.Font = Enum.Font.GothamBold
+	defBadge.TextSize = 12
+	defBadge.TextColor3 = Color3.new(1, 1, 1)
+	defBadge.Text = "Защита: 0 / 60 очков"
+	defBadge.Visible = BuildingController.IsBaseMode()
+	defBadge.Parent = actionBar
+	local defCorner = Instance.new("UICorner")
+	defCorner.CornerRadius = UDim.new(0, 8)
+	defCorner.Parent = defBadge
 
 	local tierLbl = Instance.new("TextLabel")
 	tierLbl.Name = "BaseTierBadge"
@@ -1065,7 +1328,7 @@ local function createBuildingGui()
 	menuFrame.Name = "BuildMenuFrame"
 	menuFrame.AnchorPoint = Vector2.new(0.5, 1)
 	menuFrame.Position = UDim2.new(0.5, 0, 1, -110)
-	menuFrame.Size = UDim2.fromOffset(860, 168)
+	menuFrame.Size = UDim2.fromOffset(860, 200)
 	menuFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
 	menuFrame.BackgroundTransparency = 0.12
 	menuFrame.BorderSizePixel = 0
@@ -1083,13 +1346,13 @@ local function createBuildingGui()
 	local piecesGridFrame = Instance.new("Frame")
 	piecesGridFrame.Name = "PiecesGrid"
 	piecesGridFrame.Position = UDim2.fromOffset(10, 8)
-	piecesGridFrame.Size = UDim2.new(1, -20, 0, 96)
+	piecesGridFrame.Size = UDim2.new(1, -20, 0, 130)
 	piecesGridFrame.BackgroundTransparency = 1
 	piecesGridFrame.Parent = menuFrame
 
 	local piecesGrid = Instance.new("UIGridLayout")
-	piecesGrid.CellSize = UDim2.fromOffset(98, 44)
-	piecesGrid.CellPadding = UDim2.fromOffset(6, 6)
+	piecesGrid.CellSize = UDim2.fromOffset(98, 40)
+	piecesGrid.CellPadding = UDim2.fromOffset(6, 5)
 	piecesGrid.HorizontalAlignment = Enum.HorizontalAlignment.Center
 	piecesGrid.SortOrder = Enum.SortOrder.LayoutOrder
 	piecesGrid.Parent = piecesGridFrame
@@ -1156,7 +1419,7 @@ local function createBuildingGui()
 
 	local statusRow = Instance.new("Frame")
 	statusRow.Name = "StatusRow"
-	statusRow.Position = UDim2.fromOffset(10, 110)
+	statusRow.Position = UDim2.fromOffset(10, 142)
 	statusRow.Size = UDim2.new(1, -20, 0, 28)
 	statusRow.BackgroundTransparency = 1
 	statusRow.Parent = menuFrame
@@ -1241,6 +1504,7 @@ local function createBuildingGui()
 
 	baseActionBar = actionBar
 	baseTierBadge = tierLbl
+	defenseCapacityBadge = defBadge
 	mapCycleBtn = mapBtn
 	buildToggleBtn = buildBtn
 	deployToMapBtn = deployBtn
@@ -1282,6 +1546,11 @@ local function onBaseStateSync(piecesAny: any)
 					ParentUid = parentUid,
 					AnchorUid = parentUid,
 					SocketId = if type(item.SocketId) == "string" then item.SocketId else nil,
+					MountSurface = if item.MountSurface == "Floor"
+							or item.MountSurface == "Wall"
+							or item.MountSurface == "Ceiling"
+						then item.MountSurface :: DefenseMountSurface
+						else nil,
 					Hp = item.Hp,
 					LastDamagedAt = if type(item.LastDamagedAt) == "number" then item.LastDamagedAt else nil,
 					Storage = if type(item.Storage) == "table" then item.Storage else nil,
@@ -1290,6 +1559,7 @@ local function onBaseStateSync(piecesAny: any)
 		end
 	end
 	savedPieces = parsed
+	updateBuildUiVisuals()
 end
 
 local function syncModeFromEquippedTool()
@@ -1314,6 +1584,14 @@ local function syncModeFromEquippedTool()
 		toolMode = "Hammer"
 		upgradeModeToggle = true
 		demolishModeToggle = false
+	elseif Defenses.Get(itemId) ~= nil then
+		toolMode = "DefenseItem"
+		upgradeModeToggle = false
+		demolishModeToggle = false
+		local orderIdx = table.find(BuildingConfig.PieceOrder, BuildingGeometry.CanonicalPieceType(itemId))
+		if orderIdx ~= nil then
+			selectedPieceIndex = orderIdx
+		end
 	elseif toolMode ~= "None" then
 		toolMode = "None"
 		manualBuildMode = false

@@ -237,6 +237,63 @@ local Recipes: { [string]: RecipeConfig } = {
 			{ Id = "scrap", Count = 10 },
 		},
 	},
+	craft_shotgun_shell = {
+		Id = "craft_shotgun_shell",
+		ResultId = "shotgun_shell",
+		ResultCount = 4,
+		CraftTime = 3,
+		Station = "workbench_1",
+		Ingredients = {
+			{ Id = "metal_ore", Count = 12 },
+			{ Id = "scrap", Count = 6 },
+		},
+	},
+	craft_floor_spikes = {
+		Id = "craft_floor_spikes",
+		ResultId = "floor_spikes",
+		ResultCount = 1,
+		CraftTime = 3,
+		Station = nil,
+		Ingredients = {
+			{ Id = "wood", Count = 60 },
+			{ Id = "metal_ore", Count = 20 },
+		},
+	},
+	craft_landmine = {
+		Id = "craft_landmine",
+		ResultId = "landmine",
+		ResultCount = 1,
+		CraftTime = 5,
+		Station = "workbench_1",
+		Ingredients = {
+			{ Id = "metal_ore", Count = 35 },
+			{ Id = "scrap", Count = 20 },
+		},
+	},
+	craft_shotgun_trap = {
+		Id = "craft_shotgun_trap",
+		ResultId = "shotgun_trap",
+		ResultCount = 1,
+		CraftTime = 6,
+		Station = "workbench_1",
+		Ingredients = {
+			{ Id = "wood", Count = 50 },
+			{ Id = "metal_ore", Count = 60 },
+			{ Id = "scrap", Count = 25 },
+		},
+	},
+	craft_auto_turret = {
+		Id = "craft_auto_turret",
+		ResultId = "auto_turret",
+		ResultCount = 1,
+		CraftTime = 10,
+		Station = "workbench_2",
+		Ingredients = {
+			{ Id = "high_quality_metal", Count = 15 },
+			{ Id = "tech_parts", Count = 3 },
+			{ Id = "metal_ore", Count = 80 },
+		},
+	},
 }
 
 return table.freeze(Recipes)
