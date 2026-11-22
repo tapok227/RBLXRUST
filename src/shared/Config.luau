@@ -1,5 +1,8 @@
 --!strict
 return table.freeze({
+	MAX_TC_WALL_LAYERS = 2,
+	MIN_TURRET_DISTANCE = 14,
+	MIN_TRAP_DISTANCE = 6,
 	Game = table.freeze({
 		Name = "MyRobloxGame",
 		MaxPlayers = 50,
@@ -91,11 +94,18 @@ return table.freeze({
 	}),
 	Raid = table.freeze({
 		MaxLives = 3,
+		RespawnDelay = 0.8,
+		SpawnInvulnerabilityDuration = 2.0,
 		TcHackDuration = 10,
 		TcHackMaxDistance = 14,
 		OutpostRadius = 28,
 		OutpostOffsetZ = 46,
 		ExtractionStashSlots = 18,
+		SupplyCrateSlots = 6,
+		StarterSupplyItems = table.freeze({
+			table.freeze({ Id = "bandage", Count = 6 }),
+			table.freeze({ Id = "cooked_meat", Count = 2 }),
+		}),
 		Tiers = table.freeze({
 			[1] = table.freeze({
 				Tier = 1,

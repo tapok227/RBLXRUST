@@ -131,11 +131,14 @@ local function refreshUi()
 	end
 
 	if pathBadgeLabel then
+		local badgeText = state.PathMessage
 		if state.PathValid then
-			pathBadgeLabel.Text = "Path to TC: Valid"
+			pathBadgeLabel.Text = if badgeText ~= nil and #badgeText > 0
+				then badgeText
+				else "TC Protection: Valid (<= 2 layers)"
 			pathBadgeLabel.TextColor3 = COLOR_OK
 		else
-			pathBadgeLabel.Text = "Path to TC: Blocked"
+			pathBadgeLabel.Text = if badgeText ~= nil and #badgeText > 0 then badgeText else "TC Protection: > 2 layers"
 			pathBadgeLabel.TextColor3 = COLOR_BAD
 		end
 	end

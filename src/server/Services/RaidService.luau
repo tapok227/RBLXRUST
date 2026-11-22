@@ -77,6 +77,8 @@ type RaidSession = {
 	OutpostWorkbenchId: string?,
 	ExtractionStashContainerId: string?,
 	ExtractionStashModel: Model?,
+	SupplyCrateContainerId: string?,
+	SupplyCrateModel: Model?,
 	ExtractionTerminalModel: Model?,
 	ExtractionTerminalPrompt: ProximityPrompt?,
 	ExtractionTerminalIndicator: BasePart?,
@@ -1235,6 +1237,10 @@ local function cleanupSession(session: RaidSession)
 		LootService.DestroyContainer(session.ExtractionStashContainerId)
 		session.ExtractionStashContainerId = nil
 	end
+	if session.SupplyCrateContainerId ~= nil then
+		LootService.DestroyContainer(session.SupplyCrateContainerId)
+		session.SupplyCrateContainerId = nil
+	end
 	if session.OutpostWorkbenchId ~= nil then
 		CraftingService.UnregisterStation(session.OutpostWorkbenchId)
 		session.OutpostWorkbenchId = nil
@@ -1252,6 +1258,10 @@ local function cleanupSession(session: RaidSession)
 	if session.ExtractionStashModel and session.ExtractionStashModel.Parent then
 		session.ExtractionStashModel:Destroy()
 		session.ExtractionStashModel = nil
+	end
+	if session.SupplyCrateModel and session.SupplyCrateModel.Parent then
+		session.SupplyCrateModel:Destroy()
+		session.SupplyCrateModel = nil
 	end
 	if session.ExtractionTerminalModel and session.ExtractionTerminalModel.Parent then
 		session.ExtractionTerminalModel:Destroy()
@@ -1391,6 +1401,31 @@ local function teleportCharacterToPosition(player: Player, targetPos: Vector3)
 	else
 		character:PivotTo(CFrame.new(targetPos))
 	end
+end
+
+local function isCharacterInvulnerable(charModel: Model): boolean
+	return charModel:GetAttribute("RaidInvulnerable") == true or charModel:FindFirstChildOfClass("ForceField") ~= nil
+end
+
+local function applySpawnProtection(character: Model)
+	local existingField = character:FindFirstChild("RaidSpawnProtection")
+	if existingField then
+		existingField:Destroy()
+	end
+	local ff = Instance.new("ForceField")
+	ff.Name = "RaidSpawnProtection"
+	ff.Visible = true
+	ff.Parent = character
+	character:SetAttribute("RaidInvulnerable", true)
+
+	task.delay(Config.Raid.SpawnInvulnerabilityDuration, function()
+		if ff.Parent ~= nil then
+			ff:Destroy()
+		end
+		if character.Parent ~= nil then
+			character:SetAttribute("RaidInvulnerable", false)
+		end
+	end)
 end
 
 local function getDefaultSpawnPosition(): Vector3
@@ -1871,7 +1906,7 @@ local function spawnRaidOutpost(session: RaidSession)
 	session.RespawnPosition = outpostOrigin + Vector3.new(-3.2, 4.2, 2.4)
 
 	-- Extraction Stash crate inside shack
-	local stashCF = baseCF * CFrame.new(3.2, 1.0, 2.5) * CFrame.Angles(0, math.rad(-90), 0)
+	local stashCF = baseCF * CFrame.new(3.2, 1.0, 3.1) * CFrame.Angles(0, math.rad(-90), 0)
 	local stashModel = BuildingGeometry.CreateModel("storage_box", stashCF, false, "ExtractionStash")
 	for _, desc in stashModel:GetDescendants() do
 		if desc:IsA("BasePart") then
@@ -1917,6 +1952,88 @@ local function spawnRaidOutpost(session: RaidSession)
 	)
 	if #stashId > 0 then
 		session.ExtractionStashContainerId = stashId
+	end
+
+	-- Starter medical / supply crate next to ExtractionStash
+	local supplyCF = baseCF * CFrame.new(3.4, 1.0, -0.55) * CFrame.Angles(0, math.rad(-90), 0)
+	local supplyModel = Instance.new("Model")
+	supplyModel.Name = "RaidSupplyCrate"
+	local supplyBody = createPrimitivePart(
+		supplyModel,
+		"ChestBody",
+		Vector3.new(2.8, 1.8, 2.2),
+		supplyCF * CFrame.new(0, 0.9, 0),
+		Enum.Material.Metal,
+		Color3.fromRGB(224, 228, 232),
+		true
+	)
+	createPrimitivePart(
+		supplyModel,
+		"ChestLid",
+		Vector3.new(3.0, 0.35, 2.4),
+		supplyCF * CFrame.new(0, 1.95, 0),
+		Enum.Material.Metal,
+		Color3.fromRGB(188, 48, 48),
+		true
+	)
+	createPrimitivePart(
+		supplyModel,
+		"MedCrossH",
+		Vector3.new(0.9, 0.1, 0.3),
+		supplyCF * CFrame.new(0, 2.16, 0),
+		Enum.Material.SmoothPlastic,
+		Color3.fromRGB(245, 245, 245),
+		false
+	)
+	createPrimitivePart(
+		supplyModel,
+		"MedCrossV",
+		Vector3.new(0.3, 0.1, 0.9),
+		supplyCF * CFrame.new(0, 2.16, 0),
+		Enum.Material.SmoothPlastic,
+		Color3.fromRGB(245, 245, 245),
+		false
+	)
+	supplyModel.PrimaryPart = supplyBody
+	supplyModel.Parent = outpostFolder
+	session.SupplyCrateModel = supplyModel
+
+	local supplyGui = Instance.new("BillboardGui")
+	supplyGui.Size = UDim2.fromOffset(160, 28)
+	supplyGui.StudsOffset = Vector3.new(0, 2.5, 0)
+	supplyGui.AlwaysOnTop = true
+	supplyGui.MaxDistance = 40
+	supplyGui.Adornee = supplyBody
+	supplyGui.Parent = supplyBody
+	local supplyLbl = Instance.new("TextLabel")
+	supplyLbl.Size = UDim2.fromScale(1, 1)
+	supplyLbl.BackgroundColor3 = Color3.fromRGB(56, 18, 22)
+	supplyLbl.BackgroundTransparency = 0.2
+	supplyLbl.BorderSizePixel = 0
+	supplyLbl.Font = Enum.Font.GothamBold
+	supplyLbl.TextSize = 12
+	supplyLbl.TextColor3 = Color3.fromRGB(255, 195, 195)
+	supplyLbl.Text = "RAID SUPPLIES (MEDS)"
+	supplyLbl.Parent = supplyGui
+
+	local supplyInitialSlots: Inventory = {}
+	for slotIndex, itemEntry in Config.Raid.StarterSupplyItems do
+		supplyInitialSlots[slotIndex] = {
+			Id = itemEntry.Id,
+			Count = itemEntry.Count,
+		}
+	end
+	local supplyId = LootService.RegisterStorageContainer(
+		supplyModel,
+		"Raid Supply Crate",
+		session.Raider.UserId,
+		Config.Raid.SupplyCrateSlots,
+		supplyInitialSlots,
+		nil,
+		false
+	)
+	if #supplyId > 0 then
+		session.SupplyCrateContainerId = supplyId
 	end
 
 	-- Extraction Terminal console inside shack
@@ -2029,12 +2146,24 @@ local function bindRaiderCharacter(session: RaidSession, character: Model)
 		session.LivesLeft = math.max(0, session.LivesLeft - 1)
 		if session.LivesLeft > 0 then
 			local msg = string.format(
-				"Погиб! Возрождение в кибитке (жизней: %d/%d)",
+				"Погиб! Быстрое возрождение в кибитке (жизней: %d/%d)",
 				session.LivesLeft,
 				session.MaxLives
 			)
 			sendBuildFeedback(session.Raider, false, msg)
 			syncSessionHud(session, msg)
+			local deadCharacter = character
+			task.delay(Config.Raid.RespawnDelay, function()
+				if
+					activeSessions[session.Raider] == session
+					and not session.Extracting
+					and session.LivesLeft > 0
+					and session.Raider.Parent == Players
+					and session.Raider.Character == deadCharacter
+				then
+					session.Raider:LoadCharacter()
+				end
+			end)
 		else
 			failRaidSession(
 				session.Raider,
@@ -2056,10 +2185,18 @@ local function bindRaiderLifecycle(session: RaidSession)
 		end
 		task.spawn(bindRaiderCharacter, session, newChar)
 		if not session.Extracting and session.LivesLeft > 0 then
-			task.delay(0.15, function()
-				if activeSessions[player] == session and not session.Extracting and player.Character == newChar then
+			applySpawnProtection(newChar)
+			task.spawn(function()
+				local hrp = newChar:WaitForChild("HumanoidRootPart", 2)
+				task.wait()
+				if
+					hrp ~= nil
+					and activeSessions[player] == session
+					and not session.Extracting
+					and player.Character == newChar
+				then
 					teleportCharacterToPosition(player, session.RespawnPosition)
-					syncSessionHud(session, "Возрождение в рейд-кибитке")
+					syncSessionHud(session, "Возрождение в рейд-кибитке (защита 2с)")
 				end
 			end)
 		end
@@ -2457,7 +2594,7 @@ function RaidService.TriggerExplosion(params: ExplosionParams): ExplosionResult
 	end
 
 	for _, hit in pendingHumanoidHits do
-		if hit.Model.Parent ~= nil and hit.Humanoid.Health > 0 then
+		if hit.Model.Parent ~= nil and hit.Humanoid.Health > 0 and not isCharacterInvulnerable(hit.Model) then
 			if params.Attacker ~= nil and params.Attacker.Parent == Players then
 				hit.Model:SetAttribute("LastAttackerUserId", params.Attacker.UserId)
 			end
@@ -3233,6 +3370,8 @@ local function createRaidSessionRecord(
 		OutpostWorkbenchId = nil,
 		ExtractionStashContainerId = nil,
 		ExtractionStashModel = nil,
+		SupplyCrateContainerId = nil,
+		SupplyCrateModel = nil,
 		ExtractionTerminalModel = nil,
 		ExtractionTerminalPrompt = nil,
 		ExtractionTerminalIndicator = nil,

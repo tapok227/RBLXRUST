@@ -256,11 +256,14 @@ function BaseService.BuildToolCupboardState(player: Player): Types.ToolCupboardS
 	local status: Types.ToolCupboardStatus = if protectedHours > 0 then "Protected" else "Decaying"
 
 	local playerRecords = spawnedByPlayer[player] or {}
-	local pathValid, pathMessage = BuildingValidator.CanReachToolCupboard(
+	local pathValid, pathMessage, minLayers = BuildingValidator.CheckMaxWallsToTC(
 		(playerRecords :: any) :: { [string]: BuildingValidator.LivePieceEntry },
 		occupiedSockets,
 		nil
 	)
+	if pathValid and minLayers ~= nil then
+		pathMessage = string.format("Защита TC: %d/%d слоёв", minLayers, Config.MAX_TC_WALL_LAYERS)
+	end
 
 	local maxSlots = Config.Upkeep.TcStorageSlots
 	local defUsed, defMax = BuildingValidator.ComputeDefenseCapacity(data.Base.Pieces, data.Base.BaseTier)

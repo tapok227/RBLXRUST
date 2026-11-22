@@ -434,8 +434,13 @@ local function hasLineOfSight(origin: Vector3, targetPart: BasePart, targetModel
 	return false
 end
 
+local function isCharacterInvulnerable(targetModel: Model): boolean
+	return targetModel:GetAttribute("RaidInvulnerable") == true
+		or targetModel:FindFirstChildOfClass("ForceField") ~= nil
+end
+
 local function applyDamageToTarget(record: ActiveDefenseRecord, targetModel: Model, humanoid: Humanoid, amount: number)
-	if humanoid.Health <= 0 or amount <= 0 then
+	if humanoid.Health <= 0 or amount <= 0 or isCharacterInvulnerable(targetModel) then
 		return
 	end
 	if record.OwnerUserId ~= 0 then
@@ -486,7 +491,11 @@ local function tickFloorSpikes(record: ActiveDefenseRecord, now: number)
 		local dx = tPos.X - trapPos.X
 		local dz = tPos.Z - trapPos.Z
 		local horizDist = math.sqrt(dx * dx + dz * dz)
-		if horizDist <= cfg.Range and math.abs(tPos.Y - trapPos.Y) <= 4.0 then
+		if
+			horizDist <= cfg.Range
+			and math.abs(tPos.Y - trapPos.Y) <= 4.0
+			and not isCharacterInvulnerable(target.Model)
+		then
 			hitAny = true
 			table.insert(hitPositions, tPos)
 			applyDamageToTarget(record, target.Model, target.Humanoid, cfg.Damage)

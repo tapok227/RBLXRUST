@@ -954,14 +954,42 @@ local function updatePreviewAndHighlight()
 				hasValidTarget = false
 				reason = "Недостаточно ресурсов/предметов"
 			else
+				local canonicalSelected = BuildingGeometry.CanonicalPieceType(selectedType)
 				for _, existing in playerModels do
 					local exTypeAttr = existing:GetAttribute("PieceType")
 					if typeof(exTypeAttr) == "string" then
-						local exCfg = BuildingConfig.Pieces[BuildingGeometry.CanonicalPieceType(exTypeAttr)]
+						local exType = BuildingGeometry.CanonicalPieceType(exTypeAttr)
+						local exCfg = BuildingConfig.Pieces[exType]
 						if exCfg ~= nil and exCfg.IsDefense == true then
-							if (existing:GetPivot().Position - targetCF.Position).Magnitude < 2.0 then
+							local dist = (existing:GetPivot().Position - targetCF.Position).Magnitude
+							if canonicalSelected == "auto_turret" and exType == "auto_turret" then
+								if dist < Config.MIN_TURRET_DISTANCE then
+									hasValidTarget = false
+									reason =
+										"Слишком близко к другой турели (интерференция)"
+									break
+								end
+							elseif
+								(canonicalSelected == "auto_turret" and exType == "shotgun_trap")
+								or (canonicalSelected == "shotgun_trap" and exType == "auto_turret")
+							then
+								if dist < Config.MIN_TRAP_DISTANCE then
+									hasValidTarget = false
+									reason =
+										"Слишком близко к другой турели (интерференция)"
+									break
+								end
+							elseif canonicalSelected == "shotgun_trap" and exType == "shotgun_trap" then
+								if dist < Config.MIN_TRAP_DISTANCE then
+									hasValidTarget = false
+									reason =
+										"Слишком близко к другой ловушке-дробовику"
+									break
+								end
+							elseif dist < 2.0 then
 								hasValidTarget = false
-								reason = "Слишком близко к другой защите"
+								reason =
+									"Слишком близко к другой ловушке или турели"
 								break
 							end
 						end

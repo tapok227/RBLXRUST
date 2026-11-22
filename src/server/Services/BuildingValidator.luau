@@ -3,6 +3,7 @@ local CollectionService = game:GetService("CollectionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 
+local Config = require(ReplicatedStorage.Shared.Config)
 local Types = require(ReplicatedStorage.Shared.Types)
 local BuildingConfig = require(ReplicatedStorage.Shared.configs.BuildingConfig)
 local Defenses = require(ReplicatedStorage.Shared.configs.Defenses)
@@ -482,21 +483,30 @@ local function getSurfaceWallYOffset(category: Types.BuildPieceCategory): number
 	return if category == "Foundation" then BuildingConfig.FoundationThickness else BuildingConfig.FloorThickness
 end
 
-function BuildingValidator.CanReachToolCupboard(
+function BuildingValidator.CheckMaxWallsToTC(
 	playerRecords: { [string]: LivePieceEntry },
 	_occupiedSockets: { [string]: { [string]: string } },
 	candidatePiece: CandidatePieceInput?
-): (boolean, string?)
+): (boolean, string?, number?)
 	type SurfaceNode = {
 		Uid: string,
 		PieceType: BuildPieceType,
 		Category: Types.BuildPieceCategory,
 		CFrame: CFrame,
 	}
+	type EdgeBarrier = {
+		CFrame: CFrame,
+		Cost: number,
+	}
+	type GraphEdge = {
+		To: string,
+		Cost: number,
+	}
 
+	local EXTERIOR_UID = "__EXTERIOR__"
 	local surfaces: { [string]: SurfaceNode } = {}
 	local surfaceList: { SurfaceNode } = {}
-	local solidWalls: { CFrame } = {}
+	local edgeBarriers: { EdgeBarrier } = {}
 	local stairsList: { { PieceType: BuildPieceType, CFrame: CFrame, ParentUid: string? } } = {}
 
 	local tcParentUid: string? = nil
@@ -515,8 +525,11 @@ function BuildingValidator.CanReachToolCupboard(
 		if canonical == "tool_cupboard" then
 			tcParentUid = record.Piece.ParentUid or record.Piece.AnchorUid
 			tcPos = record.CFrame.Position
-		elseif canonical == "wall" then
-			table.insert(solidWalls, record.CFrame)
+		elseif canonical == "wall" or canonical == "window_wall" then
+			table.insert(edgeBarriers, { CFrame = record.CFrame, Cost = 1 })
+		elseif canonical == "doorway" then
+			local barrierCost = if record.Model:GetAttribute("HasDoor") == true then 1 else 0
+			table.insert(edgeBarriers, { CFrame = record.CFrame, Cost = barrierCost })
 		elseif isSurfaceCategory(cfg.Category) then
 			local node: SurfaceNode = {
 				Uid = uid,
@@ -542,8 +555,10 @@ function BuildingValidator.CanReachToolCupboard(
 			if candCanonical == "tool_cupboard" then
 				tcParentUid = candidatePiece.ParentUid
 				tcPos = candidatePiece.CFrame.Position
-			elseif candCanonical == "wall" then
-				table.insert(solidWalls, candidatePiece.CFrame)
+			elseif candCanonical == "wall" or candCanonical == "window_wall" then
+				table.insert(edgeBarriers, { CFrame = candidatePiece.CFrame, Cost = 1 })
+			elseif candCanonical == "doorway" then
+				table.insert(edgeBarriers, { CFrame = candidatePiece.CFrame, Cost = 0 })
 			elseif isSurfaceCategory(candCfg.Category) then
 				local node: SurfaceNode = {
 					Uid = "__CANDIDATE__",
@@ -564,7 +579,7 @@ function BuildingValidator.CanReachToolCupboard(
 	end
 
 	if tcPos == nil then
-		return true, nil
+		return true, nil, 0
 	end
 
 	local tcHostUid: string? = nil
@@ -585,16 +600,16 @@ function BuildingValidator.CanReachToolCupboard(
 	end
 
 	if tcHostUid == nil then
-		return true, nil
+		return true, nil, 0
 	end
 
-	local function isEdgeBlockedByWall(edgeWallPos: Vector3): boolean
-		for _, wallCF in solidWalls do
-			if (wallCF.Position - edgeWallPos).Magnitude <= 1.35 then
-				return true
+	local function getEdgeBarrierCost(edgeWallPos: Vector3): number
+		for _, barrier in edgeBarriers do
+			if barrier.Cost > 0 and (barrier.CFrame.Position - edgeWallPos).Magnitude <= 1.35 then
+				return 1
 			end
 		end
-		return false
+		return 0
 	end
 
 	local function findNeighborAcrossEdge(node: SurfaceNode, edgeWorldPos: Vector3): SurfaceNode?
@@ -614,17 +629,25 @@ function BuildingValidator.CanReachToolCupboard(
 		return nil
 	end
 
-	local adj: { [string]: { string } } = {}
+	local adj: { [string]: { GraphEdge } } = {
+		[EXTERIOR_UID] = {},
+	}
 	for _, node in surfaceList do
 		adj[node.Uid] = {}
 	end
-	local function addLink(aUid: string, bUid: string)
-		table.insert(adj[aUid], bUid)
-		table.insert(adj[bUid], aUid)
+
+	local function addDirectedEdge(fromUid: string, toUid: string, cost: number)
+		table.insert(adj[fromUid], { To = toUid, Cost = cost })
 	end
 
-	local exteriorEntries: { string } = {}
-	local isExteriorMarked: { [string]: boolean } = {}
+	local function addUndirectedEdge(aUid: string, bUid: string, cost: number)
+		addDirectedEdge(aUid, bUid, cost)
+		addDirectedEdge(bUid, aUid, cost)
+	end
+
+	local function pairKey(a: string, b: string): string
+		return if a < b then (a .. "|" .. b) else (b .. "|" .. a)
+	end
 
 	for _, node in surfaceList do
 		local wallYOffset = getSurfaceWallYOffset(node.Category)
@@ -633,20 +656,21 @@ function BuildingValidator.CanReachToolCupboard(
 				local edgeWorldCF = node.CFrame * socket.LocalCFrame
 				local edgeWorldPos = edgeWorldCF.Position
 				local edgeWallPos = (edgeWorldCF * CFrame.new(0, wallYOffset, 0)).Position
-				if not isEdgeBlockedByWall(edgeWallPos) then
-					local neighbor = findNeighborAcrossEdge(node, edgeWorldPos)
-					if neighbor ~= nil then
-						addLink(node.Uid, neighbor.Uid)
-					elseif node.Category == "Foundation" and not isExteriorMarked[node.Uid] then
-						isExteriorMarked[node.Uid] = true
-						table.insert(exteriorEntries, node.Uid)
-					end
+				local edgeCost = getEdgeBarrierCost(edgeWallPos)
+				local neighbor = findNeighborAcrossEdge(node, edgeWorldPos)
+				if neighbor ~= nil then
+					addDirectedEdge(node.Uid, neighbor.Uid, edgeCost)
+				else
+					addDirectedEdge(EXTERIOR_UID, node.Uid, edgeCost)
 				end
 			end
 		end
 	end
 
-	-- Connect floors above stairs
+	local hasUpperFloor: { [string]: boolean } = {}
+	local stairConnectedPairs: { [string]: boolean } = {}
+
+	-- Connect stairs (0 layers when unobstructed)
 	for _, stair in stairsList do
 		local hostNode: SurfaceNode? = if stair.ParentUid ~= nil then surfaces[stair.ParentUid] else nil
 		if hostNode == nil then
@@ -672,25 +696,37 @@ function BuildingValidator.CanReachToolCupboard(
 						local dx = upper.CFrame.Position.X - hostPos.X
 						local dz = upper.CFrame.Position.Z - hostPos.Z
 						local xzDist = math.sqrt(dx * dx + dz * dz)
+						local pKey = pairKey(hostNode.Uid, upper.Uid)
 						if xzDist <= 3.5 then
-							addLink(hostNode.Uid, upper.Uid)
+							hasUpperFloor[hostNode.Uid] = true
+							if not stairConnectedPairs[pKey] then
+								stairConnectedPairs[pKey] = true
+								addUndirectedEdge(hostNode.Uid, upper.Uid, 0)
+							end
 						else
-							-- Check if stair opens onto an adjacent upper floor across an unblocked upper edge
+							-- Check if stair opens onto an adjacent upper floor across an upper edge
 							for _, socket in BuildingGeometry.GetPieceSockets(hostNode.PieceType) do
 								if socket.Kind == "Edge" then
 									local upperEdgePos = (hostNode.CFrame * socket.LocalCFrame).Position
 										+ Vector3.new(0, dy, 0)
 									local upperWallPos = upperEdgePos + Vector3.new(0, BuildingConfig.FloorThickness, 0)
-									if not isEdgeBlockedByWall(upperWallPos) then
-										for _, uSock in BuildingGeometry.GetPieceSockets(upper.PieceType) do
-											if uSock.Kind == "Edge" then
-												local uEdgePos = (upper.CFrame * uSock.LocalCFrame).Position
-												if (uEdgePos - upperEdgePos).Magnitude <= 1.5 then
-													addLink(hostNode.Uid, upper.Uid)
-													break
+									local upperEdgeCost = getEdgeBarrierCost(upperWallPos)
+									local linked = false
+									for _, uSock in BuildingGeometry.GetPieceSockets(upper.PieceType) do
+										if uSock.Kind == "Edge" then
+											local uEdgePos = (upper.CFrame * uSock.LocalCFrame).Position
+											if (uEdgePos - upperEdgePos).Magnitude <= 1.5 then
+												if not stairConnectedPairs[pKey] then
+													stairConnectedPairs[pKey] = true
+													addUndirectedEdge(hostNode.Uid, upper.Uid, upperEdgeCost)
 												end
+												linked = true
+												break
 											end
 										end
+									end
+									if linked then
+										break
 									end
 								end
 							end
@@ -701,29 +737,93 @@ function BuildingValidator.CanReachToolCupboard(
 		end
 	end
 
-	local visited: { [string]: boolean } = {}
-	local queue: { string } = {}
-	for _, entryUid in exteriorEntries do
-		visited[entryUid] = true
-		table.insert(queue, entryUid)
-	end
-
-	local head = 1
-	while head <= #queue do
-		local current = queue[head]
-		head += 1
-		if current == tcHostUid then
-			return true, nil
-		end
-		for _, nextUid in adj[current] do
-			if not visited[nextUid] then
-				visited[nextUid] = true
-				table.insert(queue, nextUid)
+	-- Connect solid ceiling/floor slabs above lower surfaces (+1 layer unless bridged by stairs)
+	for _, lower in surfaceList do
+		local lowerPos = lower.CFrame.Position
+		for _, upper in surfaceList do
+			if upper.Uid ~= lower.Uid and upper.Category == "Floor" then
+				local dy = upper.CFrame.Position.Y - lowerPos.Y
+				if dy >= 7.0 and dy <= 12.5 then
+					local dx = upper.CFrame.Position.X - lowerPos.X
+					local dz = upper.CFrame.Position.Z - lowerPos.Z
+					local xzDist = math.sqrt(dx * dx + dz * dz)
+					if xzDist <= 3.5 then
+						hasUpperFloor[lower.Uid] = true
+						local pKey = pairKey(lower.Uid, upper.Uid)
+						if not stairConnectedPairs[pKey] then
+							stairConnectedPairs[pKey] = true
+							addUndirectedEdge(lower.Uid, upper.Uid, 1)
+						end
+					end
+				end
 			end
 		end
 	end
 
-	return false, "Путь к шкафу не должен быть полностью замурован"
+	-- Open sky surfaces have 0-layer access from exterior
+	for _, node in surfaceList do
+		if not hasUpperFloor[node.Uid] then
+			addDirectedEdge(EXTERIOR_UID, node.Uid, 0)
+		end
+	end
+
+	-- 0-1 BFS on deque from EXTERIOR_UID to tcHostUid
+	local deque: { [number]: string? } = {}
+	local front = 1
+	local back = 0
+	local dist: { [string]: number } = {}
+
+	dist[EXTERIOR_UID] = 0
+	back += 1
+	deque[back] = EXTERIOR_UID
+
+	while front <= back do
+		local current = deque[front]
+		deque[front] = nil
+		front += 1
+		if current == nil then
+			continue
+		end
+		local curDist = dist[current]
+		if curDist == nil then
+			continue
+		end
+		if current == tcHostUid then
+			break
+		end
+		for _, edge in adj[current] do
+			local nextDist = curDist + edge.Cost
+			local prevDist = dist[edge.To]
+			if prevDist == nil or nextDist < prevDist then
+				dist[edge.To] = nextDist
+				if edge.Cost == 0 then
+					front -= 1
+					deque[front] = edge.To
+				else
+					back += 1
+					deque[back] = edge.To
+				end
+			end
+		end
+	end
+
+	local minLayers = dist[tcHostUid]
+	if minLayers == nil or minLayers > Config.MAX_TC_WALL_LAYERS then
+		return false,
+			"Превышен лимит защиты шкафа: максимум 2 слоя стен до TC",
+			minLayers
+	end
+
+	return true, nil, minLayers
+end
+
+function BuildingValidator.CanReachToolCupboard(
+	playerRecords: { [string]: LivePieceEntry },
+	occupiedSockets: { [string]: { [string]: string } },
+	candidatePiece: CandidatePieceInput?
+): (boolean, string?)
+	local ok, reason = BuildingValidator.CheckMaxWallsToTC(playerRecords, occupiedSockets, candidatePiece)
+	return ok, reason
 end
 
 local function findAutoMatchedSocket(
@@ -975,9 +1075,38 @@ local function validateDefensePlacement(
 	end
 
 	for _, existing in input.PlayerRecords do
-		local existingCfg = BuildingConfig.Pieces[existing.Piece.PieceType]
+		if existing.Model.Parent == nil then
+			continue
+		end
+		local existingType = BuildingGeometry.CanonicalPieceType(existing.Piece.PieceType)
+		local existingCfg = BuildingConfig.Pieces[existingType]
 		if existingCfg ~= nil and existingCfg.IsDefense == true then
-			if (existing.CFrame.Position - authoritativeCF.Position).Magnitude < DEFENSE_MIN_SPACING then
+			local dist = (existing.CFrame.Position - authoritativeCF.Position).Magnitude
+			if pieceType == "auto_turret" and existingType == "auto_turret" then
+				if dist < Config.MIN_TURRET_DISTANCE then
+					return {
+						Allowed = false,
+						Reason = "Слишком близко к другой турели (интерференция)",
+					}
+				end
+			elseif
+				(pieceType == "auto_turret" and existingType == "shotgun_trap")
+				or (pieceType == "shotgun_trap" and existingType == "auto_turret")
+			then
+				if dist < Config.MIN_TRAP_DISTANCE then
+					return {
+						Allowed = false,
+						Reason = "Слишком близко к другой турели (интерференция)",
+					}
+				end
+			elseif pieceType == "shotgun_trap" and existingType == "shotgun_trap" then
+				if dist < Config.MIN_TRAP_DISTANCE then
+					return {
+						Allowed = false,
+						Reason = "Слишком близко к другой ловушке-дробовику",
+					}
+				end
+			elseif dist < DEFENSE_MIN_SPACING then
 				return {
 					Allowed = false,
 					Reason = "Слишком близко к другой ловушке или турели",
@@ -1188,19 +1317,26 @@ function BuildingValidator.ValidatePlacement(input: PlacementValidationInput): P
 		return { Allowed = false, Reason = overlap.Reason or "Overlap blocked" }
 	end
 
-	if not isRaidMode and (pieceType == "wall" or pieceType == "tool_cupboard") then
-		local reachable, reachReason =
-			BuildingValidator.CanReachToolCupboard(input.PlayerRecords, input.OccupiedSockets, {
-				PieceType = pieceType,
-				CFrame = authoritativeCF,
-				ParentUid = parentUid,
-				SocketId = socketId,
-			})
+	if
+		not isRaidMode
+		and (
+			pieceConfig.Category == "Wall"
+			or pieceConfig.Category == "Floor"
+			or pieceConfig.Category == "Foundation"
+			or pieceType == "tool_cupboard"
+		)
+	then
+		local reachable, reachReason = BuildingValidator.CheckMaxWallsToTC(input.PlayerRecords, input.OccupiedSockets, {
+			PieceType = pieceType,
+			CFrame = authoritativeCF,
+			ParentUid = parentUid,
+			SocketId = socketId,
+		})
 		if not reachable then
 			return {
 				Allowed = false,
 				Reason = reachReason
-					or "Путь к шкафу не должен быть полностью замурован",
+					or "Превышен лимит защиты шкафа: максимум 2 слоя стен до TC",
 			}
 		end
 	end
