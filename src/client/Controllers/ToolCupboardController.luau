@@ -11,6 +11,7 @@ local InventoryController = require(script.Parent.InventoryController)
 
 type Inventory = Types.Inventory
 type ToolCupboardState = Types.ToolCupboardState
+type DefenseLogEntry = Types.DefenseLogEntry
 
 type TcSlotUI = {
 	Index: number,
@@ -37,6 +38,7 @@ local statusBadgeLabel: TextLabel? = nil
 local pathBadgeLabel: TextLabel? = nil
 local upkeepLabel: TextLabel? = nil
 local defenseCapLabel: TextLabel? = nil
+local defenseLogListFrame: ScrollingFrame? = nil
 local slotUIs: { TcSlotUI } = {}
 local depositButtons: { DepositButtonUI } = {}
 local currentState: ToolCupboardState? = nil
@@ -184,6 +186,67 @@ local function refreshUi()
 		dep.Button.BackgroundColor3 = if total > 0 then Color3.fromRGB(48, 88, 60) else Color3.fromRGB(40, 42, 48)
 		dep.Button.TextColor3 = if total > 0 then Color3.new(1, 1, 1) else Color3.fromRGB(150, 155, 165)
 	end
+
+	if defenseLogListFrame then
+		for _, child in defenseLogListFrame:GetChildren() do
+			if child:IsA("Frame") or child:IsA("TextLabel") then
+				child:Destroy()
+			end
+		end
+		local logs = state.DefenseLogs
+		if logs == nil or #logs == 0 then
+			local emptyLbl = Instance.new("TextLabel")
+			emptyLbl.Name = "EmptyLogsLabel"
+			emptyLbl.Size = UDim2.new(1, -8, 0, 26)
+			emptyLbl.BackgroundTransparency = 1
+			emptyLbl.Font = Enum.Font.Gotham
+			emptyLbl.TextSize = 11
+			emptyLbl.TextColor3 = Color3.fromRGB(155, 165, 180)
+			emptyLbl.Text =
+				"Журнал обороны пуст (последние 5 атак появятся здесь)"
+			emptyLbl.Parent = defenseLogListFrame
+		else
+			for i = #logs, 1, -1 do
+				local entry = logs[i]
+				local row = Instance.new("Frame")
+				row.Name = string.format("DefenseLog_%d", i)
+				row.LayoutOrder = #logs - i + 1
+				row.Size = UDim2.new(1, -8, 0, 26)
+				row.BackgroundColor3 = if entry.Defended then Color3.fromRGB(28, 52, 40) else Color3.fromRGB(58, 30, 32)
+				row.BorderSizePixel = 0
+				row.Parent = defenseLogListFrame
+
+				local rCorner = Instance.new("UICorner")
+				rCorner.CornerRadius = UDim.new(0, 5)
+				rCorner.Parent = row
+
+				local statusText = if entry.Defended then "DEFENDED" else "BREACHED"
+				local rewardText = if entry.RewardScrap > 0
+					then string.format("+%d Scrap", entry.RewardScrap)
+					else "0 Scrap"
+				local rowLbl = Instance.new("TextLabel")
+				rowLbl.Size = UDim2.new(1, -12, 1, 0)
+				rowLbl.Position = UDim2.fromOffset(6, 0)
+				rowLbl.BackgroundTransparency = 1
+				rowLbl.Font = Enum.Font.GothamMedium
+				rowLbl.TextSize = 11
+				rowLbl.TextXAlignment = Enum.TextXAlignment.Left
+				rowLbl.TextTruncate = Enum.TextTruncate.AtEnd
+				rowLbl.TextColor3 = if entry.Defended
+					then Color3.fromRGB(170, 240, 185)
+					else Color3.fromRGB(245, 175, 175)
+				rowLbl.Text = string.format(
+					"[%s] %s | Lives: %d/%d | %s",
+					statusText,
+					entry.RaiderName,
+					entry.LivesSpent,
+					entry.MaxLives,
+					rewardText
+				)
+				rowLbl.Parent = row
+			end
+		end
+	end
 end
 
 local function createGui()
@@ -208,7 +271,7 @@ local function createGui()
 	frame.Name = "ToolCupboardPanel"
 	frame.AnchorPoint = Vector2.new(0.5, 0.5)
 	frame.Position = UDim2.fromScale(0.5, 0.48)
-	frame.Size = UDim2.fromOffset(540, 466)
+	frame.Size = UDim2.fromOffset(540, 616)
 	frame.BackgroundColor3 = COLOR_BG
 	frame.BackgroundTransparency = 0.08
 	frame.BorderSizePixel = 0
@@ -435,6 +498,68 @@ local function createGui()
 		})
 	end
 
+	local logHeader = Instance.new("TextLabel")
+	logHeader.Name = "DefenseLogHeader"
+	logHeader.Position = UDim2.fromOffset(16, 452)
+	logHeader.Size = UDim2.new(1, -210, 0, 20)
+	logHeader.BackgroundTransparency = 1
+	logHeader.Font = Enum.Font.GothamBold
+	logHeader.TextSize = 12
+	logHeader.TextXAlignment = Enum.TextXAlignment.Left
+	logHeader.TextColor3 = Color3.fromRGB(220, 228, 240)
+	logHeader.Text = "Журнал обороны (последние 5):"
+	logHeader.Parent = frame
+
+	local selfRaidBtn = Instance.new("TextButton")
+	selfRaidBtn.Name = "SelfRaidTestButton"
+	selfRaidBtn.AnchorPoint = Vector2.new(1, 0)
+	selfRaidBtn.Position = UDim2.new(1, -16, 0, 448)
+	selfRaidBtn.Size = UDim2.fromOffset(186, 28)
+	selfRaidBtn.BackgroundColor3 = Color3.fromRGB(168, 72, 42)
+	selfRaidBtn.BorderSizePixel = 0
+	selfRaidBtn.Font = Enum.Font.GothamBold
+	selfRaidBtn.TextSize = 11
+	selfRaidBtn.TextColor3 = Color3.new(1, 1, 1)
+	selfRaidBtn.Text = "Тест защиты (Self-Raid)"
+	selfRaidBtn.Parent = frame
+	local srCorner = Instance.new("UICorner")
+	srCorner.CornerRadius = UDim.new(0, 6)
+	srCorner.Parent = selfRaidBtn
+	selfRaidBtn.Activated:Connect(function()
+		ToolCupboardController.Close()
+		Net.GetEvent(Net.Events.ToolCupboardAction):FireServer("StartSelfRaid")
+	end)
+
+	local logScroll = Instance.new("ScrollingFrame")
+	logScroll.Name = "DefenseLogList"
+	logScroll.Position = UDim2.fromOffset(16, 480)
+	logScroll.Size = UDim2.fromOffset(508, 122)
+	logScroll.BackgroundColor3 = Color3.fromRGB(15, 17, 22)
+	logScroll.BackgroundTransparency = 0.2
+	logScroll.BorderSizePixel = 0
+	logScroll.ScrollBarThickness = 5
+	logScroll.CanvasSize = UDim2.fromOffset(0, 0)
+	logScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	logScroll.Parent = frame
+
+	local logCorner = Instance.new("UICorner")
+	logCorner.CornerRadius = UDim.new(0, 6)
+	logCorner.Parent = logScroll
+
+	local logPad = Instance.new("UIPadding")
+	logPad.PaddingTop = UDim.new(0, 4)
+	logPad.PaddingBottom = UDim.new(0, 4)
+	logPad.PaddingLeft = UDim.new(0, 4)
+	logPad.PaddingRight = UDim.new(0, 4)
+	logPad.Parent = logScroll
+
+	local logLayout = Instance.new("UIListLayout")
+	logLayout.Padding = UDim.new(0, 4)
+	logLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	logLayout.Parent = logScroll
+
+	defenseLogListFrame = logScroll
+
 	gui.Parent = playerGui
 	mainFrame = frame
 end
@@ -459,6 +584,28 @@ local function onToolCupboardSync(payloadAny: any)
 		end
 	end
 
+	local parsedLogs: { DefenseLogEntry } = {}
+	if type(payloadAny.DefenseLogs) == "table" then
+		for _, rawLog in payloadAny.DefenseLogs do
+			if type(rawLog) == "table" and type(rawLog.RaiderName) == "string" then
+				table.insert(parsedLogs, {
+					Id = if type(rawLog.Id) == "string" then rawLog.Id else "",
+					RaiderUserId = if type(rawLog.RaiderUserId) == "number" then rawLog.RaiderUserId else 0,
+					RaiderName = rawLog.RaiderName,
+					TargetTier = if type(rawLog.TargetTier) == "number" then rawLog.TargetTier else 1,
+					Defended = rawLog.Defended == true,
+					LivesSpent = if type(rawLog.LivesSpent) == "number" then rawLog.LivesSpent else 0,
+					MaxLives = if type(rawLog.MaxLives) == "number" then rawLog.MaxLives else Config.Raid.MaxLives,
+					RewardScrap = if type(rawLog.RewardScrap) == "number" then rawLog.RewardScrap else 0,
+					Timestamp = if type(rawLog.Timestamp) == "number" then rawLog.Timestamp else 0,
+					GhostsShown = rawLog.GhostsShown == true,
+					DeathPoints = {},
+					Summary = if type(rawLog.Summary) == "string" then rawLog.Summary else "",
+				})
+			end
+		end
+	end
+
 	currentState = {
 		Uid = payloadAny.Uid,
 		ContainerId = if type(payloadAny.ContainerId) == "string" then payloadAny.ContainerId else payloadAny.Uid,
@@ -471,6 +618,7 @@ local function onToolCupboardSync(payloadAny: any)
 		DefenseUsed = if type(payloadAny.DefenseUsed) == "number" then payloadAny.DefenseUsed else 0,
 		DefenseMax = if type(payloadAny.DefenseMax) == "number" then payloadAny.DefenseMax else 60,
 		Slots = parseTcSlots(payloadAny.Slots),
+		DefenseLogs = parsedLogs,
 	}
 	isOpen = true
 	refreshUi()

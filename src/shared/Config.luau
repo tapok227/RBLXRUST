@@ -21,6 +21,13 @@ return table.freeze({
 		ZoneSize = Vector3.new(44, 32, 34),
 		InteractDistance = 14,
 		MaxTradeQuantity = 10,
+		StarterKitCooldown = 600,
+		StarterKitItems = table.freeze({
+			table.freeze({ Id = "spear", Count = 1 }),
+			table.freeze({ Id = "hunting_bow", Count = 1 }),
+			table.freeze({ Id = "arrow", Count = 12 }),
+			table.freeze({ Id = "bandage", Count = 2 }),
+		}),
 	}),
 	Recycler = table.freeze({
 		InputSlots = 6,
@@ -147,6 +154,24 @@ return table.freeze({
 		TcHackMaxDistance = 14,
 		OutpostRadius = 28,
 		OutpostOffsetZ = 46,
+		OutpostGhostBufferMargin = 8,
+		IntelCardsCount = 3,
+		IntelFreeRefreshCooldown = 600,
+		IntelPaidRefreshScrap = 25,
+		DefenseRewardRatio = 0.25,
+		ExplosiveScrapValues = table.freeze({
+			satchel_charge = 40,
+			c4_charge = 140,
+			rocket = 60,
+		}),
+		SelfRaidKit = table.freeze({
+			table.freeze({ Id = "pipe_pistol", Count = 1 }),
+			table.freeze({ Id = "pistol_ammo", Count = 64 }),
+			table.freeze({ Id = "satchel_charge", Count = 4 }),
+			table.freeze({ Id = "c4_charge", Count = 2 }),
+			table.freeze({ Id = "bandage", Count = 6 }),
+			table.freeze({ Id = "cooked_meat", Count = 4 }),
+		}),
 		ExtractionStashSlots = 18,
 		SupplyCrateSlots = 6,
 		StarterSupplyItems = table.freeze({

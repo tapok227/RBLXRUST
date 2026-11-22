@@ -65,6 +65,26 @@ local Items: { [string]: ItemConfig } = {
 		Type = "Consumable",
 		MaxStack = 5,
 	},
+	wild_berries = {
+		Name = "Wild Berries",
+		Type = "Consumable",
+		MaxStack = 20,
+	},
+	mushrooms = {
+		Name = "Mushrooms",
+		Type = "Consumable",
+		MaxStack = 20,
+	},
+	meat_stew = {
+		Name = "Hearty Meat Stew",
+		Type = "Consumable",
+		MaxStack = 5,
+	},
+	mushroom_stew = {
+		Name = "Forest Mushroom Stew",
+		Type = "Consumable",
+		MaxStack = 5,
+	},
 	workbench_1 = {
 		Name = "Workbench Lv.1",
 		Type = "Tool",

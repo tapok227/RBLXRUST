@@ -157,6 +157,38 @@ local Recipes: { [string]: RecipeConfig } = {
 			{ Id = "wood", Count = 5 },
 		},
 	},
+	cook_meat_stew = {
+		Id = "cook_meat_stew",
+		ResultId = "meat_stew",
+		ResultCount = 1,
+		CraftTime = 6,
+		RequiredWorkbench = 0,
+		Station = "campfire",
+		RequiresBlueprint = false,
+		ResearchCost = 0,
+		Ingredients = {
+			{ Id = "raw_meat", Count = 2 },
+			{ Id = "wild_berries", Count = 2 },
+			{ Id = "water_bottle", Count = 1 },
+			{ Id = "wood", Count = 10 },
+		},
+	},
+	cook_mushroom_stew = {
+		Id = "cook_mushroom_stew",
+		ResultId = "mushroom_stew",
+		ResultCount = 1,
+		CraftTime = 6,
+		RequiredWorkbench = 0,
+		Station = "campfire",
+		RequiresBlueprint = false,
+		ResearchCost = 0,
+		Ingredients = {
+			{ Id = "raw_meat", Count = 1 },
+			{ Id = "mushrooms", Count = 3 },
+			{ Id = "water_bottle", Count = 1 },
+			{ Id = "wood", Count = 10 },
+		},
+	},
 
 	-- Tier 1: Workbench Lv.1+
 	craft_tool_cupboard = {

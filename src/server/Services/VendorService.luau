@@ -9,6 +9,7 @@ local Workspace = game:GetService("Workspace")
 local Config = require(ReplicatedStorage.Shared.Config)
 local Types = require(ReplicatedStorage.Shared.Types)
 local Items = require(ReplicatedStorage.Shared.configs.Items)
+local Weapons = require(ReplicatedStorage.Shared.configs.Weapons)
 local Vendors = require(ReplicatedStorage.Shared.configs.Vendors)
 local Net = require(ReplicatedStorage.Shared.Net)
 local BaseService = require(ServerScriptService.Server.Services.BaseService)
@@ -859,6 +860,111 @@ local function onVendorTradeRequest(player: Player, vendorIdAny: any, offerIdAny
 	end)
 end
 
+local function hasAnyWeaponInInventory(data: Types.PlayerData): boolean
+	for i = 1, Types.INVENTORY_SIZE do
+		local slot = data.Inventory[i]
+		if slot ~= nil and slot.Count > 0 and slot.Id ~= "FISTS" and Weapons[slot.Id] ~= nil then
+			return true
+		end
+	end
+	return false
+end
+
+local function syncStarterKitAttribute(player: Player, data: Types.PlayerData)
+	if player.Parent ~= Players then
+		return
+	end
+	local lastClaim = data.LastStarterKitAt or 0
+	local readyAt = if lastClaim > 0 then lastClaim + Config.VendorHub.StarterKitCooldown else 0
+	if player:GetAttribute("StarterKitReadyAt") ~= readyAt then
+		player:SetAttribute("StarterKitReadyAt", readyAt)
+	end
+end
+
+local function onStarterKitRequest(player: Player)
+	if not SecurityService.CheckRateLimit(player, Net.Events.VendorStarterKitRequest) then
+		return
+	end
+	if
+		DataService.IsTeleporting(player)
+		or SecurityService.IsTeleportLocked(player)
+		or SecurityService.IsTransactionLocked(player)
+		or isRaidBlocked(player)
+	then
+		return
+	end
+	if DataService.GetData(player) == nil or SecurityService.GetAliveCharacterRoot(player) == nil then
+		return
+	end
+	if not isPlayerNearVendor(player, "quartermaster") then
+		sendFeedback(player, false, "Move closer to the Quartermaster", "quartermaster", "starter_recovery_kit")
+		return
+	end
+
+	SecurityService.RunLocked(player, "VendorStarterKit", function()
+		local data = DataService.GetData(player)
+		if data == nil or SecurityService.GetAliveCharacterRoot(player) == nil then
+			return
+		end
+		if isRaidBlocked(player) or not isPlayerNearVendor(player, "quartermaster") then
+			sendFeedback(player, false, "Starter Kit unavailable here", "quartermaster", "starter_recovery_kit")
+			return
+		end
+
+		if hasAnyWeaponInInventory(data) then
+			sendFeedback(
+				player,
+				false,
+				"Starter Recovery Kit is only for unarmed players (no weapon in inventory)",
+				"quartermaster",
+				"starter_recovery_kit"
+			)
+			return
+		end
+
+		local nowUnix = os.time()
+		local lastClaim = data.LastStarterKitAt or 0
+		local readyAt = if lastClaim > 0 then lastClaim + Config.VendorHub.StarterKitCooldown else 0
+		if nowUnix < readyAt then
+			local rem = readyAt - nowUnix
+			local mins = math.floor(rem / 60)
+			local secs = rem % 60
+			sendFeedback(
+				player,
+				false,
+				string.format("Starter Kit on cooldown: %02d:%02d", mins, secs),
+				"quartermaster",
+				"starter_recovery_kit"
+			)
+			syncStarterKitAttribute(player, data)
+			return
+		end
+
+		local kitItems = Config.VendorHub.StarterKitItems :: { Types.ItemBatchEntry }
+		if not InventoryService.CanAddItems(player, kitItems) then
+			sendFeedback(
+				player,
+				false,
+				"Need free inventory slots for Starter Kit",
+				"quartermaster",
+				"starter_recovery_kit"
+			)
+			return
+		end
+
+		InventoryService.AddItems(player, kitItems)
+		data.LastStarterKitAt = nowUnix
+		syncStarterKitAttribute(player, data)
+		sendFeedback(
+			player,
+			true,
+			"Claimed Starter Recovery Kit (Spear, Bow, 12 Arrows, 2 Bandages)",
+			"quartermaster",
+			"starter_recovery_kit"
+		)
+	end)
+end
+
 local function refreshBaseVendorHub()
 	if BaseService.IsBaseMode() and Workspace:GetAttribute("RaidServerMode") ~= true then
 		VendorService.SpawnBaseVendorHub()
@@ -875,6 +981,11 @@ function VendorService.Init()
 
 	Net.InitServer()
 	Net.GetEvent(Net.Events.VendorTradeRequest).OnServerEvent:Connect(onVendorTradeRequest)
+	Net.GetEvent(Net.Events.VendorStarterKitRequest).OnServerEvent:Connect(onStarterKitRequest)
+
+	DataService.OnDataLoaded(function(player: Player, data: Types.PlayerData)
+		syncStarterKitAttribute(player, data)
+	end)
 
 	local qaArena = Workspace:FindFirstChild("QA_TestArena")
 	if qaArena then

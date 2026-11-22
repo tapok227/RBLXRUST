@@ -62,6 +62,7 @@ local RATE_LIMIT_RULES: { [string]: RateLimitRule } = table.freeze({
 	-- UI
 	[Net.Events.CloseContainer] = table.freeze({ Capacity = 8, RefillPerSec = 5, Category = "UI" }),
 	[Net.Events.RaidListRequest] = table.freeze({ Capacity = 3, RefillPerSec = 1, Category = "UI" }),
+	[Net.Events.RaidRefreshRequest] = table.freeze({ Capacity = 3, RefillPerSec = 1, Category = "UI" }),
 	[Net.Events.StartRaidRequest] = table.freeze({ Capacity = 2, RefillPerSec = 0.5, Category = "UI" }),
 	[Net.Events.RaidExtractRequest] = table.freeze({ Capacity = 2, RefillPerSec = 0.5, Category = "UI" }),
 	[Net.Events.RaidTcHackRequest] = table.freeze({ Capacity = 3, RefillPerSec = 1, Category = "UI" }),
@@ -70,6 +71,7 @@ local RATE_LIMIT_RULES: { [string]: RateLimitRule } = table.freeze({
 	[Net.Events.ToolCupboardAction] = table.freeze({ Capacity = 10, RefillPerSec = 6, Category = "UI" }),
 	[Net.Events.DefenseAction] = table.freeze({ Capacity = 10, RefillPerSec = 6, Category = "UI" }),
 	[Net.Events.VendorTradeRequest] = table.freeze({ Capacity = 8, RefillPerSec = 4, Category = "UI" }),
+	[Net.Events.VendorStarterKitRequest] = table.freeze({ Capacity = 3, RefillPerSec = 1, Category = "UI" }),
 	[Net.Events.RecyclerAction] = table.freeze({ Capacity = 12, RefillPerSec = 6, Category = "Inventory" }),
 	[Net.Events.RecyclerClose] = table.freeze({ Capacity = 8, RefillPerSec = 5, Category = "UI" }),
 	[Net.Events.ResearchItemRequest] = table.freeze({ Capacity = 4, RefillPerSec = 2, Category = "Inventory" }),

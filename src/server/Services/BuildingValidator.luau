@@ -475,6 +475,37 @@ function BuildingValidator.IsInRaidOutpostZone(pieceType: BuildPieceType, target
 	return false
 end
 
+function BuildingValidator.IsPointInRaidOutpostOrBuffer(
+	pos: Vector3,
+	bufferMargin: number?,
+	outpostOrigin: Vector3?
+): boolean
+	local margin = if type(bufferMargin) == "number" and bufferMargin >= 0
+		then bufferMargin
+		else Config.Raid.OutpostGhostBufferMargin
+	local zoneParts = collectRaidOutpostParts()
+	for _, part in zoneParts do
+		local localPos = part.CFrame:PointToObjectSpace(pos)
+		local halfX = part.Size.X * 0.5 + margin
+		local halfY = part.Size.Y * 0.5 + margin + 12
+		local halfZ = part.Size.Z * 0.5 + margin
+		if math.abs(localPos.X) <= halfX and math.abs(localPos.Z) <= halfZ and math.abs(localPos.Y) <= halfY then
+			return true
+		end
+	end
+
+	if outpostOrigin ~= nil then
+		local radius = Config.Raid.OutpostRadius + margin
+		local dx = pos.X - outpostOrigin.X
+		local dz = pos.Z - outpostOrigin.Z
+		if math.abs(dx) <= radius and math.abs(dz) <= radius then
+			return true
+		end
+	end
+
+	return false
+end
+
 local function isSurfaceCategory(category: Types.BuildPieceCategory): boolean
 	return category == "Foundation" or category == "Floor"
 end

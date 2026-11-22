@@ -7,6 +7,7 @@ local UserInputService = game:GetService("UserInputService")
 local Config = require(ReplicatedStorage.Shared.Config)
 local Types = require(ReplicatedStorage.Shared.Types)
 local Items = require(ReplicatedStorage.Shared.configs.Items)
+local Weapons = require(ReplicatedStorage.Shared.configs.Weapons)
 local Vendors = require(ReplicatedStorage.Shared.configs.Vendors)
 local Net = require(ReplicatedStorage.Shared.Net)
 local Signal = require(ReplicatedStorage.Shared.Signal)
@@ -43,6 +44,10 @@ local titleLabel: TextLabel? = nil
 local roleLabel: TextLabel? = nil
 local scrapLabel: TextLabel? = nil
 local offerListFrame: ScrollingFrame? = nil
+local starterKitCard: Frame? = nil
+local starterKitStatusLabel: TextLabel? = nil
+local starterKitClaimBtn: TextButton? = nil
+local starterKitStroke: UIStroke? = nil
 local feedbackBanner: Frame? = nil
 local feedbackLabel: TextLabel? = nil
 local offerCards: { OfferCardUI } = {}
@@ -68,12 +73,63 @@ local function countItemInInventory(inv: Inventory, itemId: string): number
 	return total
 end
 
+local function hasAnyWeaponLocal(inv: Inventory): boolean
+	for i = 1, Types.INVENTORY_SIZE do
+		local slot = inv[i]
+		if slot ~= nil and slot.Count > 0 and slot.Id ~= "FISTS" and Weapons[slot.Id] ~= nil then
+			return true
+		end
+	end
+	return false
+end
+
+local function updateStarterKitCard()
+	if not starterKitCard or not starterKitStatusLabel or not starterKitClaimBtn or not starterKitStroke then
+		return
+	end
+	if activeVendorId ~= "quartermaster" then
+		starterKitCard.Visible = false
+		return
+	end
+	starterKitCard.Visible = true
+	local inv = InventoryController.GetInventory()
+	local armed = hasAnyWeaponLocal(inv)
+	local localPlayer = Players.LocalPlayer
+	local readyAtAttr = if localPlayer ~= nil then localPlayer:GetAttribute("StarterKitReadyAt") else nil
+	local readyAt = if typeof(readyAtAttr) == "number" then readyAtAttr else 0
+	local remaining = math.max(0, math.floor(readyAt - os.time()))
+
+	if armed then
+		starterKitStatusLabel.Text = "Already armed (requires no weapon in inventory)"
+		starterKitStatusLabel.TextColor3 = COLOR_MISSING
+		starterKitClaimBtn.Text = "Armed"
+		starterKitClaimBtn.BackgroundColor3 = COLOR_BTN_DISABLED
+		starterKitStroke.Color = Color3.fromRGB(68, 68, 80)
+	elseif remaining > 0 then
+		local mins = math.floor(remaining / 60)
+		local secs = remaining % 60
+		starterKitStatusLabel.Text = string.format("Cooldown: %02d:%02d", mins, secs)
+		starterKitStatusLabel.TextColor3 = COLOR_MISSING
+		starterKitClaimBtn.Text = string.format("%02d:%02d", mins, secs)
+		starterKitClaimBtn.BackgroundColor3 = COLOR_BTN_DISABLED
+		starterKitStroke.Color = Color3.fromRGB(68, 68, 80)
+	else
+		starterKitStatusLabel.Text = "Available now (Spear, Bow, 12 Arrows, 2 Bandages)"
+		starterKitStatusLabel.TextColor3 = COLOR_AFFORD
+		starterKitClaimBtn.Text = "CLAIM FREE"
+		starterKitClaimBtn.BackgroundColor3 = COLOR_BTN_READY
+		starterKitStroke.Color = Color3.fromRGB(85, 150, 95)
+	end
+end
+
 local function refreshOffers()
 	local inv = InventoryController.GetInventory()
 	if scrapLabel then
 		local scrapCount = countItemInInventory(inv, "scrap")
 		scrapLabel.Text = string.format("Scrap: %d", scrapCount)
 	end
+
+	updateStarterKitCard()
 
 	for _, cardUI in offerCards do
 		local offer = cardUI.Offer
@@ -100,10 +156,101 @@ local function clearOfferCards()
 		return
 	end
 	for _, child in offerListFrame:GetChildren() do
-		if child:IsA("Frame") then
+		if child:IsA("Frame") and child ~= starterKitCard then
 			child:Destroy()
 		end
 	end
+end
+
+local function ensureStarterKitCard(parentList: ScrollingFrame)
+	if starterKitCard ~= nil and starterKitCard.Parent == parentList then
+		return
+	end
+
+	local card = Instance.new("Frame")
+	card.Name = "StarterRecoveryKitCard"
+	card.LayoutOrder = 0
+	card.Size = UDim2.new(1, -8, 0, 62)
+	card.BackgroundColor3 = Color3.fromRGB(28, 40, 34)
+	card.BorderSizePixel = 0
+	card.Visible = false
+	card.Parent = parentList
+
+	local cardCorner = Instance.new("UICorner")
+	cardCorner.CornerRadius = UDim.new(0, 8)
+	cardCorner.Parent = card
+
+	local cardStroke = Instance.new("UIStroke")
+	cardStroke.Color = Color3.fromRGB(85, 150, 95)
+	cardStroke.Thickness = 1.2
+	cardStroke.Parent = card
+
+	local pill = Instance.new("TextLabel")
+	pill.Name = "FreePill"
+	pill.Position = UDim2.fromOffset(10, 8)
+	pill.Size = UDim2.fromOffset(42, 18)
+	pill.BackgroundColor3 = Color3.fromRGB(65, 165, 95)
+	pill.BorderSizePixel = 0
+	pill.Font = Enum.Font.GothamBold
+	pill.TextSize = 10
+	pill.TextColor3 = Color3.new(1, 1, 1)
+	pill.Text = "FREE"
+	pill.Parent = card
+
+	local pillCorner = Instance.new("UICorner")
+	pillCorner.CornerRadius = UDim.new(0, 4)
+	pillCorner.Parent = pill
+
+	local titleLbl = Instance.new("TextLabel")
+	titleLbl.Name = "KitTitleLabel"
+	titleLbl.Position = UDim2.fromOffset(58, 7)
+	titleLbl.Size = UDim2.new(1, -162, 0, 20)
+	titleLbl.BackgroundTransparency = 1
+	titleLbl.Font = Enum.Font.GothamBold
+	titleLbl.TextSize = 12
+	titleLbl.TextColor3 = Color3.fromRGB(240, 248, 242)
+	titleLbl.TextXAlignment = Enum.TextXAlignment.Left
+	titleLbl.Text = "Starter Recovery Kit (Anti-Softlock)"
+	titleLbl.Parent = card
+
+	local statusLbl = Instance.new("TextLabel")
+	statusLbl.Name = "KitStatusLabel"
+	statusLbl.Position = UDim2.fromOffset(10, 32)
+	statusLbl.Size = UDim2.new(1, -114, 0, 20)
+	statusLbl.BackgroundTransparency = 1
+	statusLbl.Font = Enum.Font.Gotham
+	statusLbl.TextSize = 11
+	statusLbl.TextColor3 = COLOR_AFFORD
+	statusLbl.TextXAlignment = Enum.TextXAlignment.Left
+	statusLbl.TextTruncate = Enum.TextTruncate.AtEnd
+	statusLbl.Text = ""
+	statusLbl.Parent = card
+
+	local claimBtn = Instance.new("TextButton")
+	claimBtn.Name = "ClaimKitButton"
+	claimBtn.AnchorPoint = Vector2.new(1, 0.5)
+	claimBtn.Position = UDim2.new(1, -10, 0.5, 0)
+	claimBtn.Size = UDim2.fromOffset(92, 30)
+	claimBtn.BackgroundColor3 = COLOR_BTN_READY
+	claimBtn.BorderSizePixel = 0
+	claimBtn.Font = Enum.Font.GothamBold
+	claimBtn.TextSize = 11
+	claimBtn.TextColor3 = Color3.new(1, 1, 1)
+	claimBtn.Text = "CLAIM FREE"
+	claimBtn.Parent = card
+
+	local claimCorner = Instance.new("UICorner")
+	claimCorner.CornerRadius = UDim.new(0, 6)
+	claimCorner.Parent = claimBtn
+
+	claimBtn.Activated:Connect(function()
+		Net.GetEvent(Net.Events.VendorStarterKitRequest):FireServer()
+	end)
+
+	starterKitCard = card
+	starterKitStatusLabel = statusLbl
+	starterKitClaimBtn = claimBtn
+	starterKitStroke = cardStroke
 end
 
 local function buildOfferCards(vendorCfg: VendorConfig)
@@ -111,6 +258,8 @@ local function buildOfferCards(vendorCfg: VendorConfig)
 	if not offerListFrame then
 		return
 	end
+	ensureStarterKitCard(offerListFrame)
+	updateStarterKitCard()
 
 	for idx, offer in ipairs(vendorCfg.Offers) do
 		local giveCfg = Items[offer.GiveId]
@@ -511,6 +660,11 @@ function VendorController.Init()
 				VendorController.SetOpen(false)
 			end
 		end)
+		localPlayer:GetAttributeChangedSignal("StarterKitReadyAt"):Connect(function()
+			if isOpen then
+				updateStarterKitCard()
+			end
+		end)
 	end
 
 	UserInputService.InputBegan:Connect(function(input: InputObject, _gameProcessedEvent: boolean)
@@ -519,7 +673,12 @@ function VendorController.Init()
 		end
 	end)
 
+	local lastKitTick = 0
 	RunService.RenderStepped:Connect(function()
+		if isOpen and activeVendorId == "quartermaster" and (os.clock() - lastKitTick) >= 1.0 then
+			lastKitTick = os.clock()
+			updateStarterKitCard()
+		end
 		if feedbackBanner and feedbackBanner.Visible and os.clock() >= feedbackHideAt then
 			feedbackBanner.Visible = false
 		end

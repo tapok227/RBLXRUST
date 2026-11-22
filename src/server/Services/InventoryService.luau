@@ -270,6 +270,48 @@ function InventoryService.CanCraftTransaction(
 	return remainder == 0
 end
 
+function InventoryService.CanAddItems(player: Player, items: { ItemBatchEntry }): boolean
+	local data = DataService.GetData(player)
+	if not data then
+		return false
+	end
+
+	local simulated = cloneInventory(data.Inventory)
+	for _, entry in items do
+		if
+			typeof(entry.Id) ~= "string"
+			or not isValidInteger(entry.Count)
+			or entry.Count <= 0
+			or not Items[entry.Id]
+		then
+			return false
+		end
+		local rem = addItemInternal(simulated, entry.Id, entry.Count)
+		if rem > 0 then
+			return false
+		end
+	end
+
+	return true
+end
+
+function InventoryService.GetSnapshot(player: Player): Inventory
+	local data = DataService.GetData(player)
+	if not data then
+		return {}
+	end
+	return cloneInventory(data.Inventory)
+end
+
+function InventoryService.RestoreSnapshot(player: Player, snapshot: Inventory)
+	local data = DataService.GetData(player)
+	if not data then
+		return
+	end
+	data.Inventory = cloneInventory(snapshot)
+	sendInventorySync(player)
+end
+
 function InventoryService.AddItem(player: Player, id: string, count: number): number
 	if typeof(id) ~= "string" or not isValidInteger(count) or count <= 0 then
 		return if typeof(count) == "number" and count > 0 then count else 0

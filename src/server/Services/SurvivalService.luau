@@ -85,7 +85,17 @@ local function getOrCreateLootFolder(): Folder
 end
 
 local function isWellFed(stats: SurvivalStats): boolean
-	return stats.Hunger >= Config.WELL_FED_THRESHOLD and stats.Thirst >= Config.WELL_FED_THRESHOLD
+	local endTime = stats.WellFedEndTime or 0
+	return endTime > os.time()
+end
+
+local function getPlayerMaxStamina(player: Player): number
+	local data = DataService.GetData(player)
+	if data ~= nil and isWellFed(data.Stats) then
+		local mult = data.Stats.WellFedStaminaMult or 1.0
+		return math.floor(Config.MAX_STAMINA * math.max(1.0, mult) + 0.5)
+	end
+	return Config.MAX_STAMINA
 end
 
 local function isHungerDrainFrozen(player: Player): boolean
@@ -99,11 +109,20 @@ local function setAttributeIfChanged(player: Player, name: string, value: any)
 end
 
 local function syncPlayerAttributes(player: Player, stats: SurvivalStats)
+	local endTime = stats.WellFedEndTime or 0
+	local nowUnix = os.time()
+	local wellFedActive = endTime > nowUnix
+	local remaining = if wellFedActive then (endTime - nowUnix) else 0
+	if not wellFedActive and (stats.WellFedStaminaMult or 1.0) > 1.0 then
+		stats.WellFedStaminaMult = 1.0
+	end
 	setAttributeIfChanged(player, "Hunger", roundStat(stats.Hunger))
 	setAttributeIfChanged(player, "Thirst", roundStat(stats.Thirst))
 	setAttributeIfChanged(player, "Starving", stats.Hunger <= 0)
 	setAttributeIfChanged(player, "Dehydrated", stats.Thirst <= 0)
-	setAttributeIfChanged(player, "WellFed", isWellFed(stats))
+	setAttributeIfChanged(player, "WellFed", wellFedActive)
+	setAttributeIfChanged(player, "WellFedRemaining", remaining)
+	setAttributeIfChanged(player, "MaxStamina", getPlayerMaxStamina(player))
 end
 
 local function getOrCreateStaminaState(player: Player): StaminaState
@@ -127,14 +146,16 @@ local function syncStaminaAttributes(player: Player, state: StaminaState, force:
 	if player.Parent ~= Players then
 		return
 	end
+	local maxStamina = getPlayerMaxStamina(player)
 	setAttributeIfChanged(player, "IsSprinting", state.IsSprinting)
 	setAttributeIfChanged(player, "StaminaExhausted", state.Exhausted)
+	setAttributeIfChanged(player, "MaxStamina", maxStamina)
 
 	local now = os.clock()
 	local rounded = math.floor(state.Stamina * 10 + 0.5) / 10
 	local shouldSyncStamina = force
 		or state.Stamina <= 0
-		or state.Stamina >= Config.MAX_STAMINA
+		or state.Stamina >= maxStamina
 		or math.abs(rounded - state.LastSyncedStamina) >= STAMINA_SYNC_DELTA
 		or (now - state.LastSyncAt) >= STAMINA_SYNC_INTERVAL
 
@@ -255,6 +276,10 @@ local function applyStatsToCharacter(player: Player, character: Model, data: Pla
 		data.Stats.Health = Types.RESPAWN_HEALTH
 		data.Stats.Hunger = Types.RESPAWN_HUNGER
 		data.Stats.Thirst = Types.RESPAWN_THIRST
+		if player:GetAttribute("InSelfRaid") ~= true then
+			data.Stats.WellFedEndTime = 0
+			data.Stats.WellFedStaminaMult = 1.0
+		end
 		lastDamageAt[player] = 0
 		SurvivalService.ClearBleeding(player)
 	end
@@ -345,6 +370,7 @@ local function bindCharacter(player: Player, character: Model)
 			DataService.IsTeleporting(player)
 			or SecurityService.IsTeleportLocked(player)
 			or DataService.GetData(player) == nil
+			or player:GetAttribute("InSelfRaid") == true
 		then
 			return
 		end
@@ -400,6 +426,41 @@ local function onPlayerDataLoaded(player: Player, data: PlayerData)
 	end
 end
 
+function SurvivalService.ApplyConsumableEffects(
+	player: Player,
+	data: PlayerData,
+	humanoid: Humanoid?,
+	itemId: string,
+	consumableConfig: Types.ConsumableConfig
+)
+	if itemId == "bandage" then
+		SurvivalService.ClearBleeding(player)
+	end
+
+	if humanoid ~= nil and consumableConfig.Health ~= 0 then
+		humanoid.Health = math.clamp(humanoid.Health + consumableConfig.Health, 0, humanoid.MaxHealth)
+		data.Stats.Health = humanoid.Health
+	end
+
+	data.Stats.Hunger = math.clamp(data.Stats.Hunger + consumableConfig.Hunger, 0, Types.MAX_HUNGER)
+	data.Stats.Thirst = math.clamp(data.Stats.Thirst + consumableConfig.Thirst, 0, Types.MAX_THIRST)
+
+	if consumableConfig.BuffDuration ~= nil and consumableConfig.BuffDuration > 0 then
+		local nowUnix = os.time()
+		local currentEnd = data.Stats.WellFedEndTime or 0
+		local currentMult = if currentEnd > nowUnix then math.max(1.0, data.Stats.WellFedStaminaMult or 1.0) else 1.0
+		local newBonus = math.max(1.0, consumableConfig.MaxStaminaBonus or 1.0)
+		local newEnd = nowUnix + math.floor(consumableConfig.BuffDuration)
+		data.Stats.WellFedEndTime = math.max(currentEnd, newEnd)
+		data.Stats.WellFedStaminaMult = math.max(currentMult, newBonus)
+	end
+
+	if consumableConfig.Stamina ~= nil and consumableConfig.Stamina ~= 0 then
+		SurvivalService.AddStamina(player, consumableConfig.Stamina)
+	end
+	syncPlayerAttributes(player, data.Stats)
+end
+
 local function onUseConsumable(player: Player, slotIndexAny: any)
 	if not SecurityService.CheckRateLimit(player, Net.Events.UseConsumable) then
 		return
@@ -447,27 +508,13 @@ local function onUseConsumable(player: Player, slotIndexAny: any)
 			return
 		end
 
+		local itemId = slot.Id
 		if not InventoryService.ConsumeSlot(player, slotIndex, 1) then
 			return
 		end
 
 		nextConsumeTime[player] = now + consumableConfig.UseCooldown
-
-		if slot.Id == "bandage" then
-			SurvivalService.ClearBleeding(player)
-		end
-
-		if consumableConfig.Health ~= 0 then
-			humanoid.Health = math.clamp(humanoid.Health + consumableConfig.Health, 0, humanoid.MaxHealth)
-			data.Stats.Health = humanoid.Health
-		end
-
-		data.Stats.Hunger = math.clamp(data.Stats.Hunger + consumableConfig.Hunger, 0, Types.MAX_HUNGER)
-		data.Stats.Thirst = math.clamp(data.Stats.Thirst + consumableConfig.Thirst, 0, Types.MAX_THIRST)
-		if consumableConfig.Stamina ~= nil and consumableConfig.Stamina ~= 0 then
-			SurvivalService.AddStamina(player, consumableConfig.Stamina)
-		end
-		syncPlayerAttributes(player, data.Stats)
+		SurvivalService.ApplyConsumableEffects(player, data, humanoid, itemId, consumableConfig)
 	end)
 end
 
@@ -520,6 +567,11 @@ local function stepStamina(dt: number)
 		local shouldSprint = state.WantsSprint and isMoving and (canContinue or canStart)
 		local stateChanged = (shouldSprint ~= state.IsSprinting)
 
+		local maxStamina = getPlayerMaxStamina(player)
+		if state.Stamina > maxStamina then
+			state.Stamina = maxStamina
+		end
+
 		if shouldSprint then
 			state.IsSprinting = true
 			state.Stamina = math.max(0, state.Stamina - Config.STAMINA_DRAIN_PER_SEC * clampedDt)
@@ -540,7 +592,7 @@ local function stepStamina(dt: number)
 					regenRate = Config.STAMINA_REGEN_WELL_FED
 				end
 			end
-			state.Stamina = math.min(Config.MAX_STAMINA, state.Stamina + regenRate * clampedDt)
+			state.Stamina = math.min(maxStamina, state.Stamina + regenRate * clampedDt)
 			if state.Exhausted and state.Stamina >= Config.STAMINA_MIN_TO_SPRINT then
 				state.Exhausted = false
 				stateChanged = true
@@ -640,12 +692,24 @@ function SurvivalService.ClearBleeding(player: Player)
 	end
 end
 
+function SurvivalService.IsWellFed(player: Player): boolean
+	local data = DataService.GetData(player)
+	if data == nil then
+		return false
+	end
+	return isWellFed(data.Stats)
+end
+
+function SurvivalService.GetMaxStamina(player: Player): number
+	return getPlayerMaxStamina(player)
+end
+
 function SurvivalService.GetStamina(player: Player): number
 	local state = staminaStates[player]
 	if state ~= nil then
 		return state.Stamina
 	end
-	return Config.MAX_STAMINA
+	return getPlayerMaxStamina(player)
 end
 
 function SurvivalService.AddStamina(player: Player, amount: number)
@@ -656,7 +720,8 @@ function SurvivalService.AddStamina(player: Player, amount: number)
 		return
 	end
 	local state = getOrCreateStaminaState(player)
-	state.Stamina = math.clamp(state.Stamina + amount, 0, Config.MAX_STAMINA)
+	local maxStamina = getPlayerMaxStamina(player)
+	state.Stamina = math.clamp(state.Stamina + amount, 0, maxStamina)
 	if state.Exhausted and state.Stamina >= Config.STAMINA_MIN_TO_SPRINT then
 		state.Exhausted = false
 	end
@@ -669,7 +734,7 @@ function SurvivalService.ResetSprintState(player: Player, refillStamina: boolean
 	state.IsSprinting = false
 	state.Exhausted = false
 	if refillStamina then
-		state.Stamina = Config.MAX_STAMINA
+		state.Stamina = getPlayerMaxStamina(player)
 	end
 	local character = player.Character
 	local humanoid = if character then character:FindFirstChildOfClass("Humanoid") else nil
@@ -688,6 +753,8 @@ function SurvivalService.GetStats(player: Player): SurvivalStats?
 		Health = data.Stats.Health,
 		Hunger = data.Stats.Hunger,
 		Thirst = data.Stats.Thirst,
+		WellFedEndTime = data.Stats.WellFedEndTime,
+		WellFedStaminaMult = data.Stats.WellFedStaminaMult,
 	}
 end
 

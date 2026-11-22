@@ -193,6 +193,22 @@ local ById: { [VendorId]: VendorConfig } = table.freeze({
 				ReceiveCount = 2,
 			}),
 			table.freeze({
+				OfferId = "buy_wild_berries",
+				Mode = "Buy" :: Types.VendorOfferMode,
+				GiveId = "scrap",
+				GiveCount = 6,
+				ReceiveId = "wild_berries",
+				ReceiveCount = 4,
+			}),
+			table.freeze({
+				OfferId = "buy_mushrooms",
+				Mode = "Buy" :: Types.VendorOfferMode,
+				GiveId = "scrap",
+				GiveCount = 6,
+				ReceiveId = "mushrooms",
+				ReceiveCount = 4,
+			}),
+			table.freeze({
 				OfferId = "buy_wood",
 				Mode = "Buy" :: Types.VendorOfferMode,
 				GiveId = "scrap",

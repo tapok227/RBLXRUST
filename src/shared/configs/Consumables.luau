@@ -17,6 +17,8 @@ local Consumables: { [string]: ConsumableConfig } = {
 		Thirst = -5,
 		Stamina = 25,
 		UseCooldown = 1.0,
+		BuffDuration = 300,
+		MaxStaminaBonus = 1.0,
 	},
 	raw_meat = {
 		Health = -8,
@@ -30,6 +32,36 @@ local Consumables: { [string]: ConsumableConfig } = {
 		Thirst = 40,
 		Stamina = 20,
 		UseCooldown = 1.0,
+	},
+	wild_berries = {
+		Health = 2,
+		Hunger = 10,
+		Thirst = 12,
+		UseCooldown = 1.0,
+	},
+	mushrooms = {
+		Health = 2,
+		Hunger = 12,
+		Thirst = 5,
+		UseCooldown = 1.0,
+	},
+	meat_stew = {
+		Health = 20,
+		Hunger = 60,
+		Thirst = 25,
+		Stamina = 40,
+		UseCooldown = 1.5,
+		BuffDuration = 900,
+		MaxStaminaBonus = 1.1,
+	},
+	mushroom_stew = {
+		Health = 15,
+		Hunger = 50,
+		Thirst = 30,
+		Stamina = 40,
+		UseCooldown = 1.5,
+		BuffDuration = 900,
+		MaxStaminaBonus = 1.1,
 	},
 }
 

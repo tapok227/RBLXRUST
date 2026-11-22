@@ -24,6 +24,8 @@ type BaseData = Types.BaseData
 type DefenseMountSurface = Types.DefenseMountSurface
 type RaidTargetInfo = Types.RaidTargetInfo
 type RaidDefenseReport = Types.RaidDefenseReport
+type DeathGhostPoint = Types.DeathGhostPoint
+type DefenseLogEntry = Types.DefenseLogEntry
 
 local PROFILE_STORE_NAME = "PlayerData_v1"
 local RAIDABLE_BASES_STORE_NAME = "RaidableBases_v1"
@@ -41,15 +43,51 @@ local PRESET_RAID_TARGETS: { { UserId: number, DisplayName: string, PieceCount: 
 		BaseTier = 1,
 	},
 	{
+		UserId = -1011,
+		DisplayName = "Timber Cabin (Tier 1)",
+		PieceCount = 11,
+		BaseTier = 1,
+	},
+	{
+		UserId = -1021,
+		DisplayName = "Quarry Watchpost (Tier 1)",
+		PieceCount = 14,
+		BaseTier = 1,
+	},
+	{
 		UserId = -1002,
 		DisplayName = "Steel Bunker (Tier 2)",
-		PieceCount = 18,
+		PieceCount = 22,
+		BaseTier = 2,
+	},
+	{
+		UserId = -1012,
+		DisplayName = "Scrap Compound (Tier 2)",
+		PieceCount = 20,
+		BaseTier = 2,
+	},
+	{
+		UserId = -1022,
+		DisplayName = "Iron Depot (Tier 2)",
+		PieceCount = 24,
 		BaseTier = 2,
 	},
 	{
 		UserId = -1003,
 		DisplayName = "Armored Citadel (Tier 3)",
-		PieceCount = 22,
+		PieceCount = 24,
+		BaseTier = 3,
+	},
+	{
+		UserId = -1013,
+		DisplayName = "Titan Bastion (Tier 3)",
+		PieceCount = 26,
+		BaseTier = 3,
+	},
+	{
+		UserId = -1023,
+		DisplayName = "Cobalt Vault (Tier 3)",
+		PieceCount = 25,
 		BaseTier = 3,
 	},
 }
@@ -62,6 +100,8 @@ local DATA_TEMPLATE = {
 		Health = Types.MAX_HEALTH,
 		Hunger = Types.MAX_HUNGER,
 		Thirst = Types.MAX_THIRST,
+		WellFedEndTime = 0,
+		WellFedStaminaMult = 1.0,
 	},
 	Base = {
 		Pieces = {},
@@ -69,6 +109,8 @@ local DATA_TEMPLATE = {
 		LastUpkeepTimestamp = 0,
 	},
 	UnlockedBlueprints = {},
+	DefenseLogs = {},
+	LastStarterKitAt = 0,
 }
 
 local PlayerStore = ProfileStore.New(PROFILE_STORE_NAME, DATA_TEMPLATE)
@@ -150,27 +192,129 @@ local function sanitizeStat(value: any, defaultValue: number, minValue: number, 
 	return defaultValue
 end
 
+local function isValidFiniteInteger(val: any): boolean
+	return type(val) == "number" and val == val and val % 1 == 0 and math.abs(val) ~= math.huge
+end
+
 local function deserializeStats(rawStats: any): SurvivalStats
 	if type(rawStats) ~= "table" then
 		return {
 			Health = Types.MAX_HEALTH,
 			Hunger = Types.MAX_HUNGER,
 			Thirst = Types.MAX_THIRST,
+			WellFedEndTime = 0,
+			WellFedStaminaMult = 1.0,
 		}
 	end
+	local wellFedEndTime = if isValidFiniteInteger(rawStats.WellFedEndTime)
+			and (rawStats.WellFedEndTime :: number) >= 0
+		then math.floor(rawStats.WellFedEndTime :: number)
+		else 0
 	return {
 		Health = sanitizeStat(rawStats.Health, Types.MAX_HEALTH, 0, Types.MAX_HEALTH),
 		Hunger = sanitizeStat(rawStats.Hunger, Types.MAX_HUNGER, 0, Types.MAX_HUNGER),
 		Thirst = sanitizeStat(rawStats.Thirst, Types.MAX_THIRST, 0, Types.MAX_THIRST),
+		WellFedEndTime = wellFedEndTime,
+		WellFedStaminaMult = sanitizeStat(rawStats.WellFedStaminaMult, 1.0, 1.0, 2.0),
 	}
 end
 
 local function serializeStats(stats: SurvivalStats): SurvivalStats
+	local wellFedEndTime = if isValidFiniteInteger(stats.WellFedEndTime)
+			and (stats.WellFedEndTime :: number) >= 0
+		then math.floor(stats.WellFedEndTime :: number)
+		else 0
 	return {
 		Health = sanitizeStat(stats.Health, Types.MAX_HEALTH, 0, Types.MAX_HEALTH),
 		Hunger = sanitizeStat(stats.Hunger, Types.MAX_HUNGER, 0, Types.MAX_HUNGER),
 		Thirst = sanitizeStat(stats.Thirst, Types.MAX_THIRST, 0, Types.MAX_THIRST),
+		WellFedEndTime = wellFedEndTime,
+		WellFedStaminaMult = sanitizeStat(stats.WellFedStaminaMult, 1.0, 1.0, 2.0),
 	}
+end
+
+local function deserializeDeathPoints(rawPoints: any): { DeathGhostPoint }
+	local points: { DeathGhostPoint } = {}
+	if type(rawPoints) ~= "table" then
+		return points
+	end
+	for _, rawPoint in rawPoints do
+		if #points >= 12 then
+			break
+		end
+		if
+			type(rawPoint) == "table"
+			and SecurityService.IsFiniteNumber(rawPoint.PosX)
+			and SecurityService.IsFiniteNumber(rawPoint.PosY)
+			and SecurityService.IsFiniteNumber(rawPoint.PosZ)
+			and type(rawPoint.Cause) == "string"
+			and type(rawPoint.RaiderName) == "string"
+		then
+			table.insert(points, {
+				PosX = rawPoint.PosX,
+				PosY = rawPoint.PosY,
+				PosZ = rawPoint.PosZ,
+				Cause = string.sub(rawPoint.Cause, 1, 96),
+				RaiderName = string.sub(rawPoint.RaiderName, 1, 48),
+			})
+		end
+	end
+	return points
+end
+
+local function deserializeDefenseLogs(rawLogs: any): { DefenseLogEntry }
+	local logs: { DefenseLogEntry } = {}
+	if type(rawLogs) ~= "table" then
+		return logs
+	end
+	for _, rawEntry in rawLogs do
+		if type(rawEntry) == "table" and type(rawEntry.RaiderName) == "string" then
+			local id = if type(rawEntry.Id) == "string" and #rawEntry.Id > 0
+				then string.sub(rawEntry.Id, 1, 64)
+				else string.format("log_%d_%d", os.time(), #logs + 1)
+			local raiderUserId = if isValidFiniteInteger(rawEntry.RaiderUserId)
+				then math.floor(rawEntry.RaiderUserId)
+				else 0
+			local targetTier = if isValidFiniteInteger(rawEntry.TargetTier)
+				then math.clamp(math.floor(rawEntry.TargetTier), 1, 3)
+				else 1
+			local livesSpent = if isValidFiniteInteger(rawEntry.LivesSpent)
+				then math.max(0, math.floor(rawEntry.LivesSpent))
+				else 0
+			local maxLives = if isValidFiniteInteger(rawEntry.MaxLives)
+				then math.max(1, math.floor(rawEntry.MaxLives))
+				else Config.Raid.MaxLives
+			local rewardScrap = if isValidFiniteInteger(rawEntry.RewardScrap)
+				then math.max(0, math.floor(rawEntry.RewardScrap))
+				else 0
+			local timestamp = if isValidFiniteInteger(rawEntry.Timestamp) and rawEntry.Timestamp >= 0
+				then math.floor(rawEntry.Timestamp)
+				else os.time()
+			local summary = if type(rawEntry.Summary) == "string" then string.sub(rawEntry.Summary, 1, 140) else ""
+			table.insert(logs, {
+				Id = id,
+				RaiderUserId = raiderUserId,
+				RaiderName = string.sub(rawEntry.RaiderName, 1, 48),
+				TargetTier = targetTier,
+				Defended = rawEntry.Defended == true,
+				LivesSpent = livesSpent,
+				MaxLives = maxLives,
+				RewardScrap = rewardScrap,
+				Timestamp = timestamp,
+				GhostsShown = rawEntry.GhostsShown == true,
+				DeathPoints = deserializeDeathPoints(rawEntry.DeathPoints),
+				Summary = summary,
+			})
+		end
+	end
+	while #logs > MAX_SAVED_DEFENSE_REPORTS do
+		table.remove(logs, 1)
+	end
+	return logs
+end
+
+local function serializeDefenseLogs(logs: { DefenseLogEntry }?): { DefenseLogEntry }
+	return deserializeDefenseLogs(logs)
 end
 
 local function deserializeBlueprints(rawBlueprints: any): { [string]: boolean }
@@ -195,10 +339,6 @@ end
 
 local function isValidMountSurface(val: any): boolean
 	return val == "Floor" or val == "Wall" or val == "Ceiling"
-end
-
-local function isValidFiniteInteger(val: any): boolean
-	return type(val) == "number" and val == val and val % 1 == 0 and math.abs(val) ~= math.huge
 end
 
 local function deserializeStorage(rawStorage: any, maxSlots: number): { [string]: Slot }
@@ -640,6 +780,31 @@ function DataService.MigrateProfileData(rawData: { [string]: any }): { [string]:
 		data.DataVersion = 5
 	end
 
+	-- Step 6: WellFed timer stats, DefenseLogs, LastStarterKitAt (v5 -> v6)
+	if Types.CURRENT_DATA_VERSION >= 6 and data.DataVersion < 6 then
+		if type(data.Stats) ~= "table" then
+			data.Stats = {
+				Health = Types.MAX_HEALTH,
+				Hunger = Types.MAX_HUNGER,
+				Thirst = Types.MAX_THIRST,
+				WellFedEndTime = 0,
+				WellFedStaminaMult = 1.0,
+			}
+		else
+			if not isValidFiniteInteger(data.Stats.WellFedEndTime) or (data.Stats.WellFedEndTime :: number) < 0 then
+				data.Stats.WellFedEndTime = 0
+			end
+			data.Stats.WellFedStaminaMult = sanitizeStat(data.Stats.WellFedStaminaMult, 1.0, 1.0, 2.0)
+		end
+		data.DefenseLogs = deserializeDefenseLogs(data.DefenseLogs)
+		if not isValidFiniteInteger(data.LastStarterKitAt) or (data.LastStarterKitAt :: number) < 0 then
+			data.LastStarterKitAt = 0
+		else
+			data.LastStarterKitAt = math.floor(data.LastStarterKitAt :: number)
+		end
+		data.DataVersion = 6
+	end
+
 	data.Version = data.DataVersion
 	return data
 end
@@ -651,6 +816,11 @@ local function syncRuntimeToProfile(profile: any, runtimePlayerData: PlayerData)
 	profile.Data.Stats = serializeStats(runtimePlayerData.Stats)
 	profile.Data.Base = serializeBase(runtimePlayerData.Base)
 	profile.Data.UnlockedBlueprints = serializeBlueprints(runtimePlayerData.UnlockedBlueprints)
+	profile.Data.DefenseLogs = serializeDefenseLogs(runtimePlayerData.DefenseLogs)
+	profile.Data.LastStarterKitAt = if isValidFiniteInteger(runtimePlayerData.LastStarterKitAt)
+			and (runtimePlayerData.LastStarterKitAt :: number) >= 0
+		then math.floor(runtimePlayerData.LastStarterKitAt :: number)
+		else 0
 end
 
 local function getRaidableBasesStore(): OrderedDataStore?
@@ -756,6 +926,11 @@ local function loadPlayerProfile(player: Player)
 			Stats = deserializeStats(profile.Data.Stats),
 			Base = deserializeBase(profile.Data.Base),
 			UnlockedBlueprints = deserializeBlueprints(profile.Data.UnlockedBlueprints),
+			DefenseLogs = deserializeDefenseLogs(profile.Data.DefenseLogs),
+			LastStarterKitAt = if isValidFiniteInteger(profile.Data.LastStarterKitAt)
+					and (profile.Data.LastStarterKitAt :: number) >= 0
+				then math.floor(profile.Data.LastStarterKitAt :: number)
+				else 0,
 		}
 
 		profile.OnSave:Connect(function()
@@ -947,6 +1122,33 @@ function DataService.GetPresetTier(targetUserId: number): number?
 		end
 	end
 	return nil
+end
+
+function DataService.GetPresetDisplayName(targetUserId: number): string?
+	for _, preset in PRESET_RAID_TARGETS do
+		if preset.UserId == targetUserId then
+			return preset.DisplayName
+		end
+	end
+	return nil
+end
+
+function DataService.GetPresetTargets(): { { UserId: number, DisplayName: string, PieceCount: number, BaseTier: number } }
+	return PRESET_RAID_TARGETS
+end
+
+function DataService.AppendDefenseLog(player: Player, entry: DefenseLogEntry)
+	local data = DataService.GetData(player)
+	if data == nil then
+		return
+	end
+	if type(data.DefenseLogs) ~= "table" then
+		data.DefenseLogs = {}
+	end
+	table.insert(data.DefenseLogs, entry)
+	while #data.DefenseLogs > MAX_SAVED_DEFENSE_REPORTS do
+		table.remove(data.DefenseLogs, 1)
+	end
 end
 
 local function buildPresetTargetInfo(

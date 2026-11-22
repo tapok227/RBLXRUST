@@ -16,6 +16,8 @@ local LootTables: { [string]: LootTableConfig } = {
 			{ Id = "arrow", Weight = 18, MinCount = 6, MaxCount = 14 },
 			{ Id = "bandage", Weight = 18, MinCount = 1, MaxCount = 3 },
 			{ Id = "water_bottle", Weight = 16, MinCount = 1, MaxCount = 2 },
+			{ Id = "wild_berries", Weight = 14, MinCount = 2, MaxCount = 4 },
+			{ Id = "mushrooms", Weight = 14, MinCount = 2, MaxCount = 4 },
 			{ Id = "scrap", Weight = 20, MinCount = 8, MaxCount = 20 },
 			{ Id = "satchel_charge", Weight = 5, MinCount = 1, MaxCount = 1 },
 		},

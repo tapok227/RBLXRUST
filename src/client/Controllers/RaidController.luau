@@ -27,9 +27,18 @@ local PLACE_RAY_DISTANCE = 60
 local PLACE_COOLDOWN = 0.4
 local TERMINAL_MAX_DISTANCE = 20
 
+local TIER_LABELS: { [string]: string } = {
+	wood = "Wood",
+	stone = "Stone",
+	metal = "Metal",
+	armored = "Armored",
+}
+
 local currentHudState: RaidHudState? = nil
 local cachedTargets: { RaidTargetInfo } = {}
-local selectedTierFilter = 0
+local selectedTierFilter = 1
+local currentFreeRefreshAt = 0
+local currentRefreshCostScrap = Config.Raid.IntelPaidRefreshScrap
 local isSelectionOpen = false
 local lastPlaceTime = 0
 local reportToastToken = 0
@@ -40,6 +49,8 @@ local watchedTerminals: { [Instance]: boolean } = {}
 local selectFrame: Frame? = nil
 local selectStatusLabel: TextLabel? = nil
 local playerTierBadgeLabel: TextLabel? = nil
+local freeRefreshButton: TextButton? = nil
+local paidRefreshButton: TextButton? = nil
 local targetListContainer: ScrollingFrame? = nil
 local tierFilterButtons: { [number]: TextButton } = {}
 local hudFrame: Frame? = nil
@@ -139,7 +150,7 @@ local function createTargetRow(target: RaidTargetInfo)
 
 	local row = Instance.new("Frame")
 	row.Name = string.format("Target_%d", target.UserId)
-	row.Size = UDim2.new(1, -8, 0, 82)
+	row.Size = UDim2.new(1, -8, 0, 102)
 	row.BackgroundColor3 = Color3.fromRGB(34, 34, 42)
 	row.BorderSizePixel = 0
 	row.Parent = targetListContainer
@@ -163,28 +174,55 @@ local function createTargetRow(target: RaidTargetInfo)
 	nameLabel.TextColor3 = Color3.fromRGB(240, 240, 245)
 	nameLabel.TextXAlignment = Enum.TextXAlignment.Left
 	nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
-	local tagText = if target.IsPreset then "[Preset] " else ""
+	local tagText = if target.IsPreset then "[Intel] " else "[Player] "
 	nameLabel.Text =
 		string.format("%s%s  |  Tier %d (%d blocks)", tagText, target.DisplayName, targetTier, target.PieceCount)
 	nameLabel.Parent = row
 
-	local dangerLabel = Instance.new("TextLabel")
-	dangerLabel.Name = "DangerInfo"
-	dangerLabel.Position = UDim2.fromOffset(12, 27)
-	dangerLabel.Size = UDim2.new(1, -156, 0, 16)
-	dangerLabel.BackgroundTransparency = 1
-	dangerLabel.Font = Enum.Font.Gotham
-	dangerLabel.TextSize = 11
-	dangerLabel.TextColor3 = Color3.fromRGB(235, 175, 110)
-	dangerLabel.TextXAlignment = Enum.TextXAlignment.Left
-	dangerLabel.TextTruncate = Enum.TextTruncate.AtEnd
-	dangerLabel.Text =
-		string.format("Danger: %s  |  Reward: %s", target.DangerLabel or "Standard", target.RewardLabel or "Base Loot")
-	dangerLabel.Parent = row
+	local matName = if target.DominantTier ~= nil
+		then (TIER_LABELS[target.DominantTier] or target.DominantTier)
+		else "Mixed"
+	local usedDef = target.UsedDefenseCapacity or 0
+	local maxDef = target.MaxDefenseCapacity or 60
+	local turrets = target.TurretCount or 0
+	local traps = target.TrapCount or 0
+
+	local intelLabel = Instance.new("TextLabel")
+	intelLabel.Name = "IntelSummary"
+	intelLabel.Position = UDim2.fromOffset(12, 27)
+	intelLabel.Size = UDim2.new(1, -156, 0, 18)
+	intelLabel.BackgroundTransparency = 1
+	intelLabel.Font = Enum.Font.GothamMedium
+	intelLabel.TextSize = 11
+	intelLabel.TextColor3 = Color3.fromRGB(165, 215, 245)
+	intelLabel.TextXAlignment = Enum.TextXAlignment.Left
+	intelLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	intelLabel.Text = string.format(
+		"Walls: %s  |  Defense: %d/%d  |  Turrets: %d  Traps: %d",
+		matName,
+		usedDef,
+		maxDef,
+		turrets,
+		traps
+	)
+	intelLabel.Parent = row
+
+	local lootLabel = Instance.new("TextLabel")
+	lootLabel.Name = "LootInfo"
+	lootLabel.Position = UDim2.fromOffset(12, 47)
+	lootLabel.Size = UDim2.new(1, -156, 0, 16)
+	lootLabel.BackgroundTransparency = 1
+	lootLabel.Font = Enum.Font.Gotham
+	lootLabel.TextSize = 11
+	lootLabel.TextColor3 = Color3.fromRGB(235, 185, 110)
+	lootLabel.TextXAlignment = Enum.TextXAlignment.Left
+	lootLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	lootLabel.Text = string.format("Loot Intel: %s", target.LootCategory or target.RewardLabel or "Base Loot")
+	lootLabel.Parent = row
 
 	local costLabel = Instance.new("TextLabel")
 	costLabel.Name = "CostInfo"
-	costLabel.Position = UDim2.fromOffset(12, 46)
+	costLabel.Position = UDim2.fromOffset(12, 68)
 	costLabel.Size = UDim2.new(1, -156, 0, 18)
 	costLabel.BackgroundTransparency = 1
 	costLabel.Font = Enum.Font.GothamBold
@@ -229,6 +267,26 @@ local function createTargetRow(target: RaidTargetInfo)
 	end)
 end
 
+local function updateRefreshButtonsVisual()
+	local nowUnix = os.time()
+	local freeRem = math.max(0, math.floor(currentFreeRefreshAt - nowUnix))
+	if freeRefreshButton then
+		if freeRem <= 0 then
+			freeRefreshButton.Text = "Free Reroll"
+			freeRefreshButton.BackgroundColor3 = Color3.fromRGB(52, 125, 76)
+		else
+			freeRefreshButton.Text = string.format("Free %02d:%02d", math.floor(freeRem / 60), freeRem % 60)
+			freeRefreshButton.BackgroundColor3 = Color3.fromRGB(52, 54, 66)
+		end
+	end
+	if paidRefreshButton then
+		local ownedScrap = countOwnedItem("scrap")
+		local canPay = ownedScrap >= currentRefreshCostScrap
+		paidRefreshButton.Text = string.format("Reroll (%d Scrap)", currentRefreshCostScrap)
+		paidRefreshButton.BackgroundColor3 = if canPay then Color3.fromRGB(165, 115, 42) else Color3.fromRGB(64, 60, 66)
+	end
+end
+
 local function refreshTargetListUi()
 	clearTargetRows()
 	if playerTierBadgeLabel then
@@ -238,11 +296,12 @@ local function refreshTargetListUi()
 		local active = (selectedTierFilter == tierIdx)
 		btn.BackgroundColor3 = if active then Color3.fromRGB(175, 55, 55) else Color3.fromRGB(48, 50, 60)
 	end
+	updateRefreshButtonsVisual()
 
 	local filtered: { RaidTargetInfo } = {}
 	for _, target in cachedTargets do
 		local tTier = math.clamp(target.BaseTier or 1, 1, 3)
-		if selectedTierFilter == 0 or tTier == selectedTierFilter then
+		if tTier == selectedTierFilter then
 			table.insert(filtered, target)
 		end
 	end
@@ -255,7 +314,7 @@ local function refreshTargetListUi()
 	end
 
 	if selectStatusLabel then
-		selectStatusLabel.Text = string.format("Available targets: %d", #filtered)
+		selectStatusLabel.Text = string.format("Scouted Tier %d Intel (%d / 3 cards):", selectedTierFilter, #filtered)
 	end
 	for _, target in filtered do
 		createTargetRow(target)
@@ -393,7 +452,7 @@ local function createRaidGui()
 	modal.Name = "RaidSelectFrame"
 	modal.AnchorPoint = Vector2.new(0.5, 0.5)
 	modal.Position = UDim2.fromScale(0.5, 0.5)
-	modal.Size = UDim2.fromOffset(540, 430)
+	modal.Size = UDim2.fromOffset(600, 476)
 	modal.BackgroundColor3 = Color3.fromRGB(22, 22, 28)
 	modal.BackgroundTransparency = 0.05
 	modal.BorderSizePixel = 0
@@ -412,20 +471,20 @@ local function createRaidGui()
 	local titleLbl = Instance.new("TextLabel")
 	titleLbl.Name = "TitleLabel"
 	titleLbl.Position = UDim2.fromOffset(16, 12)
-	titleLbl.Size = UDim2.new(1, -260, 0, 26)
+	titleLbl.Size = UDim2.new(1, -390, 0, 26)
 	titleLbl.BackgroundTransparency = 1
 	titleLbl.Font = Enum.Font.GothamBold
 	titleLbl.TextSize = 16
 	titleLbl.TextColor3 = Color3.fromRGB(255, 220, 220)
 	titleLbl.TextXAlignment = Enum.TextXAlignment.Left
-	titleLbl.Text = "RAID TERMINAL"
+	titleLbl.Text = "RAID INTEL"
 	titleLbl.Parent = modal
 
 	local tierBadge = Instance.new("TextLabel")
 	tierBadge.Name = "YourTierBadge"
 	tierBadge.AnchorPoint = Vector2.new(1, 0)
-	tierBadge.Position = UDim2.new(1, -132, 0, 10)
-	tierBadge.Size = UDim2.fromOffset(118, 28)
+	tierBadge.Position = UDim2.new(1, -264, 0, 10)
+	tierBadge.Size = UDim2.fromOffset(112, 28)
 	tierBadge.BackgroundColor3 = Color3.fromRGB(45, 92, 68)
 	tierBadge.BorderSizePixel = 0
 	tierBadge.Font = Enum.Font.GothamBold
@@ -437,28 +496,42 @@ local function createRaidGui()
 	badgeCorner.CornerRadius = UDim.new(0, 6)
 	badgeCorner.Parent = tierBadge
 
-	local refreshBtn = Instance.new("TextButton")
-	refreshBtn.Name = "RefreshButton"
-	refreshBtn.AnchorPoint = Vector2.new(1, 0)
-	refreshBtn.Position = UDim2.new(1, -50, 0, 10)
-	refreshBtn.Size = UDim2.fromOffset(74, 28)
-	refreshBtn.BackgroundColor3 = Color3.fromRGB(52, 54, 66)
-	refreshBtn.BorderSizePixel = 0
-	refreshBtn.Font = Enum.Font.GothamBold
-	refreshBtn.TextSize = 12
-	refreshBtn.TextColor3 = Color3.fromRGB(235, 235, 240)
-	refreshBtn.Text = "Refresh"
-	refreshBtn.Parent = modal
+	local freeBtn = Instance.new("TextButton")
+	freeBtn.Name = "FreeRefreshButton"
+	freeBtn.AnchorPoint = Vector2.new(1, 0)
+	freeBtn.Position = UDim2.new(1, -162, 0, 10)
+	freeBtn.Size = UDim2.fromOffset(96, 28)
+	freeBtn.BackgroundColor3 = Color3.fromRGB(52, 54, 66)
+	freeBtn.BorderSizePixel = 0
+	freeBtn.Font = Enum.Font.GothamBold
+	freeBtn.TextSize = 11
+	freeBtn.TextColor3 = Color3.fromRGB(235, 235, 240)
+	freeBtn.Text = "Free 10:00"
+	freeBtn.Parent = modal
+	local freeCorner = Instance.new("UICorner")
+	freeCorner.CornerRadius = UDim.new(0, 6)
+	freeCorner.Parent = freeBtn
+	freeBtn.MouseButton1Click:Connect(function()
+		Net.GetEvent(Net.Events.RaidRefreshRequest):FireServer(selectedTierFilter, false)
+	end)
 
-	local refreshCorner = Instance.new("UICorner")
-	refreshCorner.CornerRadius = UDim.new(0, 6)
-	refreshCorner.Parent = refreshBtn
-
-	refreshBtn.MouseButton1Click:Connect(function()
-		if selectStatusLabel then
-			selectStatusLabel.Text = "Refreshing raid targets..."
-		end
-		Net.GetEvent(Net.Events.RaidListRequest):FireServer()
+	local paidBtn = Instance.new("TextButton")
+	paidBtn.Name = "PaidRefreshButton"
+	paidBtn.AnchorPoint = Vector2.new(1, 0)
+	paidBtn.Position = UDim2.new(1, -48, 0, 10)
+	paidBtn.Size = UDim2.fromOffset(108, 28)
+	paidBtn.BackgroundColor3 = Color3.fromRGB(165, 115, 42)
+	paidBtn.BorderSizePixel = 0
+	paidBtn.Font = Enum.Font.GothamBold
+	paidBtn.TextSize = 11
+	paidBtn.TextColor3 = Color3.new(1, 1, 1)
+	paidBtn.Text = string.format("Reroll (%d Scrap)", Config.Raid.IntelPaidRefreshScrap)
+	paidBtn.Parent = modal
+	local paidCorner = Instance.new("UICorner")
+	paidCorner.CornerRadius = UDim.new(0, 6)
+	paidCorner.Parent = paidBtn
+	paidBtn.MouseButton1Click:Connect(function()
+		Net.GetEvent(Net.Events.RaidRefreshRequest):FireServer(selectedTierFilter, true)
 	end)
 
 	local closeBtn = Instance.new("TextButton")
@@ -497,7 +570,6 @@ local function createRaidGui()
 
 	table.clear(tierFilterButtons)
 	local filterDefs = {
-		{ Tier = 0, Label = "All Tiers" },
 		{ Tier = 1, Label = "Tier 1" },
 		{ Tier = 2, Label = "Tier 2" },
 		{ Tier = 3, Label = "Tier 3" },
@@ -506,8 +578,8 @@ local function createRaidGui()
 		local fBtn = Instance.new("TextButton")
 		fBtn.Name = string.format("FilterTier_%d", def.Tier)
 		fBtn.LayoutOrder = idx
-		fBtn.Size = UDim2.fromOffset(92, 26)
-		fBtn.BackgroundColor3 = if def.Tier == 0 then Color3.fromRGB(175, 55, 55) else Color3.fromRGB(48, 50, 60)
+		fBtn.Size = UDim2.fromOffset(108, 26)
+		fBtn.BackgroundColor3 = if def.Tier == 1 then Color3.fromRGB(175, 55, 55) else Color3.fromRGB(48, 50, 60)
 		fBtn.BorderSizePixel = 0
 		fBtn.Font = Enum.Font.GothamBold
 		fBtn.TextSize = 12
@@ -520,6 +592,7 @@ local function createRaidGui()
 		fBtn.MouseButton1Click:Connect(function()
 			selectedTierFilter = def.Tier
 			refreshTargetListUi()
+			Net.GetEvent(Net.Events.RaidListRequest):FireServer(selectedTierFilter)
 		end)
 		tierFilterButtons[def.Tier] = fBtn
 	end
@@ -569,20 +642,36 @@ local function createRaidGui()
 	selectFrame = modal
 	selectStatusLabel = listStatus
 	playerTierBadgeLabel = tierBadge
+	freeRefreshButton = freeBtn
+	paidRefreshButton = paidBtn
 	targetListContainer = scroller
 
 	screenGui.Parent = playerGui
 end
 
-local function onRaidListSync(targetsAny: any)
+local function onRaidListSync(payloadAny: any)
 	table.clear(cachedTargets)
 
-	if type(targetsAny) ~= "table" then
+	if type(payloadAny) ~= "table" then
 		refreshTargetListUi()
 		return
 	end
 
-	for _, entry in targetsAny do
+	local rawTargets = payloadAny
+	if type(payloadAny.Targets) == "table" then
+		rawTargets = payloadAny.Targets
+		if typeof(payloadAny.Tier) == "number" then
+			selectedTierFilter = math.clamp(math.floor(payloadAny.Tier), 1, 3)
+		end
+		if typeof(payloadAny.FreeRefreshAt) == "number" then
+			currentFreeRefreshAt = math.floor(payloadAny.FreeRefreshAt)
+		end
+		if typeof(payloadAny.RefreshCostScrap) == "number" then
+			currentRefreshCostScrap = math.floor(payloadAny.RefreshCostScrap)
+		end
+	end
+
+	for _, entry in rawTargets do
 		if
 			type(entry) == "table"
 			and typeof(entry.UserId) == "number"
@@ -607,6 +696,18 @@ local function onRaidListSync(targetsAny: any)
 				RewardLabel = if typeof(entry.RewardLabel) == "string" then entry.RewardLabel else nil,
 				LaunchCost = parsedCost,
 				IsPreset = entry.IsPreset == true,
+				DominantTier = if typeof(entry.DominantTier) == "string"
+					then entry.DominantTier :: Types.BuildTier
+					else nil,
+				UsedDefenseCapacity = if typeof(entry.UsedDefenseCapacity) == "number"
+					then entry.UsedDefenseCapacity
+					else nil,
+				MaxDefenseCapacity = if typeof(entry.MaxDefenseCapacity) == "number"
+					then entry.MaxDefenseCapacity
+					else nil,
+				TurretCount = if typeof(entry.TurretCount) == "number" then entry.TurretCount else nil,
+				TrapCount = if typeof(entry.TrapCount) == "number" then entry.TrapCount else nil,
+				LootCategory = if typeof(entry.LootCategory) == "string" then entry.LootCategory else nil,
 			})
 		end
 	end
@@ -884,6 +985,7 @@ end
 
 function RaidController.OpenTargetList()
 	isSelectionOpen = true
+	selectedTierFilter = math.clamp(getLocalBaseTier(), 1, 3)
 	local localPlayer = Players.LocalPlayer
 	if localPlayer then
 		localPlayer:SetAttribute("RaidSelectOpen", true)
@@ -895,10 +997,11 @@ function RaidController.OpenTargetList()
 		selectFrame.Visible = true
 	end
 	if selectStatusLabel then
-		selectStatusLabel.Text = "Loading raid targets..."
+		selectStatusLabel.Text = "Scouting 3 raid targets..."
 	end
 	clearTargetRows()
-	Net.GetEvent(Net.Events.RaidListRequest):FireServer()
+	updateRefreshButtonsVisual()
+	Net.GetEvent(Net.Events.RaidListRequest):FireServer(selectedTierFilter)
 end
 
 function RaidController.CloseTargetList()
@@ -956,9 +1059,14 @@ function RaidController.Init()
 		end
 	end)
 
+	local lastTimerTick = 0
 	RunService.Heartbeat:Connect(function()
 		if not isSelectionOpen then
 			return
+		end
+		if (os.clock() - lastTimerTick) >= 1.0 then
+			lastTimerTick = os.clock()
+			updateRefreshButtonsVisual()
 		end
 		local localPlayer = Players.LocalPlayer
 		local character = if localPlayer then localPlayer.Character else nil

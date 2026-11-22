@@ -19,6 +19,8 @@ export type SurvivalStats = {
 	Health: number,
 	Hunger: number,
 	Thirst: number,
+	WellFedEndTime: number?,
+	WellFedStaminaMult: number?,
 }
 
 export type ConsumableConfig = {
@@ -27,6 +29,8 @@ export type ConsumableConfig = {
 	Thirst: number,
 	Stamina: number?,
 	UseCooldown: number,
+	BuffDuration: number?,
+	MaxStaminaBonus: number?,
 }
 
 export type LootContainerState = {
@@ -152,6 +156,29 @@ export type BaseTier = number
 
 export type ToolCupboardStatus = "Protected" | "Decaying"
 
+export type DeathGhostPoint = {
+	PosX: number,
+	PosY: number,
+	PosZ: number,
+	Cause: string,
+	RaiderName: string,
+}
+
+export type DefenseLogEntry = {
+	Id: string,
+	RaiderUserId: number,
+	RaiderName: string,
+	TargetTier: number,
+	Defended: boolean,
+	LivesSpent: number,
+	MaxLives: number,
+	RewardScrap: number,
+	Timestamp: number,
+	GhostsShown: boolean,
+	DeathPoints: { DeathGhostPoint },
+	Summary: string,
+}
+
 export type ToolCupboardState = {
 	Uid: string,
 	ContainerId: string,
@@ -164,6 +191,7 @@ export type ToolCupboardState = {
 	DefenseUsed: number?,
 	DefenseMax: number?,
 	Slots: Inventory,
+	DefenseLogs: { DefenseLogEntry }?,
 }
 
 export type BaseData = {
@@ -206,6 +234,8 @@ export type PlayerData = {
 	Stats: SurvivalStats,
 	Base: BaseData,
 	UnlockedBlueprints: { [string]: boolean },
+	DefenseLogs: { DefenseLogEntry },
+	LastStarterKitAt: number?,
 }
 
 export type ItemBatchEntry = {
@@ -426,6 +456,19 @@ export type RaidTargetInfo = {
 	RewardLabel: string?,
 	LaunchCost: { [string]: number }?,
 	IsPreset: boolean?,
+	DominantTier: BuildTier?,
+	UsedDefenseCapacity: number?,
+	MaxDefenseCapacity: number?,
+	TurretCount: number?,
+	TrapCount: number?,
+	LootCategory: string?,
+}
+
+export type RaidIntelPool = {
+	Tier: number,
+	Targets: { RaidTargetInfo },
+	FreeRefreshAt: number,
+	RefreshCostScrap: number,
 }
 
 export type RaidHudState = {
@@ -444,9 +487,14 @@ export type RaidHudState = {
 }
 
 export type RaidDefenseReport = {
+	RaiderUserId: number?,
 	RaiderName: string,
 	TargetTier: number,
 	Defended: boolean,
+	LivesSpent: number?,
+	MaxLives: number?,
+	RewardScrap: number?,
+	DeathPoints: { DeathGhostPoint }?,
 	Timestamp: number,
 	BonusItems: { [string]: number }?,
 	Summary: string,
@@ -510,7 +558,7 @@ local Types = {
 	MAX_ATTACK_ORIGIN_OFFSET = 8,
 	MAX_EXPLOSIVE_PLACE_DISTANCE = 14,
 	RAID_DURATION = 300,
-	CURRENT_DATA_VERSION = 5,
+	CURRENT_DATA_VERSION = 6,
 	PING_DISTANCE_TOLERANCE = 2,
 	MAX_BUILD_DISTANCE = 20,
 	MAX_RAID_TERMINAL_DISTANCE = 24,

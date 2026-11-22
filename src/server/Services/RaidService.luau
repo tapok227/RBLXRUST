@@ -34,8 +34,11 @@ type BuildTier = Types.BuildTier
 type SavedBuildPiece = Types.SavedBuildPiece
 type BaseData = Types.BaseData
 type RaidTargetInfo = Types.RaidTargetInfo
+type RaidIntelPool = Types.RaidIntelPool
 type RaidHudState = Types.RaidHudState
 type RaidDefenseReport = Types.RaidDefenseReport
+type DeathGhostPoint = Types.DeathGhostPoint
+type DefenseLogEntry = Types.DefenseLogEntry
 type ExplosionParams = Types.ExplosionParams
 type ExplosionResult = Types.ExplosionResult
 
@@ -67,6 +70,8 @@ type RaidSession = {
 	Origin: Vector3,
 	OutpostOrigin: Vector3,
 	IsStudioMock: boolean,
+	IsSelfRaid: boolean,
+	SavedInventorySnapshot: Inventory?,
 	StartTime: number,
 	Duration: number,
 	Pieces: { [string]: RaidPieceRecord },
@@ -93,6 +98,9 @@ type RaidSession = {
 	TcHackPrompt: ProximityPrompt?,
 	LivesLeft: number,
 	MaxLives: number,
+	LivesSpent: number,
+	RaiderSpentScrapValue: number,
+	DeathPoints: { DeathGhostPoint },
 	LastDamagedAt: number,
 	Extracting: boolean,
 	StashExtracted: boolean,
@@ -126,8 +134,10 @@ local lastListRequest: { [Player]: number } = {}
 local lastExplosivePlaceTime: { [Player]: number } = {}
 local teleportInProgress: { [Player]: boolean } = {}
 local pendingTeleports: { [Player]: PendingTeleport } = {}
+local intelPoolsByPlayer: { [Player]: { [number]: RaidIntelPool } } = {}
 local nextBagId = 0
 local nextOutpostSeq = 0
+local nextSelfRaidSeq = 0
 local isInitialized = false
 
 local RaidService = {}
@@ -206,6 +216,10 @@ local function sendRaidHud(player: Player, state: RaidHudState)
 end
 
 local function resolveTargetName(targetUserId: number): string
+	local presetName = DataService.GetPresetDisplayName(targetUserId)
+	if presetName ~= nil then
+		return presetName
+	end
 	local presetTier = DataService.GetPresetTier(targetUserId)
 	if presetTier ~= nil then
 		return string.format("Outpost Tier %d", presetTier)
@@ -750,6 +764,218 @@ local function buildPresetRaidBase(tier: number): BaseData
 	}
 end
 
+local function applyPresetVariantOverrides(baseData: BaseData, tier: number, presetUserId: number?): BaseData
+	if presetUserId == nil then
+		return baseData
+	end
+	local pieces = baseData.Pieces
+	if presetUserId == -1011 then
+		-- Timber Cabin: lighter wood walls + floor spikes
+		for _, p in pieces do
+			local canonical = BuildingGeometry.CanonicalPieceType(p.PieceType)
+			if canonical == "wall" or canonical == "doorway" or canonical == "roof" then
+				p.Tier = "wood"
+				p.Hp = BuildingGeometry.ComputeMaxHp(canonical, "wood")
+			end
+		end
+		for i = #pieces, 1, -1 do
+			if BuildingGeometry.CanonicalPieceType(pieces[i].PieceType) == "landmine" then
+				table.remove(pieces, i)
+			end
+		end
+	elseif presetUserId == -1021 then
+		-- Quarry Watchpost: full stone + extra shotgun trap
+		for _, p in pieces do
+			local canonical = BuildingGeometry.CanonicalPieceType(p.PieceType)
+			if BuildingConfig.Pieces[canonical] and BuildingConfig.Pieces[canonical].Upgradeable then
+				p.Tier = "stone"
+				p.Hp = BuildingGeometry.ComputeMaxHp(canonical, "stone")
+			end
+		end
+		table.insert(pieces, {
+			Uid = "preset1_shotgun_v3",
+			PieceType = "shotgun_trap",
+			Tier = "wood",
+			PosX = 0,
+			PosY = 10.2,
+			PosZ = -12,
+			RotY = 180,
+			MountSurface = "Ceiling",
+			Hp = BuildingConfig.Pieces.shotgun_trap.BaseHp,
+			Storage = { ["1"] = { Id = "shotgun_shell", Count = 8 } },
+		})
+	elseif presetUserId == -1012 then
+		-- Scrap Compound: stone/metal hybrid + 1 auto turret
+		for idx, p in pieces do
+			local canonical = BuildingGeometry.CanonicalPieceType(p.PieceType)
+			if canonical == "wall" and idx % 2 == 0 then
+				p.Tier = "stone"
+				p.Hp = BuildingGeometry.ComputeMaxHp(canonical, "stone")
+			end
+		end
+		table.insert(pieces, {
+			Uid = "p2_turret_v2",
+			PieceType = "auto_turret",
+			Tier = "wood",
+			PosX = 12,
+			PosY = 1,
+			PosZ = 0,
+			RotY = 0,
+			MountSurface = "Floor",
+			Hp = BuildingConfig.Pieces.auto_turret.BaseHp,
+			Storage = { ["1"] = { Id = "pistol_ammo", Count = 32 } },
+		})
+	elseif presetUserId == -1022 then
+		-- Iron Depot: metal + landmine + extra shotgun trap
+		table.insert(pieces, {
+			Uid = "p2_mine_v3",
+			PieceType = "landmine",
+			Tier = "wood",
+			PosX = 6,
+			PosY = 1,
+			PosZ = -2,
+			RotY = 0,
+			MountSurface = "Floor",
+			Hp = 40,
+		})
+	elseif presetUserId == -1013 then
+		-- Titan Bastion: dual auto turrets
+		table.insert(pieces, {
+			Uid = "p3_turret_v2",
+			PieceType = "auto_turret",
+			Tier = "wood",
+			PosX = 0,
+			PosY = 1,
+			PosZ = -6,
+			RotY = 0,
+			MountSurface = "Floor",
+			Hp = BuildingConfig.Pieces.auto_turret.BaseHp,
+			Storage = { ["1"] = { Id = "pistol_ammo", Count = 48 } },
+		})
+	elseif presetUserId == -1023 then
+		-- Cobalt Vault: full armored + extra shotgun trap
+		for _, p in pieces do
+			local canonical = BuildingGeometry.CanonicalPieceType(p.PieceType)
+			if BuildingConfig.Pieces[canonical] and BuildingConfig.Pieces[canonical].Upgradeable then
+				p.Tier = "armored"
+				p.Hp = BuildingGeometry.ComputeMaxHp(canonical, "armored")
+			end
+		end
+		table.insert(pieces, {
+			Uid = "p3_shotgun_v3",
+			PieceType = "shotgun_trap",
+			Tier = "wood",
+			PosX = 12,
+			PosY = 10.2,
+			PosZ = -12,
+			RotY = 180,
+			MountSurface = "Ceiling",
+			Hp = BuildingConfig.Pieces.shotgun_trap.BaseHp,
+			Storage = { ["1"] = { Id = "shotgun_shell", Count = 12 } },
+		})
+	end
+	baseData.BaseTier = math.clamp(math.floor(tier), 1, 3)
+	return baseData
+end
+
+local function buildPresetBaseForTarget(tier: number, presetUserId: number?): BaseData
+	local baseData = buildPresetRaidBase(tier)
+	return applyPresetVariantOverrides(baseData, tier, presetUserId)
+end
+
+local function computeBaseIntel(
+	baseData: BaseData?,
+	tier: number
+): {
+	DominantTier: BuildTier,
+	UsedDefenseCapacity: number,
+	MaxDefenseCapacity: number,
+	TurretCount: number,
+	TrapCount: number,
+	LootCategory: string,
+}
+	local clampedTier = math.clamp(math.floor(tier), 1, 3)
+	local defaultMat: BuildTier = if clampedTier >= 3 then "armored" elseif clampedTier == 2 then "metal" else "stone"
+	local tierCfg = Config.Raid.Tiers[clampedTier]
+	local defaultLootCat = if tierCfg ~= nil then tierCfg.RewardLabel else "Base Loot"
+
+	if baseData == nil or #baseData.Pieces == 0 then
+		return {
+			DominantTier = defaultMat,
+			UsedDefenseCapacity = 0,
+			MaxDefenseCapacity = Defenses.GetCapacityLimit(clampedTier),
+			TurretCount = 0,
+			TrapCount = 0,
+			LootCategory = defaultLootCat,
+		}
+	end
+
+	local tierCounts: { [BuildTier]: number } = {
+		wood = 0,
+		stone = 0,
+		metal = 0,
+		armored = 0,
+	}
+	local turretCount = 0
+	local trapCount = 0
+	local hasHighTierLoot = false
+	local hasMidTierLoot = false
+
+	for _, piece in baseData.Pieces do
+		local canonical = BuildingGeometry.CanonicalPieceType(piece.PieceType)
+		local pCfg = BuildingConfig.Pieces[canonical]
+		if pCfg ~= nil and pCfg.Upgradeable then
+			local bTier: BuildTier = if tierCounts[piece.Tier] ~= nil then piece.Tier else "wood"
+			tierCounts[bTier] += 1
+		end
+		if canonical == "auto_turret" then
+			turretCount += 1
+		elseif canonical == "shotgun_trap" or canonical == "landmine" or canonical == "floor_spikes" then
+			trapCount += 1
+		end
+		if type(piece.Storage) == "table" then
+			for _, slot in piece.Storage do
+				if type(slot) == "table" and type(slot.Id) == "string" then
+					if
+						slot.Id == "high_quality_metal"
+						or slot.Id == "c4_charge"
+						or slot.Id == "rocket"
+						or slot.Id == "bp_c4_charge"
+					then
+						hasHighTierLoot = true
+					elseif slot.Id == "tech_parts" or slot.Id == "metal_ore" or slot.Id == "satchel_charge" then
+						hasMidTierLoot = true
+					end
+				end
+			end
+		end
+	end
+
+	local bestTier: BuildTier = defaultMat
+	local bestCount = -1
+	for _, candidate in { "armored" :: BuildTier, "metal" :: BuildTier, "stone" :: BuildTier, "wood" :: BuildTier } do
+		if tierCounts[candidate] > bestCount then
+			bestCount = tierCounts[candidate]
+			bestTier = candidate
+		end
+	end
+
+	local usedCap, maxCap = BuildingValidator.ComputeDefenseCapacity(baseData.Pieces, clampedTier)
+	local lootCategory = if hasHighTierLoot
+		then "HQM, Tech & Heavy Explosives"
+		elseif hasMidTierLoot then "Metal Ore, Tech & Munitions"
+		else defaultLootCat
+
+	return {
+		DominantTier = bestTier,
+		UsedDefenseCapacity = usedCap,
+		MaxDefenseCapacity = maxCap,
+		TurretCount = turretCount,
+		TrapCount = trapCount,
+		LootCategory = lootCategory,
+	}
+end
+
 local function createRaidPieceModel(piece: SavedBuildPiece, origin: Vector3): (Model, number)
 	local canonicalType = BuildingGeometry.CanonicalPieceType(piece.PieceType)
 	piece.PieceType = canonicalType
@@ -1000,26 +1226,83 @@ local function deliverDefenseReports(player: Player)
 	end
 	local reports = DataService.ConsumeDefenseReports(player)
 	for _, report in reports do
+		local rewardScrap = if type(report.RewardScrap) == "number" and report.RewardScrap > 0
+			then math.floor(report.RewardScrap)
+			else 0
+		if rewardScrap > 0 then
+			BaseService.DepositScrapToToolCupboard(player, rewardScrap)
+		end
+
 		if report.BonusItems ~= nil then
-			local batch = costMapToBatch(report.BonusItems)
+			local batch: { ItemBatchEntry } = {}
+			for itemId, count in report.BonusItems do
+				if count > 0 and not (itemId == "scrap" and rewardScrap > 0) then
+					table.insert(batch, { Id = itemId, Count = count })
+				end
+			end
 			if #batch > 0 then
 				BaseService.DepositItemsToPlayerBase(player, batch)
 			end
 		end
+
+		local logEntry: DefenseLogEntry = {
+			Id = string.format("def_%d_%d", report.Timestamp, math.random(1000, 9999)),
+			RaiderUserId = report.RaiderUserId or 0,
+			RaiderName = report.RaiderName,
+			TargetTier = report.TargetTier,
+			Defended = report.Defended,
+			LivesSpent = report.LivesSpent or 0,
+			MaxLives = report.MaxLives or Config.Raid.MaxLives,
+			RewardScrap = rewardScrap,
+			Timestamp = report.Timestamp,
+			GhostsShown = false,
+			DeathPoints = report.DeathPoints or {},
+			Summary = report.Summary,
+		}
+		DataService.AppendDefenseLog(player, logEntry)
 		Net.GetEvent(Net.Events.RaidReportNotify):FireClient(player, report)
+	end
+
+	if
+		#reports > 0
+		and (BaseService.IsBaseMode() or RunService:IsStudio())
+		and player:GetAttribute("InRaid") ~= true
+	then
+		BaseService.SpawnSessionDeathGhosts(player)
 	end
 end
 
 local function recordDefenseReport(session: RaidSession, defended: boolean, summaryText: string)
-	if session.TargetUserId <= 0 then
+	if session.IsSelfRaid or session.TargetUserId <= 0 then
 		return
 	end
 	local tierCfg = Config.Raid.Tiers[session.TargetBaseTier]
 	local bonus = if defended and tierCfg ~= nil then tierCfg.DefenseBonus else nil
+	local rewardScrap = 0
+	if defended then
+		local ratioReward = math.floor(session.RaiderSpentScrapValue * Config.Raid.DefenseRewardRatio + 0.5)
+		local tierScrap = if bonus ~= nil and bonus.scrap ~= nil then bonus.scrap else 0
+		rewardScrap = math.max(tierScrap, ratioReward)
+	end
+	local deathPointsCopy: { DeathGhostPoint } = {}
+	for _, pt in session.DeathPoints do
+		table.insert(deathPointsCopy, {
+			PosX = pt.PosX,
+			PosY = pt.PosY,
+			PosZ = pt.PosZ,
+			Cause = pt.Cause,
+			RaiderName = pt.RaiderName,
+		})
+	end
 	local report: RaidDefenseReport = {
+		RaiderUserId = session.Raider.UserId,
 		RaiderName = session.Raider.DisplayName,
 		TargetTier = session.TargetBaseTier,
 		Defended = defended,
+		LivesSpent = session.LivesSpent,
+		MaxLives = session.MaxLives,
+		RewardScrap = rewardScrap,
+		DeathPoints = deathPointsCopy,
 		Timestamp = os.time(),
 		BonusItems = bonus,
 		Summary = summaryText,
@@ -1356,6 +1639,8 @@ local function spawnRaidTargetBase(session: RaidSession, baseData: BaseData)
 				OwnerUserId = session.TargetUserId,
 				IsRaidInstance = true,
 				IsQaTest = false,
+				InfiniteAmmo = session.IsSelfRaid,
+				AllowOwnerTarget = session.IsSelfRaid,
 				PieceRef = pieceCopy,
 				Hp = pieceCopy.Hp,
 				MaxHp = maxHp,
@@ -1452,7 +1737,46 @@ local function createPrimitivePart(
 	return part
 end
 
+local function restoreSelfRaidInventory(player: Player, session: RaidSession)
+	if session.IsSelfRaid and session.SavedInventorySnapshot ~= nil then
+		local snapshot = session.SavedInventorySnapshot
+		session.SavedInventorySnapshot = nil
+		if DataService.GetData(player) ~= nil then
+			InventoryService.RestoreSnapshot(player, snapshot)
+		end
+	end
+	if player.Parent == Players then
+		player:SetAttribute("InSelfRaid", false)
+	end
+end
+
+local function finishSelfRaidReturn(player: Player, session: RaidSession, statusText: string?)
+	restoreSelfRaidInventory(player, session)
+	activeSessions[player] = nil
+	cleanupSession(session)
+	if player.Parent == Players then
+		player:SetAttribute("InRaid", false)
+		player:SetAttribute("InSelfRaid", false)
+	end
+	SecurityService.SetTeleportLock(player, false)
+
+	local returnPos = session.ReturnPosition or getDefaultSpawnPosition()
+	teleportCharacterToPosition(player, returnPos)
+
+	sendRaidHud(player, {
+		Active = false,
+		TargetName = session.TargetName,
+		TargetBaseTier = session.TargetBaseTier,
+		TimeLeft = 0,
+		StatusText = statusText,
+	})
+end
+
 local function completeStudioReturn(player: Player, session: RaidSession, statusText: string?)
+	if session.IsSelfRaid then
+		finishSelfRaidReturn(player, session, statusText)
+		return
+	end
 	DataService.ReleaseForTeleport(player)
 	DataService.RestoreAfterFailedTeleport(player)
 
@@ -1665,13 +1989,21 @@ local function tryExtractFromRaid(player: Player)
 			return
 		end
 		if not session.StashExtracted then
-			extractedItems, totalCount = collectStashBatch(session)
-			if #extractedItems > 0 then
-				BaseService.DepositItemsToPlayerBase(player, extractedItems)
-			end
-			session.StashExtracted = true
-			if session.ExtractionStashContainerId ~= nil then
-				LootService.ClearContainerSlots(session.ExtractionStashContainerId)
+			if session.IsSelfRaid then
+				extractedItems, totalCount = collectStashBatch(session)
+				session.StashExtracted = true
+				if session.ExtractionStashContainerId ~= nil then
+					LootService.ClearContainerSlots(session.ExtractionStashContainerId)
+				end
+			else
+				extractedItems, totalCount = collectStashBatch(session)
+				if #extractedItems > 0 then
+					BaseService.DepositItemsToPlayerBase(player, extractedItems)
+				end
+				session.StashExtracted = true
+				if session.ExtractionStashContainerId ~= nil then
+					LootService.ClearContainerSlots(session.ExtractionStashContainerId)
+				end
 			end
 		end
 	end)
@@ -1764,9 +2096,11 @@ local function spawnRaidOutpost(session: RaidSession)
 	local radius = Config.Raid.OutpostRadius
 
 	-- Zone volume for RaidOutpostZone detection
-	local existingZone = Workspace:FindFirstChild("RaidOutpostZone")
-	if existingZone ~= nil and existingZone:GetAttribute("IsDynamicRaidZone") == true then
-		existingZone:Destroy()
+	if not session.IsSelfRaid then
+		local existingZone = Workspace:FindFirstChild("RaidOutpostZone")
+		if existingZone ~= nil and existingZone:GetAttribute("IsDynamicRaidZone") == true then
+			existingZone:Destroy()
+		end
 	end
 	local zoneModel = Instance.new("Model")
 	zoneModel.Name = "RaidOutpostZone"
@@ -2156,6 +2490,31 @@ local function bindRaiderCharacter(session: RaidSession, character: Model)
 		end
 		diedHandled = true
 		cancelTcHack(session, nil)
+		session.LivesSpent += 1
+		if not session.IsSelfRaid then
+			local hrp = character:FindFirstChild("HumanoidRootPart")
+			local deathPos = if hrp and hrp:IsA("BasePart") then hrp.Position else character:GetPivot().Position
+			if
+				not BuildingValidator.IsPointInRaidOutpostOrBuffer(
+					deathPos,
+					Config.Raid.OutpostGhostBufferMargin,
+					session.OutpostOrigin
+				)
+			then
+				local causeAttr = character:GetAttribute("LastDamageSource")
+				local causeText = if typeof(causeAttr) == "string" and #causeAttr > 0
+					then causeAttr
+					else "Killed during Raid"
+				local localOffset = deathPos - session.Origin
+				table.insert(session.DeathPoints, {
+					PosX = localOffset.X,
+					PosY = localOffset.Y,
+					PosZ = localOffset.Z,
+					Cause = causeText,
+					RaiderName = session.Raider.DisplayName,
+				})
+			end
+		end
 		session.LivesLeft = math.max(0, session.LivesLeft - 1)
 		if session.LivesLeft > 0 then
 			local msg = string.format(
@@ -2692,11 +3051,27 @@ function RaidService.TriggerExplosion(params: ExplosionParams): ExplosionResult
 		end
 	end
 
+	local dmgSource = if params.SourceId == "landmine"
+		then "Killed by Landmine"
+		elseif params.SourceId == "c4_charge" then "Killed by Timed C4"
+		elseif params.SourceId == "satchel_charge" then "Killed by Satchel Charge"
+		elseif params.ProjectileId == "rocket" or params.SourceId == "rocket" then "Killed by Rocket"
+		else "Killed by Explosive"
+
+	if params.Attacker ~= nil and (params.ProjectileId == "rocket" or params.SourceId == "rocket") then
+		local attackerSession = activeSessions[params.Attacker]
+		if attackerSession ~= nil then
+			local expValues = Config.Raid.ExplosiveScrapValues :: { [string]: number }
+			attackerSession.RaiderSpentScrapValue += (expValues.rocket or 60)
+		end
+	end
+
 	for _, hit in pendingHumanoidHits do
 		if hit.Model.Parent ~= nil and hit.Humanoid.Health > 0 and not isCharacterInvulnerable(hit.Model) then
 			if params.Attacker ~= nil and params.Attacker.Parent == Players then
 				hit.Model:SetAttribute("LastAttackerUserId", params.Attacker.UserId)
 			end
+			hit.Model:SetAttribute("LastDamageSource", dmgSource)
 			hit.Humanoid:TakeDamage(hit.Damage)
 			local hitPlayer = Players:GetPlayerFromCharacter(hit.Model)
 			if hitPlayer ~= nil then
@@ -2835,7 +3210,148 @@ local function formatCostRequirementText(costMap: { [string]: number }): string
 	return table.concat(parts, ", ")
 end
 
-local function onRaidListRequest(player: Player)
+local function enrichTargetWithIntel(target: RaidTargetInfo, baseData: BaseData?, tier: number): RaidTargetInfo
+	local intel = computeBaseIntel(baseData, tier)
+	target.DominantTier = intel.DominantTier
+	target.UsedDefenseCapacity = intel.UsedDefenseCapacity
+	target.MaxDefenseCapacity = intel.MaxDefenseCapacity
+	target.TurretCount = intel.TurretCount
+	target.TrapCount = intel.TrapCount
+	target.LootCategory = intel.LootCategory
+	return target
+end
+
+local function buildIntelCardsForTier(player: Player, tier: number, seedOffset: number?): { RaidTargetInfo }
+	local clampedTier = math.clamp(math.floor(tier), 1, 3)
+	local cardsCount = Config.Raid.IntelCardsCount
+	local tierCfg = Config.Raid.Tiers[clampedTier]
+	local rng = Random.new((seedOffset or os.time()) + math.abs(player.UserId) + clampedTier * 37)
+
+	local realCandidates: { RaidTargetInfo } = {}
+	for _, entry in DataService.GetRaidTargets(player.UserId, 30) do
+		if not entry.IsPreset and (entry.BaseTier or 1) == clampedTier then
+			local snap: BaseData? = nil
+			local onlineTarget = Players:GetPlayerByUserId(entry.UserId)
+			local onlineData = if onlineTarget ~= nil then DataService.GetData(onlineTarget) else nil
+			if onlineData ~= nil then
+				snap = onlineData.Base
+			else
+				snap = DataService.LoadBaseSnapshot(entry.UserId)
+			end
+			table.insert(realCandidates, enrichTargetWithIntel(entry, snap, clampedTier))
+		end
+	end
+
+	-- Shuffle real candidates
+	for i = #realCandidates, 2, -1 do
+		local j = rng:NextInteger(1, i)
+		realCandidates[i], realCandidates[j] = realCandidates[j], realCandidates[i]
+	end
+
+	local selected: { RaidTargetInfo } = {}
+	local usedIds: { [number]: boolean } = {}
+	for _, candidate in realCandidates do
+		if #selected >= cardsCount then
+			break
+		end
+		usedIds[candidate.UserId] = true
+		table.insert(selected, candidate)
+	end
+
+	if #selected < cardsCount then
+		local presetCandidates: { RaidTargetInfo } = {}
+		for _, preset in DataService.GetPresetTargets() do
+			if preset.BaseTier == clampedTier and not usedIds[preset.UserId] then
+				local presetBase = buildPresetBaseForTarget(clampedTier, preset.UserId)
+				local info: RaidTargetInfo = {
+					UserId = preset.UserId,
+					DisplayName = preset.DisplayName,
+					PieceCount = #presetBase.Pieces,
+					BaseTier = clampedTier,
+					DangerLabel = if tierCfg ~= nil then tierCfg.DangerLabel else "Unknown",
+					RewardLabel = if tierCfg ~= nil then tierCfg.RewardLabel else "Loot",
+					LaunchCost = if tierCfg ~= nil then tierCfg.LaunchCost else nil,
+					IsPreset = true,
+				}
+				table.insert(presetCandidates, enrichTargetWithIntel(info, presetBase, clampedTier))
+			end
+		end
+		for i = #presetCandidates, 2, -1 do
+			local j = rng:NextInteger(1, i)
+			presetCandidates[i], presetCandidates[j] = presetCandidates[j], presetCandidates[i]
+		end
+		for _, pCard in presetCandidates do
+			if #selected >= cardsCount then
+				break
+			end
+			table.insert(selected, pCard)
+		end
+	end
+
+	return selected
+end
+
+local function getOrCreateIntelPool(player: Player, tier: number): RaidIntelPool
+	local clampedTier = math.clamp(math.floor(tier), 1, 3)
+	local byTier = intelPoolsByPlayer[player]
+	if byTier == nil then
+		byTier = {}
+		intelPoolsByPlayer[player] = byTier
+	end
+	local existing = byTier[clampedTier]
+	if existing ~= nil then
+		return existing
+	end
+	local created: RaidIntelPool = {
+		Tier = clampedTier,
+		Targets = buildIntelCardsForTier(player, clampedTier, os.time()),
+		FreeRefreshAt = os.time() + Config.Raid.IntelFreeRefreshCooldown,
+		RefreshCostScrap = Config.Raid.IntelPaidRefreshScrap,
+	}
+	byTier[clampedTier] = created
+	return created
+end
+
+function RaidService.GetIntelPool(player: Player, tier: number): RaidIntelPool
+	return getOrCreateIntelPool(player, tier)
+end
+
+function RaidService.RefreshIntelPool(player: Player, tier: number, paid: boolean): (boolean, string, RaidIntelPool?)
+	local clampedTier = math.clamp(math.floor(tier), 1, 3)
+	local pool = getOrCreateIntelPool(player, clampedTier)
+	local nowUnix = os.time()
+
+	if not paid then
+		if nowUnix < pool.FreeRefreshAt then
+			local rem = pool.FreeRefreshAt - nowUnix
+			return false, string.format("Free refresh ready in %02d:%02d", math.floor(rem / 60), rem % 60), pool
+		end
+		pool.Targets = buildIntelCardsForTier(player, clampedTier, nowUnix + math.random(1, 9999))
+		pool.FreeRefreshAt = nowUnix + Config.Raid.IntelFreeRefreshCooldown
+		return true, string.format("Scouted 3 new Tier %d targets (Free)", clampedTier), pool
+	end
+
+	local costScrap = Config.Raid.IntelPaidRefreshScrap
+	local paidOk = false
+	SecurityService.RunLocked(player, "RaidRefreshIntel", function()
+		if DataService.GetData(player) == nil then
+			return
+		end
+		local costBatch: { ItemBatchEntry } = { { Id = "scrap", Count = costScrap } }
+		if InventoryService.HasItems(player, costBatch) and InventoryService.RemoveItems(player, costBatch) then
+			paidOk = true
+		end
+	end)
+
+	if not paidOk then
+		return false, string.format("Need %d Scrap to refresh Tier %d intel", costScrap, clampedTier), pool
+	end
+
+	pool.Targets = buildIntelCardsForTier(player, clampedTier, nowUnix + math.random(1, 9999))
+	return true, string.format("Scouted 3 new Tier %d targets (-%d Scrap)", clampedTier, costScrap), pool
+end
+
+local function onRaidListRequest(player: Player, tierAny: any)
 	if not SecurityService.CheckRateLimit(player, Net.Events.RaidListRequest) then
 		return
 	end
@@ -2860,9 +3376,41 @@ local function onRaidListRequest(player: Player)
 	end
 	lastListRequest[player] = now
 
-	local targets = DataService.GetRaidTargets(player.UserId, 12)
+	local requestedTier = if SecurityService.IsValidInteger(tierAny, 1, 3)
+		then math.floor(tierAny :: number)
+		else math.clamp(BaseService.GetPlayerBaseTier(player), 1, 3)
+	local pool = getOrCreateIntelPool(player, requestedTier)
 	if player.Parent == Players then
-		Net.GetEvent(Net.Events.RaidListSync):FireClient(player, targets)
+		Net.GetEvent(Net.Events.RaidListSync):FireClient(player, pool)
+	end
+end
+
+local function onRaidRefreshRequest(player: Player, tierAny: any, paidAny: any)
+	if not SecurityService.CheckRateLimit(player, Net.Events.RaidRefreshRequest) then
+		return
+	end
+	if not canUseRaidTerminal(player) then
+		return
+	end
+	if DataService.IsTeleporting(player) or SecurityService.IsTransactionLocked(player) then
+		return
+	end
+	if DataService.GetData(player) == nil then
+		return
+	end
+	local _, hrp = getAliveCharacterParts(player)
+	if hrp == nil or not isNearRaidTerminal(hrp) then
+		return
+	end
+
+	local requestedTier = if SecurityService.IsValidInteger(tierAny, 1, 3)
+		then math.floor(tierAny :: number)
+		else math.clamp(BaseService.GetPlayerBaseTier(player), 1, 3)
+	local isPaid = (paidAny == true)
+	local ok, msg, pool = RaidService.RefreshIntelPool(player, requestedTier, isPaid)
+	sendBuildFeedback(player, ok, msg)
+	if pool ~= nil and player.Parent == Players then
+		Net.GetEvent(Net.Events.RaidListSync):FireClient(player, pool)
 	end
 end
 
@@ -2993,9 +3541,11 @@ local function onStartRaidRequest(player: Player, targetUserIdAny: any)
 		return
 	end
 
+	local launchScrapValue = if launchCostMap.scrap ~= nil then math.floor(launchCostMap.scrap) else 0
 	teleportInProgress[player] = true
 	SecurityService.SetTeleportLock(player, true)
 	LootService.CloseContainerForPlayer(player, true)
+	BaseService.ClearSessionGhosts(player)
 
 	if RunService:IsStudio() then
 		DataService.ReleaseForTeleport(player)
@@ -3004,7 +3554,7 @@ local function onStartRaidRequest(player: Player, targetUserIdAny: any)
 		SecurityService.SetTeleportLock(player, false)
 
 		if player.Parent == Players and DataService.GetData(player) ~= nil then
-			local entered = RaidService.EnterStudioMockRaid(player, targetUserId)
+			local entered = RaidService.EnterStudioMockRaid(player, targetUserId, launchScrapValue)
 			if not entered and #launchCostBatch > 0 then
 				InventoryService.AddItems(player, launchCostBatch)
 			end
@@ -3075,6 +3625,7 @@ local function onStartRaidRequest(player: Player, targetUserIdAny: any)
 			TargetBaseTier = targetBaseTier,
 			RaiderUserId = player.UserId,
 			TargetName = targetName,
+			LaunchScrapValue = launchScrapValue,
 		}
 		local options = Instance.new("TeleportOptions")
 		options.ReservedServerAccessCode = accessCode
@@ -3345,6 +3896,8 @@ local function onPlaceExplosiveRequest(player: Player, targetUidAny: any, hitPos
 			return
 		end
 		lastExplosivePlaceTime[player] = now
+		local expValues = Config.Raid.ExplosiveScrapValues :: { [string]: number }
+		session.RaiderSpentScrapValue += (expValues[explosiveId] or 0)
 
 		local toPlayer = innerHrp.Position - clampedPos
 		local nudge = if toPlayer.Magnitude > 0.05 then toPlayer.Unit * 0.3 else Vector3.new(0, 0.3, 0)
@@ -3449,6 +4002,45 @@ local function onTeleportInitFailed(
 	end
 end
 
+local function cloneBaseDataForRaid(source: BaseData): BaseData
+	local clonedPieces: { SavedBuildPiece } = {}
+	for _, piece in source.Pieces do
+		local copiedStorage: { [string]: Slot }? = nil
+		if type(piece.Storage) == "table" then
+			copiedStorage = {}
+			for k, s in piece.Storage do
+				if type(s) == "table" and type(s.Id) == "string" and type(s.Count) == "number" then
+					(copiedStorage :: { [string]: Slot })[k] = { Id = s.Id, Count = s.Count }
+				end
+			end
+		end
+		table.insert(clonedPieces, {
+			Uid = piece.Uid,
+			PieceType = piece.PieceType,
+			Tier = piece.Tier,
+			PosX = piece.PosX,
+			PosY = piece.PosY,
+			PosZ = piece.PosZ,
+			RotY = piece.RotY,
+			ParentUid = piece.ParentUid,
+			AnchorUid = piece.AnchorUid,
+			SocketId = piece.SocketId,
+			MountSurface = piece.MountSurface,
+			Hp = piece.Hp,
+			LastDamagedAt = piece.LastDamagedAt,
+			Storage = copiedStorage,
+			GridX = piece.GridX,
+			GridY = piece.GridY,
+			GridZ = piece.GridZ,
+		})
+	end
+	return {
+		Pieces = clonedPieces,
+		BaseTier = source.BaseTier,
+		LastUpkeepTimestamp = source.LastUpkeepTimestamp,
+	}
+end
+
 local function createRaidSessionRecord(
 	player: Player,
 	targetUserId: number,
@@ -3456,7 +4048,9 @@ local function createRaidSessionRecord(
 	targetBaseTier: number,
 	origin: Vector3,
 	isStudioMock: boolean,
-	returnPos: Vector3?
+	returnPos: Vector3?,
+	isSelfRaid: boolean?,
+	initialSpentScrap: number?
 ): RaidSession
 	local outpostOrigin = origin + Vector3.new(0, 0, Config.Raid.OutpostOffsetZ)
 	return {
@@ -3467,6 +4061,8 @@ local function createRaidSessionRecord(
 		Origin = origin,
 		OutpostOrigin = outpostOrigin,
 		IsStudioMock = isStudioMock,
+		IsSelfRaid = isSelfRaid == true,
+		SavedInventorySnapshot = nil,
 		StartTime = os.clock(),
 		Duration = RAID_DURATION,
 		Pieces = {},
@@ -3493,6 +4089,9 @@ local function createRaidSessionRecord(
 		TcHackPrompt = nil,
 		LivesLeft = Config.Raid.MaxLives,
 		MaxLives = Config.Raid.MaxLives,
+		LivesSpent = 0,
+		RaiderSpentScrapValue = initialSpentScrap or 0,
+		DeathPoints = {},
 		LastDamagedAt = 0,
 		Extracting = false,
 		StashExtracted = false,
@@ -3506,15 +4105,16 @@ local function startRaidSession(session: RaidSession, baseData: BaseData)
 	local player = session.Raider
 	activeSessions[player] = session
 	player:SetAttribute("InRaid", true)
+	player:SetAttribute("InSelfRaid", session.IsSelfRaid)
 	spawnRaidTargetBase(session, baseData)
 	spawnRaidOutpost(session)
 	bindRaiderLifecycle(session)
 	teleportCharacterToPosition(player, session.RespawnPosition)
 	startSessionTimerLoop(session)
-	syncSessionHud(
-		session,
-		string.format("Raid started (Tier %d) — Hack or destroy enemy TC!", session.TargetBaseTier)
-	)
+	local startMsg = if session.IsSelfRaid
+		then string.format("Self-Raid Test (Tier %d) — No real loot/ammo risk!", session.TargetBaseTier)
+		else string.format("Raid started (Tier %d) — Hack or destroy enemy TC!", session.TargetBaseTier)
+	syncSessionHud(session, startMsg)
 end
 
 local function onPlayerDataLoaded(player: Player, _data: Types.PlayerData)
@@ -3559,7 +4159,7 @@ local function onPlayerDataLoaded(player: Player, _data: Types.PlayerData)
 		baseData = DataService.LoadBaseSnapshot(targetUserId)
 	end
 	if baseData == nil or #baseData.Pieces == 0 then
-		baseData = buildPresetRaidBase(targetBaseTier)
+		baseData = buildPresetBaseForTarget(targetBaseTier, targetUserId)
 	end
 
 	if activeSessions[player] ~= nil then
@@ -3567,11 +4167,24 @@ local function onPlayerDataLoaded(player: Player, _data: Types.PlayerData)
 		activeSessions[player] = nil
 	end
 
-	local session = createRaidSessionRecord(player, targetUserId, targetName, targetBaseTier, Vector3.zero, false, nil)
+	local launchScrap = if SecurityService.IsValidInteger(teleportData.LaunchScrapValue)
+		then math.max(0, math.floor(teleportData.LaunchScrapValue :: number))
+		else 0
+	local session = createRaidSessionRecord(
+		player,
+		targetUserId,
+		targetName,
+		targetBaseTier,
+		Vector3.zero,
+		false,
+		nil,
+		false,
+		launchScrap
+	)
 	startRaidSession(session, baseData :: BaseData)
 end
 
-function RaidService.EnterStudioMockRaid(player: Player, targetUserId: number): boolean
+function RaidService.EnterStudioMockRaid(player: Player, targetUserId: number, initialSpentScrap: number?): boolean
 	if not RunService:IsStudio() or player.Parent ~= Players then
 		return false
 	end
@@ -3593,7 +4206,7 @@ function RaidService.EnterStudioMockRaid(player: Player, targetUserId: number): 
 		baseData = DataService.LoadBaseSnapshot(targetUserId)
 	end
 	if baseData == nil or #baseData.Pieces == 0 then
-		baseData = buildPresetRaidBase(targetBaseTier)
+		baseData = buildPresetBaseForTarget(targetBaseTier, targetUserId)
 	end
 
 	local targetName = resolveTargetName(targetUserId)
@@ -3604,9 +4217,79 @@ function RaidService.EnterStudioMockRaid(player: Player, targetUserId: number): 
 		targetBaseTier,
 		STUDIO_MOCK_RAID_ORIGIN,
 		true,
-		returnPos
+		returnPos,
+		false,
+		initialSpentScrap
 	)
 	startRaidSession(session, baseData :: BaseData)
+	return true
+end
+
+function RaidService.StartSelfRaid(player: Player): boolean
+	if player.Parent ~= Players then
+		return false
+	end
+	if
+		activeSessions[player] ~= nil
+		or teleportInProgress[player]
+		or DataService.IsTeleporting(player)
+		or SecurityService.IsTeleportLocked(player)
+	then
+		return false
+	end
+	if Workspace:GetAttribute("RaidServerMode") == true then
+		return false
+	end
+
+	local data = DataService.GetData(player)
+	if data == nil or #data.Base.Pieces == 0 then
+		sendBuildFeedback(player, false, "Build a base before starting a Self-Raid defense test")
+		return false
+	end
+
+	CraftingService.CancelCraftForPlayer(player, true, false)
+	LootService.CloseContainerForPlayer(player, true)
+	BaseService.ClearSessionGhosts(player)
+
+	local returnPos = getDefaultSpawnPosition()
+	local _, hrp, _ = getAliveCharacterParts(player)
+	if hrp ~= nil then
+		returnPos = hrp.Position + Vector3.new(0, 1, 0)
+	end
+
+	local realSnapshot = InventoryService.GetSnapshot(player)
+	local copiedBase = cloneBaseDataForRaid(data.Base)
+	local baseTier = math.clamp(math.max(1, data.Base.BaseTier), 1, 3)
+
+	player:SetAttribute("InSelfRaid", true)
+	InventoryService.ClearInventory(player)
+	InventoryService.AddItems(player, Config.Raid.SelfRaidKit :: { ItemBatchEntry })
+
+	nextSelfRaidSeq += 1
+	local arenaOffset = Vector3.new(((nextSelfRaidSeq - 1) % 6) * 400, 0, 0)
+	local arenaOrigin = STUDIO_MOCK_RAID_ORIGIN + arenaOffset
+	local session = createRaidSessionRecord(
+		player,
+		player.UserId,
+		string.format("%s (Self-Raid)", player.DisplayName),
+		baseTier,
+		arenaOrigin,
+		true,
+		returnPos,
+		true,
+		0
+	)
+	session.SavedInventorySnapshot = realSnapshot
+	startRaidSession(session, copiedBase)
+	return true
+end
+
+function RaidService.EndSelfRaid(player: Player, reason: string?): boolean
+	local session = activeSessions[player]
+	if session == nil or not session.IsSelfRaid then
+		return false
+	end
+	finishSelfRaidReturn(player, session, reason or "Self-Raid test ended — inventory restored")
 	return true
 end
 
@@ -3634,8 +4317,12 @@ function RaidService.Init()
 		TriggerExplosion = RaidService.TriggerExplosion,
 		NotifyRaiderDamaged = RaidService.NotifyRaiderDamaged,
 	})
+	BaseService.BindRaidHooks({
+		StartSelfRaid = RaidService.StartSelfRaid,
+	})
 
 	Net.GetEvent(Net.Events.RaidListRequest).OnServerEvent:Connect(onRaidListRequest)
+	Net.GetEvent(Net.Events.RaidRefreshRequest).OnServerEvent:Connect(onRaidRefreshRequest)
 	Net.GetEvent(Net.Events.StartRaidRequest).OnServerEvent:Connect(onStartRaidRequest)
 	Net.GetEvent(Net.Events.BuildPlaceRequest).OnServerEvent:Connect(onRaidBuildPlaceRequest)
 	Net.GetEvent(Net.Events.PlaceExplosiveRequest).OnServerEvent:Connect(onPlaceExplosiveRequest)
@@ -3644,11 +4331,27 @@ function RaidService.Init()
 	Net.GetEvent(Net.Events.RaidAbandonRequest).OnServerEvent:Connect(onRaidAbandonRequest)
 	TeleportService.TeleportInitFailed:Connect(onTeleportInitFailed)
 
+	DataService.OnBeforeUnload(function(player: Player, data: Types.PlayerData)
+		local session = activeSessions[player]
+		if session ~= nil and session.IsSelfRaid and session.SavedInventorySnapshot ~= nil then
+			local restored: Inventory = {}
+			for i = 1, Types.INVENTORY_SIZE do
+				local slot = session.SavedInventorySnapshot[i]
+				if slot ~= nil then
+					restored[i] = { Id = slot.Id, Count = slot.Count }
+				end
+			end
+			data.Inventory = restored
+			session.SavedInventorySnapshot = nil
+		end
+	end)
+
 	DataService.OnDataLoaded(onPlayerDataLoaded)
 
 	Players.PlayerRemoving:Connect(function(player: Player)
 		local session = activeSessions[player]
 		if session ~= nil then
+			restoreSelfRaidInventory(player, session)
 			if not session.Extracting and not session.TcCaptured then
 				recordDefenseReport(
 					session,
@@ -3659,6 +4362,7 @@ function RaidService.Init()
 			activeSessions[player] = nil
 			cleanupSession(session)
 		end
+		intelPoolsByPlayer[player] = nil
 		lastListRequest[player] = nil
 		lastExplosivePlaceTime[player] = nil
 		teleportInProgress[player] = nil

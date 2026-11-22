@@ -33,6 +33,8 @@ export type RegisterDefenseOptions = {
 	OwnerPlayer: Player?,
 	IsRaidInstance: boolean?,
 	IsQaTest: boolean?,
+	InfiniteAmmo: boolean?,
+	AllowOwnerTarget: boolean?,
 	PieceRef: SavedBuildPiece?,
 	Hp: number?,
 	MaxHp: number?,
@@ -56,6 +58,8 @@ type ActiveDefenseRecord = {
 	OwnerPlayer: Player?,
 	IsRaidInstance: boolean,
 	IsQaTest: boolean,
+	InfiniteAmmo: boolean,
+	AllowOwnerTarget: boolean,
 	PieceRef: SavedBuildPiece?,
 	Storage: { [string]: Slot },
 	Hp: number,
@@ -134,6 +138,9 @@ local function countStorageAmmo(record: ActiveDefenseRecord): number
 			total += math.floor(slot.Count)
 		end
 	end
+	if record.InfiniteAmmo then
+		return math.max(MAX_AMMO_STACK, total)
+	end
 	return total
 end
 
@@ -141,6 +148,9 @@ local function consumeStorageAmmo(record: ActiveDefenseRecord, amount: number): 
 	local ammoId = record.Config.AmmoId
 	if ammoId == nil or amount <= 0 then
 		return false
+	end
+	if record.InfiniteAmmo then
+		return true
 	end
 	if countStorageAmmo(record) < amount then
 		return false
@@ -351,6 +361,16 @@ local function findCharacterModelFromPart(inst: Instance): (Model?, Humanoid?)
 	return nil, nil
 end
 
+local function canDefenseHitPlayer(record: ActiveDefenseRecord, plr: Player?): boolean
+	if plr == nil then
+		return true
+	end
+	if record.IsQaTest or record.AllowOwnerTarget then
+		return true
+	end
+	return plr.UserId ~= record.OwnerUserId
+end
+
 local function collectCandidateTargets(
 	record: ActiveDefenseRecord
 ): { { Model: Model, Humanoid: Humanoid, Root: BasePart } }
@@ -375,10 +395,8 @@ local function collectCandidateTargets(
 		end
 
 		local plr = Players:GetPlayerFromCharacter(charModel)
-		if plr ~= nil then
-			if not record.IsQaTest and plr.UserId == record.OwnerUserId then
-				return
-			end
+		if not canDefenseHitPlayer(record, plr) then
+			return
 		end
 
 		table.insert(targets, {
@@ -475,6 +493,7 @@ local function applyDamageToTarget(record: ActiveDefenseRecord, targetModel: Mod
 	if record.OwnerUserId ~= 0 then
 		targetModel:SetAttribute("LastAttackerUserId", record.OwnerUserId)
 	end
+	targetModel:SetAttribute("LastDamageSource", string.format("Killed by %s", record.Config.Name))
 	humanoid:TakeDamage(amount)
 	local hitPlayer = Players:GetPlayerFromCharacter(targetModel)
 	if hitPlayer ~= nil then
@@ -703,12 +722,8 @@ local function tickShotgunTrap(record: ActiveDefenseRecord, now: number)
 		if hit ~= nil then
 			local charModel, humanoid = findCharacterModelFromPart(hit.Instance)
 			if charModel ~= nil and humanoid ~= nil and humanoid.Health > 0 then
-				local validTarget = true
 				local plr = Players:GetPlayerFromCharacter(charModel)
-				if plr ~= nil and not record.IsQaTest and plr.UserId == record.OwnerUserId then
-					validTarget = false
-				end
-				if validTarget then
+				if canDefenseHitPlayer(record, plr) then
 					local entry = damageByModel[charModel]
 					if entry == nil then
 						damageByModel[charModel] = { Humanoid = humanoid, Damage = cfg.Damage }
@@ -787,7 +802,7 @@ local function fireTurretRound(record: ActiveDefenseRecord, targetModel: Model, 
 			local charModel, humanoid = findCharacterModelFromPart(hitResult.Instance)
 			if charModel ~= nil and humanoid ~= nil and humanoid.Health > 0 then
 				local plr = Players:GetPlayerFromCharacter(charModel)
-				if plr ~= nil and not record.IsQaTest and plr.UserId == record.OwnerUserId then
+				if not canDefenseHitPlayer(record, plr) then
 					return
 				end
 				applyDamageToTarget(record, charModel, humanoid, cfg.Damage)
@@ -1163,6 +1178,8 @@ function DefenseService.RegisterDefense(options: RegisterDefenseOptions)
 		OwnerPlayer = options.OwnerPlayer,
 		IsRaidInstance = options.IsRaidInstance == true,
 		IsQaTest = options.IsQaTest == true,
+		InfiniteAmmo = options.InfiniteAmmo == true,
+		AllowOwnerTarget = options.AllowOwnerTarget == true,
 		PieceRef = options.PieceRef,
 		Storage = storage,
 		Hp = options.Hp or defCfg.BaseHp,
