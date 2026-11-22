@@ -20,7 +20,7 @@ local ById: { [VendorId]: VendorConfig } = table.freeze({
 				GiveId = "wood",
 				GiveCount = 100,
 				ReceiveId = "scrap",
-				ReceiveCount = 10,
+				ReceiveCount = 4,
 			}),
 			table.freeze({
 				OfferId = "sell_stone",
@@ -28,7 +28,7 @@ local ById: { [VendorId]: VendorConfig } = table.freeze({
 				GiveId = "stone",
 				GiveCount = 100,
 				ReceiveId = "scrap",
-				ReceiveCount = 12,
+				ReceiveCount = 5,
 			}),
 			table.freeze({
 				OfferId = "sell_metal_ore",
@@ -36,7 +36,7 @@ local ById: { [VendorId]: VendorConfig } = table.freeze({
 				GiveId = "metal_ore",
 				GiveCount = 50,
 				ReceiveId = "scrap",
-				ReceiveCount = 20,
+				ReceiveCount = 8,
 			}),
 			table.freeze({
 				OfferId = "sell_cloth",
@@ -44,7 +44,7 @@ local ById: { [VendorId]: VendorConfig } = table.freeze({
 				GiveId = "cloth",
 				GiveCount = 25,
 				ReceiveId = "scrap",
-				ReceiveCount = 10,
+				ReceiveCount = 4,
 			}),
 			table.freeze({
 				OfferId = "sell_animal_fat",
@@ -52,7 +52,7 @@ local ById: { [VendorId]: VendorConfig } = table.freeze({
 				GiveId = "animal_fat",
 				GiveCount = 20,
 				ReceiveId = "scrap",
-				ReceiveCount = 12,
+				ReceiveCount = 6,
 			}),
 			table.freeze({
 				OfferId = "sell_bone",
@@ -60,7 +60,7 @@ local ById: { [VendorId]: VendorConfig } = table.freeze({
 				GiveId = "bone",
 				GiveCount = 20,
 				ReceiveId = "scrap",
-				ReceiveCount = 10,
+				ReceiveCount = 5,
 			}),
 			table.freeze({
 				OfferId = "sell_hqm",
@@ -68,7 +68,7 @@ local ById: { [VendorId]: VendorConfig } = table.freeze({
 				GiveId = "high_quality_metal",
 				GiveCount = 10,
 				ReceiveId = "scrap",
-				ReceiveCount = 35,
+				ReceiveCount = 14,
 			}),
 			table.freeze({
 				OfferId = "sell_tech_parts",
@@ -76,7 +76,7 @@ local ById: { [VendorId]: VendorConfig } = table.freeze({
 				GiveId = "tech_parts",
 				GiveCount = 1,
 				ReceiveId = "scrap",
-				ReceiveCount = 25,
+				ReceiveCount = 15,
 			}),
 			table.freeze({
 				OfferId = "sell_hunting_bow",
@@ -84,7 +84,7 @@ local ById: { [VendorId]: VendorConfig } = table.freeze({
 				GiveId = "hunting_bow",
 				GiveCount = 1,
 				ReceiveId = "scrap",
-				ReceiveCount = 15,
+				ReceiveCount = 8,
 			}),
 			table.freeze({
 				OfferId = "sell_pipe_pistol",
@@ -92,7 +92,7 @@ local ById: { [VendorId]: VendorConfig } = table.freeze({
 				GiveId = "pipe_pistol",
 				GiveCount = 1,
 				ReceiveId = "scrap",
-				ReceiveCount = 30,
+				ReceiveCount = 20,
 			}),
 		}),
 	}),

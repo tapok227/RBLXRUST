@@ -5,6 +5,7 @@ local RunService = game:GetService("RunService")
 local ServerScriptService = game:GetService("ServerScriptService")
 local Workspace = game:GetService("Workspace")
 
+local Config = require(ReplicatedStorage.Shared.Config)
 local Types = require(ReplicatedStorage.Shared.Types)
 local Items = require(ReplicatedStorage.Shared.configs.Items)
 local LootTables = require(ReplicatedStorage.Shared.configs.LootTables)
@@ -389,6 +390,8 @@ local function registerPoiCrate(model: Instance)
 	local title: string
 	if typeof(titleAttr) == "string" and #titleAttr > 0 then
 		title = titleAttr
+	elseif tableIdAttr == "elite_crate" then
+		title = "Elite Crate"
 	elseif tableIdAttr == "military_crate" then
 		title = "Military Crate"
 	elseif tableIdAttr == "wooden_crate" then
@@ -781,7 +784,7 @@ local function stepViewerDistanceCheck()
 	end
 end
 
-function LootService.RollLootTable(tableId: string): Inventory
+function LootService.RollLootTable(tableId: string, mapTierOverride: number?): Inventory
 	local slots: Inventory = {}
 	if typeof(tableId) ~= "string" then
 		return slots
@@ -806,6 +809,11 @@ function LootService.RollLootTable(tableId: string): Inventory
 		return slots
 	end
 
+	local rawTier = if typeof(mapTierOverride) == "number" then mapTierOverride else Workspace:GetAttribute("MapTier")
+	local mapTier = if typeof(rawTier) == "number" then math.clamp(math.floor(rawTier), 1, 3) else 1
+	local scaleMap = Config.MapLootScaling :: { [number]: number }
+	local scale = scaleMap[mapTier] or 1.0
+
 	for _ = 1, config.Rolls do
 		local target = rng:NextNumber(0, totalWeight)
 		local cumulative = 0
@@ -821,6 +829,10 @@ function LootService.RollLootTable(tableId: string): Inventory
 		local minCount = math.min(chosen.MinCount, chosen.MaxCount)
 		local maxCount = math.max(chosen.MinCount, chosen.MaxCount)
 		local rolledCount = rng:NextInteger(minCount, maxCount)
+		local itemCfg = Items[chosen.Id]
+		if itemCfg ~= nil and itemCfg.Type == "Resource" and scale ~= 1.0 then
+			rolledCount = math.max(1, math.floor(rolledCount * scale + 0.5))
+		end
 		addLootToSlots(slots, chosen.Id, rolledCount)
 	end
 

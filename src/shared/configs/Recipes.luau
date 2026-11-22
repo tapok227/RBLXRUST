@@ -175,7 +175,7 @@ local Recipes: { [string]: RecipeConfig } = {
 	craft_pistol_ammo = {
 		Id = "craft_pistol_ammo",
 		ResultId = "pistol_ammo",
-		ResultCount = 6,
+		ResultCount = 12,
 		CraftTime = 3,
 		RequiredWorkbench = 1,
 		Station = "workbench_1",
@@ -207,6 +207,19 @@ local Recipes: { [string]: RecipeConfig } = {
 			{ Id = "scrap", Count = 10 },
 		},
 	},
+	craft_satchel_charge = {
+		Id = "craft_satchel_charge",
+		ResultId = "satchel_charge",
+		ResultCount = 1,
+		CraftTime = 6,
+		RequiredWorkbench = 1,
+		Station = "workbench_1",
+		Ingredients = {
+			{ Id = "scrap", Count = 20 },
+			{ Id = "cloth", Count = 10 },
+			{ Id = "metal_ore", Count = 25 },
+		},
+	},
 	craft_workbench_2 = {
 		Id = "craft_workbench_2",
 		ResultId = "workbench_2",
@@ -225,26 +238,13 @@ local Recipes: { [string]: RecipeConfig } = {
 	craft_shotgun_shell = {
 		Id = "craft_shotgun_shell",
 		ResultId = "shotgun_shell",
-		ResultCount = 4,
+		ResultCount = 6,
 		CraftTime = 3,
 		RequiredWorkbench = 2,
 		Station = "workbench_2",
 		Ingredients = {
 			{ Id = "metal_ore", Count = 12 },
-			{ Id = "scrap", Count = 6 },
-		},
-	},
-	craft_satchel_charge = {
-		Id = "craft_satchel_charge",
-		ResultId = "satchel_charge",
-		ResultCount = 1,
-		CraftTime = 6,
-		RequiredWorkbench = 2,
-		Station = "workbench_2",
-		Ingredients = {
-			{ Id = "scrap", Count = 25 },
-			{ Id = "cloth", Count = 10 },
-			{ Id = "metal_ore", Count = 20 },
+			{ Id = "scrap", Count = 4 },
 		},
 	},
 	craft_landmine = {
@@ -272,6 +272,19 @@ local Recipes: { [string]: RecipeConfig } = {
 			{ Id = "scrap", Count = 25 },
 		},
 	},
+	craft_rocket = {
+		Id = "craft_rocket",
+		ResultId = "rocket",
+		ResultCount = 1,
+		CraftTime = 5,
+		RequiredWorkbench = 2,
+		Station = "workbench_2",
+		Ingredients = {
+			{ Id = "scrap", Count = 25 },
+			{ Id = "metal_ore", Count = 35 },
+			{ Id = "tech_parts", Count = 1 },
+		},
+	},
 	craft_workbench_3 = {
 		Id = "craft_workbench_3",
 		ResultId = "workbench_3",
@@ -295,8 +308,8 @@ local Recipes: { [string]: RecipeConfig } = {
 		RequiredWorkbench = 3,
 		Station = "workbench_3",
 		Ingredients = {
-			{ Id = "tech_parts", Count = 4 },
-			{ Id = "scrap", Count = 60 },
+			{ Id = "tech_parts", Count = 3 },
+			{ Id = "scrap", Count = 50 },
 			{ Id = "metal_ore", Count = 50 },
 		},
 	},
@@ -311,19 +324,6 @@ local Recipes: { [string]: RecipeConfig } = {
 			{ Id = "tech_parts", Count = 5 },
 			{ Id = "scrap", Count = 80 },
 			{ Id = "metal_ore", Count = 60 },
-		},
-	},
-	craft_rocket = {
-		Id = "craft_rocket",
-		ResultId = "rocket",
-		ResultCount = 1,
-		CraftTime = 5,
-		RequiredWorkbench = 3,
-		Station = "workbench_3",
-		Ingredients = {
-			{ Id = "scrap", Count = 20 },
-			{ Id = "metal_ore", Count = 30 },
-			{ Id = "cloth", Count = 5 },
 		},
 	},
 	craft_auto_turret = {

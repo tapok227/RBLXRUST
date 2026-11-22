@@ -12,7 +12,7 @@ local Projectiles: { [string]: ProjectileConfig } = {
 		Gravity = 28,
 		MaxLifetime = 10,
 		BlastRadius = 15,
-		StructureDamage = 300,
+		StructureDamage = 250,
 		PlayerDamage = 110,
 		MinFalloffMultiplier = 0.25,
 	}),

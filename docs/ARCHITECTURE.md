@@ -14,14 +14,15 @@
 - `Game = { Name: string, MaxPlayers: number }`
 - `Places = { MainMap, MainMap_Tier1, MainMap_Tier2, MainMap_Tier3, PlayerBase }`
 - `Maps` & `MapOrder` — привязка PvP-карт (`MainMap_Tier1/2/3`) к минимальному требуемому `RequiredBaseTier` (`1 / 2 / 3`).
-- `BaseProgression` — пороги структурных блоков и минимального ранга тира (`Tier1`, `Tier2`, `Tier3`).
-- `Upkeep` — разрешённые ресурсы содержания TC (`wood`, `stone`, `metal_ore`, `high_quality_metal`), расход в час на блок по тиру, `TcStorageSlots = 12`.
-- `Decay` — интервал тика (`60` с), лимит оффлайн-пересчёта (`24` ч), урон гниения в час по тирам и множитель `NoTcMultiplier = 1.5`.
+- `BaseProgression` — пороги структурных блоков и минимального ранга тира с активным TC (`Tier1`: `4` блока `wood+`; `Tier2`: `6` блоков `metal+`; `Tier3`: `8` блоков `armored`).
+- `Upkeep` — разрешённые ресурсы содержания TC (`wood`, `stone`, `metal_ore`, `high_quality_metal`), часовой расход на блок (`wood = 0.25`, `stone = 0.45`, `metal = 0.35`, `armored = 0.08`, ~`12.8–15%` за 24 ч), `TcStorageSlots = 12`.
+- `Decay` — интервал тика (`60` с), лимит оффлайн-пересчёта (`24` ч), урон гниения в час по тирам (`wood = 84` ~`3` ч, `stone = 100` `5` ч, `metal = 125` `8` ч, `armored = 167` ~`12` ч) и множитель `NoTcMultiplier = 1.5`.
 - `Extraction = { Duration: number, CooldownAfterDamage: number }`
-- `Explosion = { UpgradeRaidBlockSeconds: number, DoorDamageMultiplier: number, DefenseDamageMultiplier: number, TierDamageMultiplier: { wood: number, stone: number, metal: number, armored: number } }` — единый конфиг сплэш-множителей взрывчатки по тирам/типам модулей и длительности блок-таймера апгрейда после урона (`30` с).
+- `Explosion = { UpgradeRaidBlockSeconds: number, DoorDamageMultiplier: number, DefenseDamageMultiplier: number, TierDamageMultiplier: { wood: number, stone: number, metal: number, armored: number } }` — единый конфиг взрывного урона (`UpgradeRaidBlockSeconds = 30`, `DoorDamageMultiplier = 1.6` для проёмов `doorway` с дверью, `DefenseDamageMultiplier = 1.0`, `TierDamageMultiplier = 1.0` для всех 4 тиров).
+- `MapLootScaling = { [1] = 1.0, [2] = 1.35, [3] = 1.75 }` — множители количества ресурсного лута по тиру карты `MainMap_Tier1/2/3`.
 - `MAX_TC_WALL_LAYERS = 2`, `MIN_TURRET_DISTANCE = 14`, `MIN_TRAP_DISTANCE = 6`, `WORKBENCH_RADIUS = 16` — баланс-ограничения защиты базы (максимум 2 слоя стен/перекрытий до TC, анти-киллбокс дистанция между турелями/ловушками) и радиус действия верстаков при крафте (`16` studs).
 - `VendorHub` — параметры безопасной зоны торговцев на `PlayerBase`: `Origin = Vector3.new(0, 0, -68)` (вне зоны застройки и на противоположной стороне от `RaidOutpostZone`), `ZoneSize = Vector3.new(44, 32, 34)`, `InteractDistance = 14`, `MaxTradeQuantity = 10`.
-- `Raid` — параметры рейда: `MaxLives = 3`, `RespawnDelay = 0.8` (быстрое возрождение `< 1.5` с), `SpawnInvulnerabilityDuration = 2.0` (`ForceField` на 2 с), `TcHackDuration = 10`, `TcHackMaxDistance = 14`, `OutpostRadius = 28`, `OutpostOffsetZ = 46`, `ExtractionStashSlots = 18`, `SupplyCrateSlots = 6`, `StarterSupplyItems` (`bandage` x6, `cooked_meat` x2), `Tiers[1..3]` (`RequiredBaseTier`, `DangerLabel`, `RewardLabel`, `LaunchCost`, `DefenseBonus`).
+- `Raid` — параметры рейда: `MaxLives = 3`, `RespawnDelay = 0.8` (быстрое возрождение `< 1.5` с), `SpawnInvulnerabilityDuration = 2.0` (`ForceField` на 2 с), `TcHackDuration = 10`, `TcHackMaxDistance = 14`, `OutpostRadius = 28`, `OutpostOffsetZ = 46`, `ExtractionStashSlots = 18`, `SupplyCrateSlots = 6`, `StarterSupplyItems` (`bandage` x6, `cooked_meat` x2), `Tiers[1..3]` (`RequiredBaseTier`, `DangerLabel`, `RewardLabel`, `LaunchCost`, `DefenseBonus`, `PresetTcLoot`, `PresetBoxLoot`).
 - `DefenseCapacity` — лимит очков защиты по тирам базы (`MaxByBaseTier`: `[0]=30`, `[1]=60`, `[2]=100`, `[3]=150`) и стоимость защитных установок (`Costs`: `floor_spikes = 5`, `landmine = 10`, `shotgun_trap = 15`, `auto_turret = 25`).
 
 ### `Types` (`src/shared/Types.luau`)
@@ -53,10 +54,10 @@
 - `Net.GetEvent(eventName: string): RemoteEvent` -> Возвращает кэшированный `RemoteEvent`.
 
 ### Конфиги (`src/shared/configs/`)
-- `Items.luau`, `Consumables.luau`, `Tools.luau`, `Nodes.luau`, `Recipes.luau` (27 рецептов: Tier 0 — базовые инструменты/лук/стрелы/WB1 + `cook_meat` на станции `"campfire"` из `raw_meat` и `wood`; Tier 1 — TC/пистолет/патроны/шипы/HQM/WB2; Tier 2 — дробь/сачель/мина/`shotgun_trap`/WB3; Tier 3 — C4/ракетница/ракеты/`auto_turret`), `Vendors.luau` (3 торговца Safe Hub: `recycler` — включает скупку `animal_fat` и `bone`, `weaponsmith`, `quartermaster` с офферами обмена за `scrap`), `Weapons.luau` (`hunting_bow` с `ProjectileId = "arrow"`, `DrawMinTime = 0.25`, `DrawFullTime = 1.0`, `MinDamage = 18`, `Damage = 55`), `Projectiles.luau` (`rocket` с `ImpactKind = "Explosive"` и `arrow` с `ImpactKind = "Direct"`, `MinSpeed = 65`, `MaxSpeed = 145`, `Gravity = 48`), `Explosives.luau`, `LootTables.luau` (включая таблицы дропа `npc_rt_guard`, `npc_rt_scientist`, `animal_deer`, `animal_boar`, `animal_wolf`, `animal_bear` с `raw_meat`, `animal_fat`, `cloth`, `bone`, патронами, медикаментами, `scrap` и `tech_parts`).
+- `Items.luau`, `Consumables.luau`, `Tools.luau`, `Nodes.luau`, `Recipes.luau` (27 рецептов: Tier 0 — базовые инструменты/лук/стрелы/WB1 + `cook_meat` на станции `"campfire"`; Tier 1 — TC/пистолет/`pistol_ammo` x12/шипы/HQM/`satchel_charge`/WB2; Tier 2 — `shotgun_shell` x6/мина/`shotgun_trap`/`rocket`/WB3; Tier 3 — C4/ракетница/`auto_turret`), `Vendors.luau` (3 торговца Safe Hub: `recycler` со скупкой `<= 33.3%` от цены покупки/крафта, `weaponsmith`, `quartermaster` за `scrap`), `Weapons.luau` (`hunting_bow` с `ProjectileId = "arrow"`, `DrawMinTime = 0.25`, `DrawFullTime = 1.0`, `MinDamage = 18`, `Damage = 55`), `Projectiles.luau` (`rocket` с `StructureDamage = 250`, `PlayerDamage = 110` и `arrow` с `MinSpeed = 65`, `MaxSpeed = 145`, `Gravity = 48`), `Explosives.luau` (`satchel_charge = 125`, `c4_charge = 500`), `LootTables.luau` (`wooden_crate` Tier 1, `military_crate` Tier 2, `elite_crate` Tier 3, `airdrop`, `npc_rt_guard`, `npc_rt_scientist`, `animal_deer`, `animal_boar`, `animal_wolf`, `animal_bear`).
 - `NPCs.luau`: конфиги боевых NPC РТ и диких животных (`rt_guard`, `rt_scientist`, `deer`, `boar`, `wolf`, `bear` — здоровье, скорости, радиусы обнаружения `45`/`25` и преследования `75`/`55..60`, параметры очередей/разброса/кровотечения, палитры, `LootTableId`, дефолтные `DefaultPatrolRadius` и `DefaultRespawnTime`).
-- `Defenses.luau`: параметры защит (`floor_spikes`, `landmine`, `shotgun_trap`, `auto_turret` — стоимость в очках, поверхность крепления, радиус, урон, время наведения, кулдаун, боеприпасы, `Defenses.Get`, `Defenses.GetCapacityLimit`).
-- `BuildingConfig.luau`: `GridSize = 12`, `WallHeight = 10`, `WallBodyHeight = 9.2`, `Thickness = 0.8`, `FoundationThickness = 1.0`, `UpgradeRaidBlockSeconds = Config.Explosion.UpgradeRaidBlockSeconds` (`30` с), `Pieces` (20 модулей: структурные блоки, `storage_box`, `tool_cupboard` с `MaxPerBase = 1` и `StorageSlots = 12`, `workbench_1`/`workbench_2`/`workbench_3` с `RequiredBaseTier = 1/2/3` и стоимостями, синхронизированными с `Recipes`, штурмовые `assault_ladder`/`barricade` с `AssaultDeployable = true`, защитные `floor_spikes`/`landmine`/`shotgun_trap`/`auto_turret` с `IsDefense = true`), `Tiers` (`wood`, `stone`, `metal`, `armored`).
+- `Defenses.luau`: параметры защит (`floor_spikes = 100 HP`, `landmine = 40 HP / ExplosionStructureDamage = 100`, `shotgun_trap = 200 HP`, `auto_turret = 500 HP` — стоимость в очках, поверхность крепления, радиус, урон, время наведения, кулдаун, боеприпасы, `Defenses.Get`, `Defenses.GetCapacityLimit`).
+- `BuildingConfig.luau`: `GridSize = 12`, `WallHeight = 10`, `WallBodyHeight = 9.2`, `Thickness = 0.8`, `FoundationThickness = 1.0`, `UpgradeRaidBlockSeconds = Config.Explosion.UpgradeRaidBlockSeconds` (`30` с), `Pieces` (20 модулей: структурные блоки, `storage_box`, `tool_cupboard` с `MaxPerBase = 1` и `StorageSlots = 12`, `workbench_1`/`workbench_2`/`workbench_3` с `RequiredBaseTier = 1/2/3`, штурмовые `assault_ladder`/`barricade`, защитные `floor_spikes`/`landmine`/`shotgun_trap = 200 HP`/`auto_turret = 500 HP`), `Tiers` (`wood`/`stone`/`metal`/`armored` с `HpMultiplier = 1/2/4/8`, `ExplosionResistance = 0.0`, апгрейд `armored` = `15 HQM + 40 metal_ore`).
 - `BuildingConfig.ComputeExplosionDamage(rawDamage, pieceType, tier, hasDoor?): number` -> Единый расчёт взрывного сплэш-урона с учётом `Config.Explosion` (множитель тира, дверного проёма с установленной дверью и защитных конструкций).
 
 ### `BuildingGeometry` (`src/shared/BuildingGeometry.luau`)
@@ -129,7 +130,7 @@
 - `SurvivalService.Init()` -> Тик голода/жажды/регена/кровотечения (`2.0` с), обработка `UseConsumable` и спавн рюкзака лута при смерти.
 
 ### `LootService` (`src/server/Services/LootService.luau`)
-- `LootService.RollLootTable(tableId): Inventory` -> Генерация лута по весам.
+- `LootService.RollLootTable(tableId, mapTierOverride?): Inventory` -> Генерация лута по весам `LootTables` с масштабированием количества ресурсных предметов через `Config.MapLootScaling` (`Workspace:GetAttribute("MapTier")` = `1.0 / 1.35 / 1.75`) и поддержкой `elite_crate`.
 - `LootService.RegisterSlotsContainer(...)` / `RegisterStorageContainer(...)` / `SpawnTemporaryContainer(...)` -> Регистрация временных и постоянных контейнеров с `ProximityPrompt`.
 - `LootService.UnregisterContainer(containerId)` / `DestroyContainer(containerId)` -> Удаление контейнера.
 - `LootService.OpenContainerForPlayer(player, containerId): boolean` / `CloseContainerForPlayer(player, notifyClient)` -> Открытие/закрытие контейнера с проверкой дистанции.
@@ -191,7 +192,7 @@
 - `RaidService.HasExplosionLineOfSight(blastOrigin, targetModel, excludeInstances?, isCharacterTarget?): boolean` -> Многоточечная проверка окклюзии взрыва (внутренние смещённые контрольные точки для стен/проёмов/перекрытий — 9 точек для стен/квадратов с косяками и створкой `DoorPanel`, 7 точек для треугольников; защищает закрытые комнаты от сквозного сплэша и пропускает равномерный урон на стыках углов).
 - `RaidService.TriggerExplosion(params: ExplosionParams): ExplosionResult` -> Расчёт AoE-взрыва с единой формулой `BuildingConfig.ComputeExplosionDamage`, игнорированием целей с активной спавн-неуязвимостью (`ForceField` / `RaidInvulnerable`), обновлением 30с таймера блок-апгрейда (`LastDamagedServerTime = Workspace:GetServerTimeNow()`), каскадным разрушением потерявших опору блоков рейд-базы (`BuildingValidator.FindUnsupportedPieces`) и `NotifyRaiderDamaged`.
 - `RaidService.DamageRaidPiece(uid, rawDamage, damageKind, attacker?)` / `NotifyRaiderDamaged(player)` -> Урон оружием по рейд-постройкам и срыв взлома TC при получении урона.
-- `RaidService.EnterStudioMockRaid(player, targetUserId): boolean` / `IsPlayerInRaid(player): boolean` / `GetActiveSessionInfo(player): RaidHudState?` -> Управление рейд-сессией: спавн базы цели (снепшот или пресет Tier 1/2/3 с активными ловушками и турелями в `DefenseService`), спавн префаба рейд-кибитки в `RaidOutpostZone` (`RaidOutpostStructures`: каркас, `workbench_1`, `OutpostRespawnPad` с 3 жизнями, быстрым респавном `<= 1.5` с через `LoadCharacter()` и 2-секундной неуязвимостью `ForceField`, `ExtractionStash`, стартовый мед-контейнер `RaidSupplyCrate`, `ExtractionTerminal`), временная стройка рейдера, захват/уничтожение вражеского TC (`TcHackPrompt` 10 сек), атомарный перенос лута из `ExtractionStash` на `PlayerBase` с блокировкой повторной эвакуации (`StashExtracted` + очистка слотов + снятие рейд-защит) или сгорание лута с отчётом и бонусом защитнику при поражении.
+- `RaidService.EnterStudioMockRaid(player, targetUserId): boolean` / `IsPlayerInRaid(player): boolean` / `GetActiveSessionInfo(player): RaidHudState?` -> Управление рейд-сессией: спавн базы цели (снепшот или пресет Tier 1/2/3 с лутом из `Config.Raid.Tiers[tier].PresetTcLoot`/`PresetBoxLoot` и активными ловушками/турелями с `BaseHp` из `BuildingConfig`), спавн префаба рейд-кибитки в `RaidOutpostZone` (`RaidOutpostStructures`: каркас, `workbench_1`, `OutpostRespawnPad` с 3 жизнями, быстрым респавном `<= 1.5` с через `LoadCharacter()` и 2-секундной неуязвимостью `ForceField`, `ExtractionStash`, стартовый мед-контейнер `RaidSupplyCrate`, `ExtractionTerminal`), временная стройка рейдера, захват/уничтожение вражеского TC (`TcHackPrompt` 10 сек), атомарный перенос лута из `ExtractionStash` на `PlayerBase` с блокировкой повторной эвакуации (`StashExtracted` + очистка слотов + снятие рейд-защит) или сгорание лута с отчётом и бонусом защитнику при поражении.
 - `RaidService.Init()` -> Обработка `RaidListRequest`, `StartRaidRequest` (доступ с `PlayerBase`/`MainMap`/Studio, проверка `attackerBaseTier >= targetBaseTier`, списание/возврат `LaunchCost`), `BuildPlaceRequest` (в рейде), `PlaceExplosiveRequest`, `RaidTcHackRequest`, `RaidExtractRequest`, `RaidAbandonRequest`, выдача `RaidReportNotify`.
 
 ---
@@ -228,3 +229,34 @@
 - `Workspace.NPCSpawns`, `Workspace.Campfires` и `Sector5_CombatRange.QA_NPC_TestArenaZone`:
   - 10 маркеров спавна на `MainMap` (охранники и учёные у `RadioTower`/`Warehouse`, олени/кабаны/волки/медведь в открытых зонах) и 6 тестовых маркеров на площадке `QA_NPC_TestPad` в `QA_TestArena` (`rt_guard`, `rt_scientist`, `deer`, `boar`, `wolf`, `bear`).
   - Костры с атрибутом `StationType = "campfire"` (`Workspace.Campfires.MainMap_Campfire_1` и `Sector3_CraftingAndSurvival.QA_Campfire`) для жарки `raw_meat` -> `cooked_meat`.
+
+---
+
+## 6. Справочная таблица математического баланса
+
+### Взрывчатка vs Конструкции (Raid Cost Table)
+Урон взрывчатки по постройкам: `satchel_charge = 125`, `rocket = 250`, `c4_charge = 500`, `landmine = 100`. Для дверей в проёмах (`doorway` с `HasDoor = true`) действует `Config.Explosion.DoorDamageMultiplier = 1.6` (`50%` эффективного HP стены).
+
+| Объект / Тир | HP (Стена / Дверь) | Сачели | Ракеты | C4 |
+|---|---:|---:|---:|---:|
+| `wood` | `250` / `200` | `2` / `1` | `1` / `1` | `1` / `1` |
+| `stone` | `500` / `400` | `4` / `2` | `2` / `1` | `1` / `1` |
+| `metal` | `1000` / `800` | `8` / `4` | `4` / `2` | `2` / `1` |
+| `armored` | `2000` / `1600` | `16` / `8` | `8` / `4` | `4` / `2` |
+| `shotgun_trap` / `auto_turret` | `200` / `500` | `2` / `4` | `1` / `2` | `1` / `1` |
+
+### Содержание (Upkeep), Гниение (Decay) и Прогрессия базы (`BaseTier`)
+| Тир | `HourlyCostPerPiece` (24ч расход) | `HourlyDamageByTier` (пустой TC) | Порог `BaseProgression` |
+|---|---|---|---|
+| `wood` | `0.25 wood/ч` (`6/24ч`, `~14–17%`) | `84 HP/ч` (`~3.0 ч`) | **Tier 1:** TC + `4` блока (`wood+`) |
+| `stone` | `0.45 stone/ч` (`10.8/24ч`, `14.4%`) | `100 HP/ч` (`5.0 ч`) | **Tier 1** |
+| `metal` | `0.35 metal_ore/ч` (`8.4/24ч`, `14.0%`) | `125 HP/ч` (`8.0 ч`) | **Tier 2:** TC + `6` блоков (`metal+`) |
+| `armored` | `0.08 high_quality_metal/ч` (`1.92/24ч`, `12.8%`) | `167 HP/ч` (`~12.0 ч`) | **Tier 3:** TC + `8` блоков (`armored`) |
+
+### Экономика торговцев, рейдов и лута (`Tier 1–3`)
+- **Торговцы (`recycler` vs `weaponsmith`/`quartermaster`):** курс скупки равен `30.0–33.3%` от стоимости покупки (`<= 35%`), скупка `10 high_quality_metal -> 14 scrap` ниже цены крафта (`40 metal_ore + 20 scrap`), исключая бесконечный фарм/арбитраж.
+- **Масштабирование карт (`Config.MapLootScaling`):** `MainMap_Tier1 = 1.0x`, `MainMap_Tier2 = 1.35x`, `MainMap_Tier3 = 1.75x` (применяется к ресурсам в `LootService.RollLootTable`), таблицы ящиков прогрессируют от `wooden_crate` (Tier 1) к `military_crate` (Tier 2) и `elite_crate` (Tier 3).
+- **Рейд-терминал (`Config.Raid.Tiers`):**
+  - `Tier 1`: вход `30 scrap` -> пресетная база приносит `250 wood, 150 stone, 180 scrap, 120 metal_ore, 3 tech_parts, 24 pistol_ammo, 5 cooked_meat`.
+  - `Tier 2`: вход `75 scrap + 40 metal_ore` -> пресетная база приносит `320 scrap, 320 metal_ore, 8 tech_parts, 2 satchel_charge, 48 pistol_ammo`.
+  - `Tier 3`: вход `140 scrap + 2 tech_parts` -> пресетная база приносит `500 scrap, 75 high_quality_metal, 16 tech_parts, 2 c4_charge, 3 rocket`.

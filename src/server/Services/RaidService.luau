@@ -223,9 +223,21 @@ local function resolveTargetName(targetUserId: number): string
 	return string.format("Player_%d", targetUserId)
 end
 
+local function buildStorageFromLootList(entries: { ItemBatchEntry }?): { [string]: Slot }
+	local storage: { [string]: Slot } = {}
+	if entries == nil then
+		return storage
+	end
+	for idx, entry in entries do
+		storage[tostring(idx)] = { Id = entry.Id, Count = entry.Count }
+	end
+	return storage
+end
+
 local function buildPresetRaidBase(tier: number): BaseData
 	local clampedTier = math.clamp(math.floor(tier), 1, 3)
 	if clampedTier == 1 then
+		local tierCfg = Config.Raid.Tiers[1]
 		local pieces: { SavedBuildPiece } = {
 			{
 				Uid = "preset1_foundation_1",
@@ -346,11 +358,7 @@ local function buildPresetRaidBase(tier: number): BaseData
 				PosZ = -13,
 				RotY = 0,
 				Hp = 300,
-				Storage = {
-					["1"] = { Id = "wood", Count = 200 },
-					["2"] = { Id = "stone", Count = 120 },
-					["3"] = { Id = "scrap", Count = 40 },
-				},
+				Storage = buildStorageFromLootList(if tierCfg ~= nil then tierCfg.PresetTcLoot else nil),
 			},
 			{
 				Uid = "preset1_storage_1",
@@ -361,13 +369,7 @@ local function buildPresetRaidBase(tier: number): BaseData
 				PosZ = -12,
 				RotY = 0,
 				Hp = 150,
-				Storage = {
-					["1"] = { Id = "scrap", Count = 120 },
-					["2"] = { Id = "tech_parts", Count = 4 },
-					["3"] = { Id = "metal_ore", Count = 80 },
-					["4"] = { Id = "pistol_ammo", Count = 24 },
-					["5"] = { Id = "cooked_meat", Count = 5 },
-				},
+				Storage = buildStorageFromLootList(if tierCfg ~= nil then tierCfg.PresetBoxLoot else nil),
 			},
 			{
 				Uid = "preset1_spikes_1",
@@ -543,10 +545,9 @@ local function buildPresetRaidBase(tier: number): BaseData
 				PosZ = -13,
 				RotY = 0,
 				Hp = 300,
-				Storage = {
-					["1"] = { Id = "metal_ore", Count = 150 },
-					["2"] = { Id = "scrap", Count = 80 },
-				},
+				Storage = buildStorageFromLootList(
+					if Config.Raid.Tiers[2] ~= nil then Config.Raid.Tiers[2].PresetTcLoot else nil
+				),
 			},
 			{
 				Uid = "p2_box1",
@@ -557,13 +558,9 @@ local function buildPresetRaidBase(tier: number): BaseData
 				PosZ = -8,
 				RotY = 90,
 				Hp = 150,
-				Storage = {
-					["1"] = { Id = "scrap", Count = 220 },
-					["2"] = { Id = "tech_parts", Count = 10 },
-					["3"] = { Id = "metal_ore", Count = 160 },
-					["4"] = { Id = "satchel_charge", Count = 2 },
-					["5"] = { Id = "pistol_ammo", Count = 48 },
-				},
+				Storage = buildStorageFromLootList(
+					if Config.Raid.Tiers[2] ~= nil then Config.Raid.Tiers[2].PresetBoxLoot else nil
+				),
 			},
 			{
 				Uid = "p2_spikes_1",
@@ -585,7 +582,7 @@ local function buildPresetRaidBase(tier: number): BaseData
 				PosZ = -12,
 				RotY = 270,
 				MountSurface = "Wall",
-				Hp = 180,
+				Hp = BuildingConfig.Pieces.shotgun_trap.BaseHp,
 				Storage = {
 					["1"] = { Id = "shotgun_shell", Count = 12 },
 				},
@@ -689,10 +686,9 @@ local function buildPresetRaidBase(tier: number): BaseData
 			PosZ = -13,
 			RotY = 0,
 			Hp = 300,
-			Storage = {
-				["1"] = { Id = "high_quality_metal", Count = 40 },
-				["2"] = { Id = "scrap", Count = 150 },
-			},
+			Storage = buildStorageFromLootList(
+				if Config.Raid.Tiers[3] ~= nil then Config.Raid.Tiers[3].PresetTcLoot else nil
+			),
 		},
 		{
 			Uid = "p3_box1",
@@ -703,13 +699,9 @@ local function buildPresetRaidBase(tier: number): BaseData
 			PosZ = -8,
 			RotY = 90,
 			Hp = 150,
-			Storage = {
-				["1"] = { Id = "high_quality_metal", Count = 65 },
-				["2"] = { Id = "tech_parts", Count = 18 },
-				["3"] = { Id = "scrap", Count = 350 },
-				["4"] = { Id = "c4_charge", Count = 2 },
-				["5"] = { Id = "rocket", Count = 3 },
-			},
+			Storage = buildStorageFromLootList(
+				if Config.Raid.Tiers[3] ~= nil then Config.Raid.Tiers[3].PresetBoxLoot else nil
+			),
 		},
 		{
 			Uid = "p3_turret_1",
@@ -720,7 +712,7 @@ local function buildPresetRaidBase(tier: number): BaseData
 			PosZ = 0,
 			RotY = 0,
 			MountSurface = "Floor",
-			Hp = 350,
+			Hp = BuildingConfig.Pieces.auto_turret.BaseHp,
 			Storage = {
 				["1"] = { Id = "pistol_ammo", Count = 48 },
 			},
@@ -745,7 +737,7 @@ local function buildPresetRaidBase(tier: number): BaseData
 			PosZ = -12,
 			RotY = 180,
 			MountSurface = "Ceiling",
-			Hp = 180,
+			Hp = BuildingConfig.Pieces.shotgun_trap.BaseHp,
 			Storage = {
 				["1"] = { Id = "shotgun_shell", Count = 12 },
 			},
