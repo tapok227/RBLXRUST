@@ -24,6 +24,9 @@ local DataService = require(ServerScriptService.Server.Services.DataService)
 local DefenseService = require(ServerScriptService.Server.Services.DefenseService)
 local InventoryService = require(ServerScriptService.Server.Services.InventoryService)
 local LootService = require(ServerScriptService.Server.Services.LootService)
+local RaidExplosives = require(ServerScriptService.Server.Services.Raid.RaidExplosives)
+local RaidIntel = require(ServerScriptService.Server.Services.Raid.RaidIntel)
+local RaidOutpost = require(ServerScriptService.Server.Services.Raid.RaidOutpost)
 local SecurityService = require(ServerScriptService.Server.Services.SecurityService)
 
 type Slot = Types.Slot
@@ -125,22 +128,18 @@ local RAID_DURATION = Types.RAID_DURATION
 local LIST_COOLDOWN = 1.0
 local EXPLOSIVE_PLACE_COOLDOWN = 0.5
 local MAX_HIT_SURFACE_OFFSET = 4.0
-local EXPLOSION_EFFECT_BROADCAST_RADIUS = 350
-local MAX_OCCLUSION_RAY_PASSES = 8
-local DEFAULT_MIN_FALLOFF_MULTIPLIER = 0.25
 
 local activeSessions: { [Player]: RaidSession } = {}
 local lastListRequest: { [Player]: number } = {}
 local lastExplosivePlaceTime: { [Player]: number } = {}
 local teleportInProgress: { [Player]: boolean } = {}
 local pendingTeleports: { [Player]: PendingTeleport } = {}
-local intelPoolsByPlayer: { [Player]: { [number]: RaidIntelPool } } = {}
-local nextBagId = 0
-local nextOutpostSeq = 0
 local nextSelfRaidSeq = 0
 local isInitialized = false
 
 local RaidService = {}
+local getExplosionDeps: () -> RaidExplosives.ExplosionDeps
+local getOutpostDeps: () -> RaidOutpost.OutpostDeps
 
 local function getTerminalPosition(inst: Instance): Vector3?
 	if inst:IsA("Model") then
@@ -213,767 +212,6 @@ local function sendRaidHud(player: Player, state: RaidHudState)
 		return
 	end
 	Net.GetEvent(Net.Events.RaidHudSync):FireClient(player, state)
-end
-
-local function resolveTargetName(targetUserId: number): string
-	local presetName = DataService.GetPresetDisplayName(targetUserId)
-	if presetName ~= nil then
-		return presetName
-	end
-	local presetTier = DataService.GetPresetTier(targetUserId)
-	if presetTier ~= nil then
-		return string.format("Outpost Tier %d", presetTier)
-	end
-	local online = Players:GetPlayerByUserId(targetUserId)
-	if online ~= nil then
-		return online.DisplayName
-	end
-	local ok, name = pcall(function()
-		return Players:GetNameFromUserIdAsync(targetUserId)
-	end)
-	if ok and type(name) == "string" and #name > 0 then
-		return name
-	end
-	return string.format("Player_%d", targetUserId)
-end
-
-local function buildStorageFromLootList(entries: { ItemBatchEntry }?): { [string]: Slot }
-	local storage: { [string]: Slot } = {}
-	if entries == nil then
-		return storage
-	end
-	for idx, entry in entries do
-		storage[tostring(idx)] = { Id = entry.Id, Count = entry.Count }
-	end
-	return storage
-end
-
-local function buildPresetRaidBase(tier: number): BaseData
-	local clampedTier = math.clamp(math.floor(tier), 1, 3)
-	if clampedTier == 1 then
-		local tierCfg = Config.Raid.Tiers[1]
-		local pieces: { SavedBuildPiece } = {
-			{
-				Uid = "preset1_foundation_1",
-				PieceType = "foundation",
-				Tier = "stone",
-				PosX = 0,
-				PosY = 0,
-				PosZ = 0,
-				RotY = 0,
-				Hp = 500,
-			},
-			{
-				Uid = "preset1_foundation_2",
-				PieceType = "foundation",
-				Tier = "stone",
-				PosX = 0,
-				PosY = 0,
-				PosZ = -12,
-				RotY = 0,
-				Hp = 500,
-			},
-			{
-				Uid = "preset1_wall_front",
-				PieceType = "wall",
-				Tier = "wood",
-				PosX = 0,
-				PosY = 1,
-				PosZ = 6,
-				RotY = 180,
-				Hp = 250,
-			},
-			{
-				Uid = "preset1_wall_west_1",
-				PieceType = "wall",
-				Tier = "stone",
-				PosX = -6,
-				PosY = 1,
-				PosZ = 0,
-				RotY = 90,
-				Hp = 500,
-			},
-			{
-				Uid = "preset1_wall_east_1",
-				PieceType = "wall",
-				Tier = "stone",
-				PosX = 6,
-				PosY = 1,
-				PosZ = 0,
-				RotY = 270,
-				Hp = 500,
-			},
-			{
-				Uid = "preset1_wall_west_2",
-				PieceType = "wall",
-				Tier = "stone",
-				PosX = -6,
-				PosY = 1,
-				PosZ = -12,
-				RotY = 90,
-				Hp = 500,
-			},
-			{
-				Uid = "preset1_wall_east_2",
-				PieceType = "wall",
-				Tier = "stone",
-				PosX = 6,
-				PosY = 1,
-				PosZ = -12,
-				RotY = 270,
-				Hp = 500,
-			},
-			{
-				Uid = "preset1_wall_north",
-				PieceType = "wall",
-				Tier = "stone",
-				PosX = 0,
-				PosY = 1,
-				PosZ = -18,
-				RotY = 0,
-				Hp = 500,
-			},
-			{
-				Uid = "preset1_doorway_inner",
-				PieceType = "doorway",
-				Tier = "stone",
-				PosX = 0,
-				PosY = 1,
-				PosZ = -6,
-				RotY = 0,
-				Hp = 400,
-			},
-			{
-				Uid = "preset1_roof_1",
-				PieceType = "roof",
-				Tier = "stone",
-				PosX = 0,
-				PosY = 10.2,
-				PosZ = 0,
-				RotY = 0,
-				Hp = 400,
-			},
-			{
-				Uid = "preset1_roof_2",
-				PieceType = "roof",
-				Tier = "stone",
-				PosX = 0,
-				PosY = 10.2,
-				PosZ = -12,
-				RotY = 0,
-				Hp = 400,
-			},
-			{
-				Uid = "preset1_tc",
-				PieceType = "tool_cupboard",
-				Tier = "wood",
-				PosX = -3,
-				PosY = 1,
-				PosZ = -13,
-				RotY = 0,
-				Hp = 300,
-				Storage = buildStorageFromLootList(if tierCfg ~= nil then tierCfg.PresetTcLoot else nil),
-			},
-			{
-				Uid = "preset1_storage_1",
-				PieceType = "storage_box",
-				Tier = "wood",
-				PosX = 3,
-				PosY = 1,
-				PosZ = -12,
-				RotY = 0,
-				Hp = 150,
-				Storage = buildStorageFromLootList(if tierCfg ~= nil then tierCfg.PresetBoxLoot else nil),
-			},
-			{
-				Uid = "preset1_spikes_1",
-				PieceType = "floor_spikes",
-				Tier = "wood",
-				PosX = 0,
-				PosY = 1,
-				PosZ = -2,
-				RotY = 0,
-				MountSurface = "Floor",
-				Hp = 100,
-			},
-			{
-				Uid = "preset1_mine_1",
-				PieceType = "landmine",
-				Tier = "wood",
-				PosX = 3,
-				PosY = 1,
-				PosZ = 2,
-				RotY = 0,
-				MountSurface = "Floor",
-				Hp = 40,
-			},
-		}
-		return {
-			Pieces = pieces,
-			BaseTier = 1,
-			LastUpkeepTimestamp = 0,
-		}
-	elseif clampedTier == 2 then
-		local pieces: { SavedBuildPiece } = {
-			{
-				Uid = "p2_f1",
-				PieceType = "foundation",
-				Tier = "metal",
-				PosX = 0,
-				PosY = 0,
-				PosZ = 0,
-				RotY = 0,
-				Hp = 1000,
-			},
-			{
-				Uid = "p2_f2",
-				PieceType = "foundation",
-				Tier = "metal",
-				PosX = 12,
-				PosY = 0,
-				PosZ = 0,
-				RotY = 0,
-				Hp = 1000,
-			},
-			{
-				Uid = "p2_f3",
-				PieceType = "foundation",
-				Tier = "metal",
-				PosX = 0,
-				PosY = 0,
-				PosZ = -12,
-				RotY = 0,
-				Hp = 1000,
-			},
-			{
-				Uid = "p2_f4",
-				PieceType = "foundation",
-				Tier = "metal",
-				PosX = 12,
-				PosY = 0,
-				PosZ = -12,
-				RotY = 0,
-				Hp = 1000,
-			},
-			{ Uid = "p2_wf1", PieceType = "wall", Tier = "stone", PosX = 0, PosY = 1, PosZ = 6, RotY = 180, Hp = 500 },
-			{
-				Uid = "p2_wf2",
-				PieceType = "wall",
-				Tier = "metal",
-				PosX = 12,
-				PosY = 1,
-				PosZ = 6,
-				RotY = 180,
-				Hp = 1000,
-			},
-			{ Uid = "p2_ww1", PieceType = "wall", Tier = "metal", PosX = -6, PosY = 1, PosZ = 0, RotY = 90, Hp = 1000 },
-			{
-				Uid = "p2_ww2",
-				PieceType = "wall",
-				Tier = "metal",
-				PosX = -6,
-				PosY = 1,
-				PosZ = -12,
-				RotY = 90,
-				Hp = 1000,
-			},
-			{
-				Uid = "p2_we1",
-				PieceType = "wall",
-				Tier = "metal",
-				PosX = 18,
-				PosY = 1,
-				PosZ = 0,
-				RotY = 270,
-				Hp = 1000,
-			},
-			{
-				Uid = "p2_we2",
-				PieceType = "wall",
-				Tier = "metal",
-				PosX = 18,
-				PosY = 1,
-				PosZ = -12,
-				RotY = 270,
-				Hp = 1000,
-			},
-			{ Uid = "p2_wn1", PieceType = "wall", Tier = "metal", PosX = 0, PosY = 1, PosZ = -18, RotY = 0, Hp = 1000 },
-			{
-				Uid = "p2_wn2",
-				PieceType = "wall",
-				Tier = "metal",
-				PosX = 12,
-				PosY = 1,
-				PosZ = -18,
-				RotY = 0,
-				Hp = 1000,
-			},
-			{
-				Uid = "p2_dw1",
-				PieceType = "doorway",
-				Tier = "metal",
-				PosX = 0,
-				PosY = 1,
-				PosZ = -6,
-				RotY = 0,
-				Hp = 800,
-			},
-			{
-				Uid = "p2_dw2",
-				PieceType = "doorway",
-				Tier = "metal",
-				PosX = 6,
-				PosY = 1,
-				PosZ = -12,
-				RotY = 90,
-				Hp = 800,
-			},
-			{ Uid = "p2_r1", PieceType = "roof", Tier = "metal", PosX = 0, PosY = 10.2, PosZ = 0, RotY = 0, Hp = 800 },
-			{ Uid = "p2_r2", PieceType = "roof", Tier = "metal", PosX = 12, PosY = 10.2, PosZ = 0, RotY = 0, Hp = 800 },
-			{
-				Uid = "p2_r3",
-				PieceType = "roof",
-				Tier = "metal",
-				PosX = 0,
-				PosY = 10.2,
-				PosZ = -12,
-				RotY = 0,
-				Hp = 800,
-			},
-			{
-				Uid = "p2_r4",
-				PieceType = "roof",
-				Tier = "metal",
-				PosX = 12,
-				PosY = 10.2,
-				PosZ = -12,
-				RotY = 0,
-				Hp = 800,
-			},
-			{
-				Uid = "p2_tc",
-				PieceType = "tool_cupboard",
-				Tier = "wood",
-				PosX = 12,
-				PosY = 1,
-				PosZ = -13,
-				RotY = 0,
-				Hp = 300,
-				Storage = buildStorageFromLootList(
-					if Config.Raid.Tiers[2] ~= nil then Config.Raid.Tiers[2].PresetTcLoot else nil
-				),
-			},
-			{
-				Uid = "p2_box1",
-				PieceType = "storage_box",
-				Tier = "wood",
-				PosX = 10,
-				PosY = 1,
-				PosZ = -8,
-				RotY = 90,
-				Hp = 150,
-				Storage = buildStorageFromLootList(
-					if Config.Raid.Tiers[2] ~= nil then Config.Raid.Tiers[2].PresetBoxLoot else nil
-				),
-			},
-			{
-				Uid = "p2_spikes_1",
-				PieceType = "floor_spikes",
-				Tier = "wood",
-				PosX = 0,
-				PosY = 1,
-				PosZ = -2,
-				RotY = 0,
-				MountSurface = "Floor",
-				Hp = 100,
-			},
-			{
-				Uid = "p2_shotgun_1",
-				PieceType = "shotgun_trap",
-				Tier = "wood",
-				PosX = -5.6,
-				PosY = 5.5,
-				PosZ = -12,
-				RotY = 270,
-				MountSurface = "Wall",
-				Hp = BuildingConfig.Pieces.shotgun_trap.BaseHp,
-				Storage = {
-					["1"] = { Id = "shotgun_shell", Count = 12 },
-				},
-			},
-		}
-		return {
-			Pieces = pieces,
-			BaseTier = 2,
-			LastUpkeepTimestamp = 0,
-		}
-	end
-
-	local pieces: { SavedBuildPiece } = {
-		{
-			Uid = "p3_f1",
-			PieceType = "foundation",
-			Tier = "armored",
-			PosX = 0,
-			PosY = 0,
-			PosZ = 0,
-			RotY = 0,
-			Hp = 2000,
-		},
-		{
-			Uid = "p3_f2",
-			PieceType = "foundation",
-			Tier = "armored",
-			PosX = 12,
-			PosY = 0,
-			PosZ = 0,
-			RotY = 0,
-			Hp = 2000,
-		},
-		{
-			Uid = "p3_f3",
-			PieceType = "foundation",
-			Tier = "armored",
-			PosX = 0,
-			PosY = 0,
-			PosZ = -12,
-			RotY = 0,
-			Hp = 2000,
-		},
-		{
-			Uid = "p3_f4",
-			PieceType = "foundation",
-			Tier = "armored",
-			PosX = 12,
-			PosY = 0,
-			PosZ = -12,
-			RotY = 0,
-			Hp = 2000,
-		},
-		{ Uid = "p3_wf1", PieceType = "wall", Tier = "metal", PosX = 0, PosY = 1, PosZ = 6, RotY = 180, Hp = 1000 },
-		{ Uid = "p3_wf2", PieceType = "wall", Tier = "armored", PosX = 12, PosY = 1, PosZ = 6, RotY = 180, Hp = 2000 },
-		{ Uid = "p3_ww1", PieceType = "wall", Tier = "armored", PosX = -6, PosY = 1, PosZ = 0, RotY = 90, Hp = 2000 },
-		{ Uid = "p3_ww2", PieceType = "wall", Tier = "armored", PosX = -6, PosY = 1, PosZ = -12, RotY = 90, Hp = 2000 },
-		{ Uid = "p3_we1", PieceType = "wall", Tier = "armored", PosX = 18, PosY = 1, PosZ = 0, RotY = 270, Hp = 2000 },
-		{
-			Uid = "p3_we2",
-			PieceType = "wall",
-			Tier = "armored",
-			PosX = 18,
-			PosY = 1,
-			PosZ = -12,
-			RotY = 270,
-			Hp = 2000,
-		},
-		{ Uid = "p3_wn1", PieceType = "wall", Tier = "armored", PosX = 0, PosY = 1, PosZ = -18, RotY = 0, Hp = 2000 },
-		{ Uid = "p3_wn2", PieceType = "wall", Tier = "armored", PosX = 12, PosY = 1, PosZ = -18, RotY = 0, Hp = 2000 },
-		{ Uid = "p3_dw1", PieceType = "doorway", Tier = "armored", PosX = 0, PosY = 1, PosZ = -6, RotY = 0, Hp = 1600 },
-		{
-			Uid = "p3_dw2",
-			PieceType = "doorway",
-			Tier = "armored",
-			PosX = 6,
-			PosY = 1,
-			PosZ = -12,
-			RotY = 90,
-			Hp = 1600,
-		},
-		{ Uid = "p3_r1", PieceType = "roof", Tier = "armored", PosX = 0, PosY = 10.2, PosZ = 0, RotY = 0, Hp = 1600 },
-		{ Uid = "p3_r2", PieceType = "roof", Tier = "armored", PosX = 12, PosY = 10.2, PosZ = 0, RotY = 0, Hp = 1600 },
-		{ Uid = "p3_r3", PieceType = "roof", Tier = "armored", PosX = 0, PosY = 10.2, PosZ = -12, RotY = 0, Hp = 1600 },
-		{
-			Uid = "p3_r4",
-			PieceType = "roof",
-			Tier = "armored",
-			PosX = 12,
-			PosY = 10.2,
-			PosZ = -12,
-			RotY = 0,
-			Hp = 1600,
-		},
-		{
-			Uid = "p3_tc",
-			PieceType = "tool_cupboard",
-			Tier = "wood",
-			PosX = 12,
-			PosY = 1,
-			PosZ = -13,
-			RotY = 0,
-			Hp = 300,
-			Storage = buildStorageFromLootList(
-				if Config.Raid.Tiers[3] ~= nil then Config.Raid.Tiers[3].PresetTcLoot else nil
-			),
-		},
-		{
-			Uid = "p3_box1",
-			PieceType = "storage_box",
-			Tier = "wood",
-			PosX = 10,
-			PosY = 1,
-			PosZ = -8,
-			RotY = 90,
-			Hp = 150,
-			Storage = buildStorageFromLootList(
-				if Config.Raid.Tiers[3] ~= nil then Config.Raid.Tiers[3].PresetBoxLoot else nil
-			),
-		},
-		{
-			Uid = "p3_turret_1",
-			PieceType = "auto_turret",
-			Tier = "wood",
-			PosX = 12,
-			PosY = 1,
-			PosZ = 0,
-			RotY = 0,
-			MountSurface = "Floor",
-			Hp = BuildingConfig.Pieces.auto_turret.BaseHp,
-			Storage = {
-				["1"] = { Id = "pistol_ammo", Count = 48 },
-			},
-		},
-		{
-			Uid = "p3_mine_1",
-			PieceType = "landmine",
-			Tier = "wood",
-			PosX = 0,
-			PosY = 1,
-			PosZ = -1,
-			RotY = 0,
-			MountSurface = "Floor",
-			Hp = 40,
-		},
-		{
-			Uid = "p3_shotgun_1",
-			PieceType = "shotgun_trap",
-			Tier = "wood",
-			PosX = 0,
-			PosY = 10.2,
-			PosZ = -12,
-			RotY = 180,
-			MountSurface = "Ceiling",
-			Hp = BuildingConfig.Pieces.shotgun_trap.BaseHp,
-			Storage = {
-				["1"] = { Id = "shotgun_shell", Count = 12 },
-			},
-		},
-	}
-	return {
-		Pieces = pieces,
-		BaseTier = 3,
-		LastUpkeepTimestamp = 0,
-	}
-end
-
-local function applyPresetVariantOverrides(baseData: BaseData, tier: number, presetUserId: number?): BaseData
-	if presetUserId == nil then
-		return baseData
-	end
-	local pieces = baseData.Pieces
-	if presetUserId == -1011 then
-		-- Timber Cabin: lighter wood walls + floor spikes
-		for _, p in pieces do
-			local canonical = BuildingGeometry.CanonicalPieceType(p.PieceType)
-			if canonical == "wall" or canonical == "doorway" or canonical == "roof" then
-				p.Tier = "wood"
-				p.Hp = BuildingGeometry.ComputeMaxHp(canonical, "wood")
-			end
-		end
-		for i = #pieces, 1, -1 do
-			if BuildingGeometry.CanonicalPieceType(pieces[i].PieceType) == "landmine" then
-				table.remove(pieces, i)
-			end
-		end
-	elseif presetUserId == -1021 then
-		-- Quarry Watchpost: full stone + extra shotgun trap
-		for _, p in pieces do
-			local canonical = BuildingGeometry.CanonicalPieceType(p.PieceType)
-			if BuildingConfig.Pieces[canonical] and BuildingConfig.Pieces[canonical].Upgradeable then
-				p.Tier = "stone"
-				p.Hp = BuildingGeometry.ComputeMaxHp(canonical, "stone")
-			end
-		end
-		table.insert(pieces, {
-			Uid = "preset1_shotgun_v3",
-			PieceType = "shotgun_trap",
-			Tier = "wood",
-			PosX = 0,
-			PosY = 10.2,
-			PosZ = -12,
-			RotY = 180,
-			MountSurface = "Ceiling",
-			Hp = BuildingConfig.Pieces.shotgun_trap.BaseHp,
-			Storage = { ["1"] = { Id = "shotgun_shell", Count = 8 } },
-		})
-	elseif presetUserId == -1012 then
-		-- Scrap Compound: stone/metal hybrid + 1 auto turret
-		for idx, p in pieces do
-			local canonical = BuildingGeometry.CanonicalPieceType(p.PieceType)
-			if canonical == "wall" and idx % 2 == 0 then
-				p.Tier = "stone"
-				p.Hp = BuildingGeometry.ComputeMaxHp(canonical, "stone")
-			end
-		end
-		table.insert(pieces, {
-			Uid = "p2_turret_v2",
-			PieceType = "auto_turret",
-			Tier = "wood",
-			PosX = 12,
-			PosY = 1,
-			PosZ = 0,
-			RotY = 0,
-			MountSurface = "Floor",
-			Hp = BuildingConfig.Pieces.auto_turret.BaseHp,
-			Storage = { ["1"] = { Id = "pistol_ammo", Count = 32 } },
-		})
-	elseif presetUserId == -1022 then
-		-- Iron Depot: metal + landmine + extra shotgun trap
-		table.insert(pieces, {
-			Uid = "p2_mine_v3",
-			PieceType = "landmine",
-			Tier = "wood",
-			PosX = 6,
-			PosY = 1,
-			PosZ = -2,
-			RotY = 0,
-			MountSurface = "Floor",
-			Hp = 40,
-		})
-	elseif presetUserId == -1013 then
-		-- Titan Bastion: dual auto turrets
-		table.insert(pieces, {
-			Uid = "p3_turret_v2",
-			PieceType = "auto_turret",
-			Tier = "wood",
-			PosX = 0,
-			PosY = 1,
-			PosZ = -6,
-			RotY = 0,
-			MountSurface = "Floor",
-			Hp = BuildingConfig.Pieces.auto_turret.BaseHp,
-			Storage = { ["1"] = { Id = "pistol_ammo", Count = 48 } },
-		})
-	elseif presetUserId == -1023 then
-		-- Cobalt Vault: full armored + extra shotgun trap
-		for _, p in pieces do
-			local canonical = BuildingGeometry.CanonicalPieceType(p.PieceType)
-			if BuildingConfig.Pieces[canonical] and BuildingConfig.Pieces[canonical].Upgradeable then
-				p.Tier = "armored"
-				p.Hp = BuildingGeometry.ComputeMaxHp(canonical, "armored")
-			end
-		end
-		table.insert(pieces, {
-			Uid = "p3_shotgun_v3",
-			PieceType = "shotgun_trap",
-			Tier = "wood",
-			PosX = 12,
-			PosY = 10.2,
-			PosZ = -12,
-			RotY = 180,
-			MountSurface = "Ceiling",
-			Hp = BuildingConfig.Pieces.shotgun_trap.BaseHp,
-			Storage = { ["1"] = { Id = "shotgun_shell", Count = 12 } },
-		})
-	end
-	baseData.BaseTier = math.clamp(math.floor(tier), 1, 3)
-	return baseData
-end
-
-local function buildPresetBaseForTarget(tier: number, presetUserId: number?): BaseData
-	local baseData = buildPresetRaidBase(tier)
-	return applyPresetVariantOverrides(baseData, tier, presetUserId)
-end
-
-local function computeBaseIntel(
-	baseData: BaseData?,
-	tier: number
-): {
-	DominantTier: BuildTier,
-	UsedDefenseCapacity: number,
-	MaxDefenseCapacity: number,
-	TurretCount: number,
-	TrapCount: number,
-	LootCategory: string,
-}
-	local clampedTier = math.clamp(math.floor(tier), 1, 3)
-	local defaultMat: BuildTier = if clampedTier >= 3 then "armored" elseif clampedTier == 2 then "metal" else "stone"
-	local tierCfg = Config.Raid.Tiers[clampedTier]
-	local defaultLootCat = if tierCfg ~= nil then tierCfg.RewardLabel else "Base Loot"
-
-	if baseData == nil or #baseData.Pieces == 0 then
-		return {
-			DominantTier = defaultMat,
-			UsedDefenseCapacity = 0,
-			MaxDefenseCapacity = Defenses.GetCapacityLimit(clampedTier),
-			TurretCount = 0,
-			TrapCount = 0,
-			LootCategory = defaultLootCat,
-		}
-	end
-
-	local tierCounts: { [BuildTier]: number } = {
-		wood = 0,
-		stone = 0,
-		metal = 0,
-		armored = 0,
-	}
-	local turretCount = 0
-	local trapCount = 0
-	local hasHighTierLoot = false
-	local hasMidTierLoot = false
-
-	for _, piece in baseData.Pieces do
-		local canonical = BuildingGeometry.CanonicalPieceType(piece.PieceType)
-		local pCfg = BuildingConfig.Pieces[canonical]
-		if pCfg ~= nil and pCfg.Upgradeable then
-			local bTier: BuildTier = if tierCounts[piece.Tier] ~= nil then piece.Tier else "wood"
-			tierCounts[bTier] += 1
-		end
-		if canonical == "auto_turret" then
-			turretCount += 1
-		elseif canonical == "shotgun_trap" or canonical == "landmine" or canonical == "floor_spikes" then
-			trapCount += 1
-		end
-		if type(piece.Storage) == "table" then
-			for _, slot in piece.Storage do
-				if type(slot) == "table" and type(slot.Id) == "string" then
-					if
-						slot.Id == "high_quality_metal"
-						or slot.Id == "c4_charge"
-						or slot.Id == "rocket"
-						or slot.Id == "bp_c4_charge"
-					then
-						hasHighTierLoot = true
-					elseif slot.Id == "tech_parts" or slot.Id == "metal_ore" or slot.Id == "satchel_charge" then
-						hasMidTierLoot = true
-					end
-				end
-			end
-		end
-	end
-
-	local bestTier: BuildTier = defaultMat
-	local bestCount = -1
-	for _, candidate in { "armored" :: BuildTier, "metal" :: BuildTier, "stone" :: BuildTier, "wood" :: BuildTier } do
-		if tierCounts[candidate] > bestCount then
-			bestCount = tierCounts[candidate]
-			bestTier = candidate
-		end
-	end
-
-	local usedCap, maxCap = BuildingValidator.ComputeDefenseCapacity(baseData.Pieces, clampedTier)
-	local lootCategory = if hasHighTierLoot
-		then "HQM, Tech & Heavy Explosives"
-		elseif hasMidTierLoot then "Metal Ore, Tech & Munitions"
-		else defaultLootCat
-
-	return {
-		DominantTier = bestTier,
-		UsedDefenseCapacity = usedCap,
-		MaxDefenseCapacity = maxCap,
-		TurretCount = turretCount,
-		TrapCount = trapCount,
-		LootCategory = lootCategory,
-	}
 end
 
 local function createRaidPieceModel(piece: SavedBuildPiece, origin: Vector3): (Model, number)
@@ -1117,42 +355,6 @@ local function closestPointOnModel(model: Model, point: Vector3): Vector3
 	)
 end
 
-local function spawnDroppedLootBag(session: RaidSession, position: Vector3, slots: Inventory)
-	local folder = getOrCreateFolder(LOOT_CONTAINERS_FOLDER_NAME)
-	nextBagId += 1
-
-	local model = Instance.new("Model")
-	model.Name = string.format("RaidLootBag_%d", nextBagId)
-
-	local bag = Instance.new("Part")
-	bag.Name = "LootBag"
-	bag.Size = Vector3.new(2.4, 1.4, 1.8)
-	bag.Position = Vector3.new(position.X, session.Origin.Y + 0.8, position.Z)
-	bag.Anchored = true
-	bag.CanCollide = true
-	bag.Material = Enum.Material.Fabric
-	bag.Color = Color3.fromRGB(115, 78, 45)
-	bag.TopSurface = Enum.SurfaceType.Smooth
-	bag.BottomSurface = Enum.SurfaceType.Smooth
-	bag.Parent = model
-
-	model.PrimaryPart = bag
-	model.Parent = folder
-
-	local containerId = LootService.RegisterSlotsContainer(
-		model,
-		string.format("%s's Loot Bag", session.TargetName),
-		session.TargetName,
-		slots,
-		Types.LOOT_CONTAINER_LIFETIME
-	)
-	if #containerId > 0 then
-		table.insert(session.DroppedContainerIds, containerId)
-	elseif model.Parent then
-		model:Destroy()
-	end
-end
-
 local function costMapToBatch(costMap: { [string]: number }): { ItemBatchEntry }
 	local batch: { ItemBatchEntry } = {}
 	for itemId, count in costMap do
@@ -1161,24 +363,6 @@ local function costMapToBatch(costMap: { [string]: number }): { ItemBatchEntry }
 		end
 	end
 	return batch
-end
-
-local function countStashItems(session: RaidSession): number
-	if session.ExtractionStashContainerId == nil then
-		return 0
-	end
-	local state = LootService.GetContainerState(session.ExtractionStashContainerId)
-	if state == nil then
-		return 0
-	end
-	local total = 0
-	for i = 1, Config.Raid.ExtractionStashSlots do
-		local slot = state.Slots[i]
-		if slot ~= nil and slot.Count > 0 then
-			total += slot.Count
-		end
-	end
-	return total
 end
 
 local function buildRaidHudState(session: RaidSession, statusText: string?): RaidHudState
@@ -1201,7 +385,7 @@ local function buildRaidHudState(session: RaidSession, statusText: string?): Rai
 		TcHackActive = session.TcHackActive,
 		LivesLeft = session.LivesLeft,
 		MaxLives = session.MaxLives,
-		StashItemCount = countStashItems(session),
+		StashItemCount = RaidOutpost.CountStashItems(session),
 		CanExtract = session.TcCaptured,
 	}
 end
@@ -1472,12 +656,22 @@ local function destroyRaidPiece(session: RaidSession, uid: string, dropStorageLo
 		local state = if dropStorageLoot then LootService.GetContainerState(record.ContainerId) else nil
 		LootService.UnregisterContainer(record.ContainerId)
 		if state ~= nil and hasAnySlots(state.Slots, Types.INVENTORY_SIZE) then
-			spawnDroppedLootBag(session, dropPos, state.Slots)
+			RaidOutpost.SpawnDroppedLootBag(
+				session,
+				dropPos,
+				state.Slots,
+				getOrCreateFolder(LOOT_CONTAINERS_FOLDER_NAME)
+			)
 		end
 	elseif dropStorageLoot and record.Piece.Storage ~= nil then
 		local fallbackSlots = storageMapToInventory(record.Piece.Storage, Config.Upkeep.TcStorageSlots)
 		if hasAnySlots(fallbackSlots, Config.Upkeep.TcStorageSlots) then
-			spawnDroppedLootBag(session, dropPos, fallbackSlots)
+			RaidOutpost.SpawnDroppedLootBag(
+				session,
+				dropPos,
+				fallbackSlots,
+				getOrCreateFolder(LOOT_CONTAINERS_FOLDER_NAME)
+			)
 		end
 	end
 
@@ -1714,29 +908,6 @@ local function getDefaultSpawnPosition(): Vector3
 	return Vector3.new(0, 6, 0)
 end
 
-local function createPrimitivePart(
-	parent: Instance,
-	name: string,
-	size: Vector3,
-	cf: CFrame,
-	material: Enum.Material,
-	color: Color3,
-	canCollide: boolean
-): Part
-	local part = Instance.new("Part")
-	part.Name = name
-	part.Size = size
-	part.CFrame = cf
-	part.Anchored = true
-	part.CanCollide = canCollide
-	part.Material = material
-	part.Color = color
-	part.TopSurface = Enum.SurfaceType.Smooth
-	part.BottomSurface = Enum.SurfaceType.Smooth
-	part.Parent = parent
-	return part
-end
-
 local function restoreSelfRaidInventory(player: Player, session: RaidSession)
 	if session.IsSelfRaid and session.SavedInventorySnapshot ~= nil then
 		local snapshot = session.SavedInventorySnapshot
@@ -1854,7 +1025,7 @@ local function finishRaidSession(player: Player, statusText: string?, delayForRe
 		TcCaptured = session.TcCaptured,
 		LivesLeft = session.LivesLeft,
 		MaxLives = session.MaxLives,
-		StashItemCount = countStashItems(session),
+		StashItemCount = RaidOutpost.CountStashItems(session),
 		CanExtract = false,
 	})
 
@@ -1913,36 +1084,6 @@ local function failRaidSession(player: Player, reason: string, delayForRespawn: 
 	finishRaidSession(player, reason, delayForRespawn)
 end
 
-local function collectStashBatch(session: RaidSession): ({ ItemBatchEntry }, number)
-	local batch: { ItemBatchEntry } = {}
-	local totalItems = 0
-	if session.ExtractionStashContainerId == nil then
-		return batch, 0
-	end
-	local state = LootService.GetContainerState(session.ExtractionStashContainerId)
-	if state == nil then
-		return batch, 0
-	end
-	for i = 1, Config.Raid.ExtractionStashSlots do
-		local slot = state.Slots[i]
-		if slot ~= nil and slot.Count > 0 then
-			table.insert(batch, { Id = slot.Id, Count = slot.Count })
-			totalItems += slot.Count
-		end
-	end
-	return batch, totalItems
-end
-
-local function isRaiderInExtractionZone(session: RaidSession, hrp: BasePart): boolean
-	if session.ExtractionTerminalModel and session.ExtractionTerminalModel.PrimaryPart then
-		if (hrp.Position - session.ExtractionTerminalModel.PrimaryPart.Position).Magnitude <= 18 then
-			return true
-		end
-	end
-	local delta = hrp.Position - session.OutpostOrigin
-	return math.abs(delta.X) <= Config.Raid.OutpostRadius + 4 and math.abs(delta.Z) <= Config.Raid.OutpostRadius + 4
-end
-
 local function tryExtractFromRaid(player: Player)
 	local session = activeSessions[player]
 	if session == nil or session.Extracting then
@@ -1970,7 +1111,7 @@ local function tryExtractFromRaid(player: Player)
 		)
 		return
 	end
-	if not isRaiderInExtractionZone(session, hrp) then
+	if not RaidOutpost.IsRaiderInExtractionZone(session, hrp) then
 		sendBuildFeedback(
 			player,
 			false,
@@ -1990,13 +1131,13 @@ local function tryExtractFromRaid(player: Player)
 		end
 		if not session.StashExtracted then
 			if session.IsSelfRaid then
-				extractedItems, totalCount = collectStashBatch(session)
+				extractedItems, totalCount = RaidOutpost.CollectStashBatch(session)
 				session.StashExtracted = true
 				if session.ExtractionStashContainerId ~= nil then
 					LootService.ClearContainerSlots(session.ExtractionStashContainerId)
 				end
 			else
-				extractedItems, totalCount = collectStashBatch(session)
+				extractedItems, totalCount = RaidOutpost.CollectStashBatch(session)
 				if #extractedItems > 0 then
 					BaseService.DepositItemsToPlayerBase(player, extractedItems)
 				end
@@ -2023,432 +1164,25 @@ local function tryExtractFromRaid(player: Player)
 	)
 end
 
-local function spawnOutpostStructuralPiece(
-	session: RaidSession,
-	folder: Folder,
-	uid: string,
-	pieceType: BuildPieceType,
-	worldCF: CFrame,
-	parentUid: string?,
-	socketId: string?
-)
-	local piece: SavedBuildPiece = {
-		Uid = uid,
-		PieceType = pieceType,
-		Tier = "wood",
-		PosX = worldCF.Position.X,
-		PosY = worldCF.Position.Y,
-		PosZ = worldCF.Position.Z,
-		RotY = BuildingGeometry.QuantizeYaw30(BuildingGeometry.ExtractYawDegrees(worldCF)),
-		ParentUid = parentUid,
-		AnchorUid = parentUid,
-		SocketId = socketId,
-		Hp = BuildingGeometry.ComputeMaxHp(pieceType, "wood"),
+getExplosionDeps = function(): RaidExplosives.ExplosionDeps
+	return {
+		ActiveSessions = activeSessions,
+		ClosestPointOnModel = closestPointOnModel,
+		DestroyRaidPiece = destroyRaidPiece,
+		UpdatePieceDamageBillboard = updatePieceDamageBillboard,
+		IsCharacterInvulnerable = isCharacterInvulnerable,
+		NotifyRaiderDamaged = RaidService.NotifyRaiderDamaged,
 	}
-	local model = BuildingGeometry.CreateModel(pieceType, worldCF, false, string.format("Outpost_%s", uid))
-	BuildingGeometry.ApplyTierVisuals(model, pieceType, "wood")
-	model:SetAttribute("BuildUid", uid)
-	model:SetAttribute("PieceType", pieceType)
-	model:SetAttribute("Tier", "wood")
-	model:SetAttribute("OwnerUserId", session.Raider.UserId)
-	model:SetAttribute("IsRaidOutpostPiece", true)
-	model.Parent = folder
-
-	local record: RaiderPieceRecord = {
-		Owner = session.Raider,
-		Piece = piece,
-		Model = model,
-		CFrame = worldCF,
-	}
-	session.RaiderPieces[uid] = record
-	BuildingValidator.RegisterOccupationsForRecord(
-		(record :: any) :: BuildingValidator.LivePieceEntry,
-		(session.RaiderPieces :: any) :: { [string]: BuildingValidator.LivePieceEntry },
-		session.RaiderOccupiedSockets,
-		session.RaiderOccupiedWorldKeys
-	)
 end
 
-local function ensureArenaGround(session: RaidSession)
-	local params = RaycastParams.new()
-	params.FilterType = Enum.RaycastFilterType.Exclude
-	local hitOrigin = Workspace:Raycast(session.Origin + Vector3.new(0, 12, 0), Vector3.new(0, -30, 0), params)
-	local hitOutpost = Workspace:Raycast(session.OutpostOrigin + Vector3.new(0, 12, 0), Vector3.new(0, -30, 0), params)
-	if hitOrigin ~= nil and hitOutpost ~= nil then
-		return
-	end
-	local ground = createPrimitivePart(
-		Workspace,
-		"Ground",
-		Vector3.new(180, 2, 200),
-		CFrame.new(session.Origin.X, session.Origin.Y - 1, session.Origin.Z + 18),
-		Enum.Material.Grass,
-		Color3.fromRGB(68, 94, 58),
-		true
-	)
-	session.ArenaGroundPart = ground
-end
-
-local function spawnRaidOutpost(session: RaidSession)
-	ensureArenaGround(session)
-
-	local outpostOrigin = session.OutpostOrigin
-	local radius = Config.Raid.OutpostRadius
-
-	-- Zone volume for RaidOutpostZone detection
-	if not session.IsSelfRaid then
-		local existingZone = Workspace:FindFirstChild("RaidOutpostZone")
-		if existingZone ~= nil and existingZone:GetAttribute("IsDynamicRaidZone") == true then
-			existingZone:Destroy()
-		end
-	end
-	local zoneModel = Instance.new("Model")
-	zoneModel.Name = "RaidOutpostZone"
-	zoneModel:SetAttribute("IsDynamicRaidZone", true)
-	CollectionService:AddTag(zoneModel, "RaidOutpostZone")
-
-	local zoneVolume = createPrimitivePart(
-		zoneModel,
-		"OutpostVolume",
-		Vector3.new(radius * 2, 48, radius * 2),
-		CFrame.new(outpostOrigin + Vector3.new(0, 22, 0)),
-		Enum.Material.SmoothPlastic,
-		Color3.fromRGB(55, 165, 225),
-		false
-	)
-	zoneVolume.Transparency = 1
-	zoneVolume.CanQuery = true
-	zoneVolume.CanTouch = false
-
-	local zonePad = createPrimitivePart(
-		zoneModel,
-		"OutpostPad",
-		Vector3.new(radius * 2, 0.2, radius * 2),
-		CFrame.new(outpostOrigin + Vector3.new(0, 0.1, 0)),
-		Enum.Material.Neon,
-		Color3.fromRGB(55, 165, 225),
-		false
-	)
-	zonePad.Transparency = 0.84
-	zonePad.CanQuery = false
-	zonePad.CanTouch = false
-	zoneModel.PrimaryPart = zoneVolume
-	zoneModel.Parent = Workspace
-	session.OutpostZoneModel = zoneModel
-
-	local outpostFolder = getOrCreateFolder(RAID_OUTPOST_STRUCTURES_FOLDER_NAME)
-	local baseCF = CFrame.new(outpostOrigin)
-	spawnOutpostStructuralPiece(session, outpostFolder, "outpost_foundation", "foundation", baseCF, nil, nil)
-	spawnOutpostStructuralPiece(
-		session,
-		outpostFolder,
-		"outpost_wall_back",
-		"wall",
-		baseCF * CFrame.new(0, 1, 6),
-		"outpost_foundation",
-		"Edge_3"
-	)
-	spawnOutpostStructuralPiece(
-		session,
-		outpostFolder,
-		"outpost_wall_left",
-		"wall",
-		baseCF * CFrame.new(-6, 1, 0) * CFrame.Angles(0, math.rad(90), 0),
-		"outpost_foundation",
-		"Edge_4"
-	)
-	spawnOutpostStructuralPiece(
-		session,
-		outpostFolder,
-		"outpost_wall_right",
-		"wall",
-		baseCF * CFrame.new(6, 1, 0) * CFrame.Angles(0, math.rad(270), 0),
-		"outpost_foundation",
-		"Edge_2"
-	)
-	spawnOutpostStructuralPiece(
-		session,
-		outpostFolder,
-		"outpost_doorway_front",
-		"doorway",
-		baseCF * CFrame.new(0, 1, -6) * CFrame.Angles(0, math.rad(180), 0),
-		"outpost_foundation",
-		"Edge_1"
-	)
-	spawnOutpostStructuralPiece(
-		session,
-		outpostFolder,
-		"outpost_roof",
-		"roof",
-		baseCF * CFrame.new(0, 10.2, 0),
-		"outpost_foundation",
-		"Top"
-	)
-
-	-- Workbench inside shack
-	nextOutpostSeq += 1
-	local wbId = string.format("raid_outpost_wb_%d", nextOutpostSeq)
-	local wbCF = baseCF * CFrame.new(-3.2, 1.0, -2.2) * CFrame.Angles(0, math.rad(90), 0)
-	local wbModel = BuildingGeometry.CreateModel("workbench_1", wbCF, false, "OutpostWorkbench")
-	BuildingGeometry.ApplyTierVisuals(wbModel, "workbench_1", "wood")
-	wbModel:SetAttribute("BuildUid", "outpost_workbench")
-	wbModel:SetAttribute("PieceType", "workbench_1")
-	wbModel.Parent = outpostFolder
-	session.RaiderPieces.outpost_workbench = {
-		Owner = session.Raider,
-		Piece = {
-			Uid = "outpost_workbench",
-			PieceType = "workbench_1",
-			Tier = "wood",
-			PosX = wbCF.Position.X,
-			PosY = wbCF.Position.Y,
-			PosZ = wbCF.Position.Z,
-			RotY = 90,
-			Hp = 200,
-		},
-		Model = wbModel,
-		CFrame = wbCF,
+getOutpostDeps = function(): RaidOutpost.OutpostDeps
+	return {
+		GetOrCreateFolder = getOrCreateFolder,
+		ActiveSessions = activeSessions,
+		SyncSessionHud = syncSessionHud,
+		TryExtractFromRaid = tryExtractFromRaid,
+		FailRaidSession = failRaidSession,
 	}
-	CraftingService.RegisterStation(wbId, "workbench_1", wbCF.Position, session.Raider.UserId)
-	session.OutpostWorkbenchId = wbId
-
-	-- Respawn Pad (Sleeping Bag) inside shack
-	local padModel = Instance.new("Model")
-	padModel.Name = "OutpostRespawnPad"
-	local mat = createPrimitivePart(
-		padModel,
-		"Mat",
-		Vector3.new(3.2, 0.35, 5.2),
-		baseCF * CFrame.new(-3.2, 1.18, 2.4),
-		Enum.Material.Fabric,
-		Color3.fromRGB(58, 125, 76),
-		true
-	)
-	createPrimitivePart(
-		padModel,
-		"Pillow",
-		Vector3.new(2.4, 0.4, 1.1),
-		baseCF * CFrame.new(-3.2, 1.45, 4.1),
-		Enum.Material.Fabric,
-		Color3.fromRGB(220, 220, 210),
-		true
-	)
-	padModel.PrimaryPart = mat
-	padModel.Parent = outpostFolder
-	session.RaiderPieces.outpost_respawn_pad = {
-		Owner = session.Raider,
-		Piece = {
-			Uid = "outpost_respawn_pad",
-			PieceType = "storage_box",
-			Tier = "wood",
-			PosX = mat.Position.X,
-			PosY = mat.Position.Y,
-			PosZ = mat.Position.Z,
-			RotY = 0,
-			Hp = 150,
-		},
-		Model = padModel,
-		CFrame = mat.CFrame,
-	}
-	session.RespawnPosition = outpostOrigin + Vector3.new(-3.2, 4.2, 2.4)
-
-	-- Extraction Stash crate inside shack
-	local stashCF = baseCF * CFrame.new(3.2, 1.0, 3.1) * CFrame.Angles(0, math.rad(-90), 0)
-	local stashModel = BuildingGeometry.CreateModel("storage_box", stashCF, false, "ExtractionStash")
-	for _, desc in stashModel:GetDescendants() do
-		if desc:IsA("BasePart") then
-			desc.Material = Enum.Material.Metal
-			desc.Color = if desc.Name == "ChestLid" then Color3.fromRGB(45, 145, 110) else Color3.fromRGB(52, 84, 78)
-		end
-	end
-	stashModel.Parent = outpostFolder
-	session.ExtractionStashModel = stashModel
-
-	if stashModel.PrimaryPart then
-		local stashGui = Instance.new("BillboardGui")
-		stashGui.Size = UDim2.fromOffset(145, 28)
-		stashGui.StudsOffset = Vector3.new(0, 2.6, 0)
-		stashGui.AlwaysOnTop = true
-		stashGui.MaxDistance = 40
-		stashGui.Adornee = stashModel.PrimaryPart
-		stashGui.Parent = stashModel.PrimaryPart
-		local stashLbl = Instance.new("TextLabel")
-		stashLbl.Size = UDim2.fromScale(1, 1)
-		stashLbl.BackgroundColor3 = Color3.fromRGB(16, 42, 34)
-		stashLbl.BackgroundTransparency = 0.2
-		stashLbl.BorderSizePixel = 0
-		stashLbl.Font = Enum.Font.GothamBold
-		stashLbl.TextSize = 12
-		stashLbl.TextColor3 = Color3.fromRGB(125, 245, 195)
-		stashLbl.Text = "EXTRACTION STASH"
-		stashLbl.Parent = stashGui
-	end
-
-	local stashId = LootService.RegisterStorageContainer(
-		stashModel,
-		"Extraction Stash",
-		session.Raider.UserId,
-		Config.Raid.ExtractionStashSlots,
-		{},
-		function()
-			if activeSessions[session.Raider] == session then
-				syncSessionHud(session, nil)
-			end
-		end,
-		true
-	)
-	if #stashId > 0 then
-		session.ExtractionStashContainerId = stashId
-	end
-
-	-- Starter medical / supply crate next to ExtractionStash
-	local supplyCF = baseCF * CFrame.new(3.4, 1.0, -0.55) * CFrame.Angles(0, math.rad(-90), 0)
-	local supplyModel = Instance.new("Model")
-	supplyModel.Name = "RaidSupplyCrate"
-	local supplyBody = createPrimitivePart(
-		supplyModel,
-		"ChestBody",
-		Vector3.new(2.8, 1.8, 2.2),
-		supplyCF * CFrame.new(0, 0.9, 0),
-		Enum.Material.Metal,
-		Color3.fromRGB(224, 228, 232),
-		true
-	)
-	createPrimitivePart(
-		supplyModel,
-		"ChestLid",
-		Vector3.new(3.0, 0.35, 2.4),
-		supplyCF * CFrame.new(0, 1.95, 0),
-		Enum.Material.Metal,
-		Color3.fromRGB(188, 48, 48),
-		true
-	)
-	createPrimitivePart(
-		supplyModel,
-		"MedCrossH",
-		Vector3.new(0.9, 0.1, 0.3),
-		supplyCF * CFrame.new(0, 2.16, 0),
-		Enum.Material.SmoothPlastic,
-		Color3.fromRGB(245, 245, 245),
-		false
-	)
-	createPrimitivePart(
-		supplyModel,
-		"MedCrossV",
-		Vector3.new(0.3, 0.1, 0.9),
-		supplyCF * CFrame.new(0, 2.16, 0),
-		Enum.Material.SmoothPlastic,
-		Color3.fromRGB(245, 245, 245),
-		false
-	)
-	supplyModel.PrimaryPart = supplyBody
-	supplyModel.Parent = outpostFolder
-	session.SupplyCrateModel = supplyModel
-
-	local supplyGui = Instance.new("BillboardGui")
-	supplyGui.Size = UDim2.fromOffset(160, 28)
-	supplyGui.StudsOffset = Vector3.new(0, 2.5, 0)
-	supplyGui.AlwaysOnTop = true
-	supplyGui.MaxDistance = 40
-	supplyGui.Adornee = supplyBody
-	supplyGui.Parent = supplyBody
-	local supplyLbl = Instance.new("TextLabel")
-	supplyLbl.Size = UDim2.fromScale(1, 1)
-	supplyLbl.BackgroundColor3 = Color3.fromRGB(56, 18, 22)
-	supplyLbl.BackgroundTransparency = 0.2
-	supplyLbl.BorderSizePixel = 0
-	supplyLbl.Font = Enum.Font.GothamBold
-	supplyLbl.TextSize = 12
-	supplyLbl.TextColor3 = Color3.fromRGB(255, 195, 195)
-	supplyLbl.Text = "RAID SUPPLIES (MEDS)"
-	supplyLbl.Parent = supplyGui
-
-	local supplyInitialSlots: Inventory = {}
-	for slotIndex, itemEntry in Config.Raid.StarterSupplyItems do
-		supplyInitialSlots[slotIndex] = {
-			Id = itemEntry.Id,
-			Count = itemEntry.Count,
-		}
-	end
-	local supplyId = LootService.RegisterStorageContainer(
-		supplyModel,
-		"Raid Supply Crate",
-		session.Raider.UserId,
-		Config.Raid.SupplyCrateSlots,
-		supplyInitialSlots,
-		nil,
-		false
-	)
-	if #supplyId > 0 then
-		session.SupplyCrateContainerId = supplyId
-	end
-
-	-- Extraction Terminal console inside shack
-	local termModel = Instance.new("Model")
-	termModel.Name = "ExtractionTerminal"
-	local termBase = createPrimitivePart(
-		termModel,
-		"ConsoleBase",
-		Vector3.new(2.2, 3.4, 1.6),
-		baseCF * CFrame.new(3.5, 2.7, -3.0),
-		Enum.Material.Metal,
-		Color3.fromRGB(48, 54, 66),
-		true
-	)
-	local screenPart = Instance.new("WedgePart")
-	screenPart.Name = "ConsoleScreen"
-	screenPart.Size = Vector3.new(2.0, 1.1, 1.2)
-	screenPart.CFrame = baseCF * CFrame.new(3.5, 4.95, -2.9)
-	screenPart.Anchored = true
-	screenPart.CanCollide = true
-	screenPart.Material = Enum.Material.SmoothPlastic
-	screenPart.Color = Color3.fromRGB(28, 34, 42)
-	screenPart.Parent = termModel
-
-	local indicator = createPrimitivePart(
-		termModel,
-		"StatusLight",
-		Vector3.new(1.8, 0.35, 0.35),
-		baseCF * CFrame.new(3.5, 5.7, -3.0),
-		Enum.Material.Neon,
-		Color3.fromRGB(220, 140, 45),
-		false
-	)
-	termModel.PrimaryPart = termBase
-	termModel.Parent = outpostFolder
-	session.ExtractionTerminalModel = termModel
-	session.ExtractionTerminalIndicator = indicator
-
-	local extractPrompt = Instance.new("ProximityPrompt")
-	extractPrompt.Name = "ExtractPrompt"
-	extractPrompt.ActionText = if session.TcCaptured then "Extract Loot (TC Captured)" else "Capture Enemy TC First"
-	extractPrompt.ObjectText = "Extraction Terminal"
-	extractPrompt.HoldDuration = 0.4
-	extractPrompt.MaxActivationDistance = 10
-	extractPrompt.RequiresLineOfSight = false
-	extractPrompt.KeyboardKeyCode = Enum.KeyCode.E
-	extractPrompt.Parent = termBase
-	session.ExtractionTerminalPrompt = extractPrompt
-	session.Janitor:Add(extractPrompt.Triggered:Connect(function(triggerPlayer: Player)
-		if triggerPlayer == session.Raider then
-			tryExtractFromRaid(triggerPlayer)
-		end
-	end))
-
-	local abandonPrompt = Instance.new("ProximityPrompt")
-	abandonPrompt.Name = "AbandonPrompt"
-	abandonPrompt.ActionText = "Abandon Raid (Lose Stash)"
-	abandonPrompt.ObjectText = "Extraction Terminal"
-	abandonPrompt.HoldDuration = 1.5
-	abandonPrompt.MaxActivationDistance = 10
-	abandonPrompt.RequiresLineOfSight = false
-	abandonPrompt.KeyboardKeyCode = Enum.KeyCode.F
-	abandonPrompt.Parent = termBase
-	session.Janitor:Add(abandonPrompt.Triggered:Connect(function(triggerPlayer: Player)
-		if triggerPlayer == session.Raider then
-			failRaidSession(triggerPlayer, "Raid abandoned — stash lost", false)
-		end
-	end))
 end
 
 local function bindRaiderCharacter(session: RaidSession, character: Model)
@@ -2592,499 +1326,17 @@ local function startSessionTimerLoop(session: RaidSession)
 	end)
 end
 
-local function createExplosiveVisual(position: Vector3, itemId: string): (Part, TextLabel)
-	local folder = getOrCreateFolder(RAID_STRUCTURES_FOLDER_NAME)
-
-	local part = Instance.new("Part")
-	part.Name = string.format("ArmedExplosive_%s", itemId)
-	part.Size = if itemId == "c4_charge" then Vector3.new(1.1, 0.5, 0.8) else Vector3.new(1.0, 0.7, 1.0)
-	part.Position = position
-	part.Anchored = true
-	part.CanCollide = false
-	part.CanQuery = false
-	part.Material = Enum.Material.Metal
-	part.Color = if itemId == "c4_charge" then Color3.fromRGB(205, 50, 50) else Color3.fromRGB(160, 110, 55)
-	part.Parent = folder
-
-	local gui = Instance.new("BillboardGui")
-	gui.Name = "FuseTimerGui"
-	gui.Size = UDim2.fromOffset(110, 32)
-	gui.StudsOffset = Vector3.new(0, 1.8, 0)
-	gui.AlwaysOnTop = true
-	gui.MaxDistance = 60
-	gui.Adornee = part
-	gui.Parent = part
-
-	local label = Instance.new("TextLabel")
-	label.Size = UDim2.fromScale(1, 1)
-	label.BackgroundColor3 = Color3.fromRGB(28, 12, 12)
-	label.BackgroundTransparency = 0.2
-	label.BorderSizePixel = 0
-	label.Font = Enum.Font.GothamBold
-	label.TextSize = 14
-	label.TextColor3 = Color3.fromRGB(255, 110, 90)
-	label.Text = ""
-	label.Parent = gui
-
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 5)
-	corner.Parent = label
-
-	return part, label
-end
-
-local function findHumanoidCharacter(inst: Instance): (Model?, Humanoid?)
-	local current: Instance? = inst
-	while current ~= nil and current ~= Workspace do
-		if current:IsA("Model") then
-			local humanoid = current:FindFirstChildOfClass("Humanoid")
-			if humanoid ~= nil then
-				return current, humanoid
-			end
-		end
-		current = current.Parent
-	end
-	return nil, nil
-end
-
-local function getTargetControlPoints(targetModel: Model, isCharacterTarget: boolean): { Vector3 }
-	local points: { Vector3 } = {}
-	if isCharacterTarget then
-		local hrp = targetModel:FindFirstChild("HumanoidRootPart")
-		local head = targetModel:FindFirstChild("Head")
-		if hrp and hrp:IsA("BasePart") then
-			table.insert(points, hrp.Position)
-			if head and head:IsA("BasePart") then
-				table.insert(points, head.Position)
-			end
-			table.insert(points, hrp.Position - Vector3.new(0, 2.0, 0))
-			return points
-		end
-	else
-		local pieceAttr = targetModel:GetAttribute("PieceType")
-		local canonical = if typeof(pieceAttr) == "string" then BuildingGeometry.CanonicalPieceType(pieceAttr) else nil
-		local baseCF = targetModel:GetPivot()
-
-		if canonical == "wall" or canonical == "doorway" or canonical == "window_wall" then
-			local centerCF = baseCF * CFrame.new(0, BuildingConfig.WallBodyHeight * 0.5, 0)
-			local hx = BuildingConfig.GridSize * 0.42
-			local hy = BuildingConfig.WallBodyHeight * 0.38
-			local offsets = {
-				Vector3.new(0, 0, 0),
-				Vector3.new(-hx, -hy, 0),
-				Vector3.new(hx, -hy, 0),
-				Vector3.new(-hx, hy, 0),
-				Vector3.new(hx, hy, 0),
-				Vector3.new(-hx, 0, 0),
-				Vector3.new(hx, 0, 0),
-				Vector3.new(0, -hy, 0),
-				Vector3.new(0, hy, 0),
-			}
-			for _, off in offsets do
-				table.insert(points, (centerCF * CFrame.new(off)).Position)
-			end
-			if canonical == "doorway" then
-				for _, partName in { "LeftPillar", "RightPillar", "TopLintel" } do
-					local part = targetModel:FindFirstChild(partName)
-					if part and part:IsA("BasePart") then
-						table.insert(points, part.Position)
-					end
-				end
-				local doorPanel = targetModel:FindFirstChild("DoorPanel")
-				if doorPanel and doorPanel:IsA("BasePart") and doorPanel.CanCollide then
-					table.insert(points, doorPanel.Position)
-				end
-			elseif canonical == "window_wall" then
-				for _, partName in { "LeftPillar", "RightPillar", "BottomSill", "TopHeader" } do
-					local part = targetModel:FindFirstChild(partName)
-					if part and part:IsA("BasePart") then
-						table.insert(points, part.Position)
-					end
-				end
-			end
-			return points
-		elseif canonical == "foundation" or canonical == "roof" then
-			local t = if canonical == "foundation"
-				then BuildingConfig.FoundationThickness
-				else BuildingConfig.FloorThickness
-			local midCF = baseCF * CFrame.new(0, t * 0.5, 0)
-			local h = BuildingConfig.GridSize * 0.40
-			for _, off in
-				{
-					Vector3.new(0, 0, 0),
-					Vector3.new(-h, 0, -h),
-					Vector3.new(h, 0, -h),
-					Vector3.new(-h, 0, h),
-					Vector3.new(h, 0, h),
-					Vector3.new(0, 0, -h),
-					Vector3.new(0, 0, h),
-					Vector3.new(-h, 0, 0),
-					Vector3.new(h, 0, 0),
-				}
-			do
-				table.insert(points, (midCF * CFrame.new(off)).Position)
-			end
-			return points
-		elseif canonical == "triangle_foundation" or canonical == "triangle_floor" then
-			local t = if canonical == "triangle_foundation"
-				then BuildingConfig.FoundationThickness
-				else BuildingConfig.FloorThickness
-			local midCF = baseCF * CFrame.new(0, t * 0.5, 0)
-			for _, off in
-				{
-					Vector3.new(0, 0, 0),
-					Vector3.new(-4.8, 0, -2.75),
-					Vector3.new(4.8, 0, -2.75),
-					Vector3.new(0, 0, 5.5),
-					Vector3.new(0, 0, -2.75),
-					Vector3.new(-2.4, 0, 1.35),
-					Vector3.new(2.4, 0, 1.35),
-				}
-			do
-				table.insert(points, (midCF * CFrame.new(off)).Position)
-			end
-			return points
-		end
-	end
-
-	local cf, size = targetModel:GetBoundingBox()
-	if size.Y >= 3.0 then
-		table.insert(points, cf.Position)
-		table.insert(points, cf.Position + cf.UpVector * (size.Y * 0.35))
-		table.insert(points, cf.Position - cf.UpVector * (size.Y * 0.35))
-		table.insert(points, cf.Position + cf.RightVector * (size.X * 0.35))
-		table.insert(points, cf.Position - cf.RightVector * (size.X * 0.35))
-	elseif math.max(size.X, size.Z) >= 6.0 then
-		table.insert(points, cf.Position)
-		table.insert(points, cf.Position + cf.RightVector * (size.X * 0.35))
-		table.insert(points, cf.Position - cf.RightVector * (size.X * 0.35))
-		table.insert(points, cf.Position + cf.LookVector * (size.Z * 0.35))
-		table.insert(points, cf.Position - cf.LookVector * (size.Z * 0.35))
-	else
-		table.insert(points, cf.Position)
-		table.insert(points, cf.Position + Vector3.new(0, size.Y * 0.3, 0))
-		table.insert(points, cf.Position - Vector3.new(0, size.Y * 0.3, 0))
-	end
-
-	return points
-end
-
-local function computeBlastFalloff(distance: number, radius: number, minMultiplier: number): number
-	if distance <= 1.0 then
-		return 1.0
-	end
-	local t = math.clamp((distance - 1.0) / math.max(0.01, radius - 1.0), 0, 1)
-	local clampedMin = math.clamp(minMultiplier, 0, 1)
-	return 1.0 - t * (1.0 - clampedMin)
-end
-
-local function broadcastExplosionEffect(
-	origin: Vector3,
-	radius: number,
-	sourceId: string,
-	projectileId: string?,
-	attacker: Player?
-)
-	local effectEvent = Net.GetEvent(Net.Events.ExplosionEffect)
-	for _, other in Players:GetPlayers() do
-		if other == attacker then
-			effectEvent:FireClient(other, origin, radius, sourceId, projectileId)
-			continue
-		end
-		local char = other.Character
-		local hrp = if char then char:FindFirstChild("HumanoidRootPart") else nil
-		if hrp and hrp:IsA("BasePart") and (hrp.Position - origin).Magnitude <= EXPLOSION_EFFECT_BROADCAST_RADIUS then
-			effectEvent:FireClient(other, origin, radius, sourceId, projectileId)
-		end
-	end
-end
-
 function RaidService.HasExplosionLineOfSight(
 	blastOrigin: Vector3,
 	targetModel: Model,
 	excludeInstances: { Instance }?,
 	isCharacterTarget: boolean?
 ): boolean
-	local controlPoints = getTargetControlPoints(targetModel, isCharacterTarget == true)
-
-	for _, targetPoint in controlPoints do
-		local delta = targetPoint - blastOrigin
-		if delta.Magnitude <= 0.1 then
-			return true
-		end
-
-		local excludeList: { Instance } = { targetModel }
-		if excludeInstances ~= nil then
-			for _, inst in excludeInstances do
-				table.insert(excludeList, inst)
-			end
-		end
-
-		local params = RaycastParams.new()
-		params.FilterType = Enum.RaycastFilterType.Exclude
-		params.IgnoreWater = true
-		params.FilterDescendantsInstances = excludeList
-
-		local blocked = false
-		for _ = 1, MAX_OCCLUSION_RAY_PASSES do
-			local result = Workspace:Raycast(blastOrigin, delta, params)
-			if result == nil then
-				return true
-			end
-
-			if result.Instance:IsDescendantOf(targetModel) then
-				return true
-			end
-
-			if result.Instance.CanCollide == false and not result.Instance:IsA("Terrain") then
-				table.insert(excludeList, result.Instance)
-				params.FilterDescendantsInstances = excludeList
-				continue
-			end
-
-			local hitChar = findHumanoidCharacter(result.Instance)
-			if hitChar ~= nil then
-				table.insert(excludeList, hitChar)
-				params.FilterDescendantsInstances = excludeList
-				continue
-			end
-
-			blocked = true
-			break
-		end
-
-		if not blocked then
-			return true
-		end
-	end
-
-	return false
+	return RaidExplosives.HasExplosionLineOfSight(blastOrigin, targetModel, excludeInstances, isCharacterTarget)
 end
 
 function RaidService.TriggerExplosion(params: ExplosionParams): ExplosionResult
-	local summary: ExplosionResult = {
-		DamagedStructures = 0,
-		DestroyedStructures = 0,
-		DamagedHumanoids = 0,
-		OccludedStructures = 0,
-		OccludedHumanoids = 0,
-	}
-
-	if not SecurityService.IsValidVector3(params.Origin) then
-		return summary
-	end
-	if not SecurityService.IsFiniteNumber(params.Radius) or params.Radius <= 0 then
-		return summary
-	end
-
-	local origin = params.Origin
-	local radius = params.Radius
-	local minMult = params.MinFalloffMultiplier or DEFAULT_MIN_FALLOFF_MULTIPLIER
-
-	local baseExcludes: { Instance } = {}
-	if params.ExcludeInstances ~= nil then
-		for _, inst in params.ExcludeInstances do
-			table.insert(baseExcludes, inst)
-		end
-	end
-
-	-- Phase 1: Collect targets & evaluate Line-of-Sight BEFORE modifying/destroying walls
-	local pendingStructureHits: { { Session: RaidSession, Record: RaidPieceRecord, Damage: number } } = {}
-	local pendingBaseHits: { { Uid: string, Damage: number } } = {}
-	if params.StructureDamage > 0 then
-		for _, session in activeSessions do
-			for _, record in session.Pieces do
-				if record.Model.Parent ~= nil then
-					local closest = closestPointOnModel(record.Model, origin)
-					local dist = (closest - origin).Magnitude
-					if dist <= radius then
-						if RaidService.HasExplosionLineOfSight(origin, record.Model, baseExcludes, false) then
-							local falloff = computeBlastFalloff(dist, radius, minMult)
-							local damage = BuildingConfig.ComputeExplosionDamage(
-								params.StructureDamage * falloff,
-								record.Piece.PieceType,
-								record.Piece.Tier,
-								record.Model:GetAttribute("HasDoor") == true
-							)
-							if damage > 0 then
-								table.insert(pendingStructureHits, {
-									Session = session,
-									Record = record,
-									Damage = damage,
-								})
-							end
-						else
-							summary.OccludedStructures += 1
-						end
-					end
-				end
-			end
-		end
-
-		for _, liveItem in BaseService.GetLivePieceModelsInRadius(origin, radius) do
-			if liveItem.Model.Parent ~= nil then
-				local closest = closestPointOnModel(liveItem.Model, origin)
-				local dist = (closest - origin).Magnitude
-				if dist <= radius then
-					if RaidService.HasExplosionLineOfSight(origin, liveItem.Model, baseExcludes, false) then
-						local falloff = computeBlastFalloff(dist, radius, minMult)
-						local rawDamage = math.floor(params.StructureDamage * falloff + 0.5)
-						if rawDamage > 0 then
-							table.insert(pendingBaseHits, {
-								Uid = liveItem.Uid,
-								Damage = rawDamage,
-							})
-						end
-					else
-						summary.OccludedStructures += 1
-					end
-				end
-			end
-		end
-	end
-
-	local pendingHumanoidHits: { { Model: Model, Humanoid: Humanoid, Damage: number } } = {}
-	if params.PlayerDamage > 0 then
-		local checkedModels: { [Model]: boolean } = {}
-		local candidateModels: { Model } = {}
-
-		for _, plr in Players:GetPlayers() do
-			local char = plr.Character
-			if char ~= nil then
-				table.insert(candidateModels, char)
-			end
-		end
-
-		local dummiesFolder = Workspace:FindFirstChild("TestDummies")
-		if dummiesFolder ~= nil then
-			for _, child in dummiesFolder:GetChildren() do
-				if child:IsA("Model") then
-					table.insert(candidateModels, child)
-				end
-			end
-		end
-
-		for _, charModel in candidateModels do
-			if checkedModels[charModel] or charModel.Parent == nil then
-				continue
-			end
-			checkedModels[charModel] = true
-
-			local humanoid = charModel:FindFirstChildOfClass("Humanoid")
-			local hrp = charModel:FindFirstChild("HumanoidRootPart")
-			if
-				humanoid == nil
-				or not SecurityService.IsFiniteNumber(humanoid.Health)
-				or humanoid.Health <= 0
-				or hrp == nil
-				or not hrp:IsA("BasePart")
-			then
-				continue
-			end
-
-			local hrpDist = (hrp.Position - origin).Magnitude
-			local closestDist = (closestPointOnModel(charModel, origin) - origin).Magnitude
-			local dist = math.min(hrpDist, closestDist)
-			if dist <= radius then
-				if RaidService.HasExplosionLineOfSight(origin, charModel, baseExcludes, true) then
-					local falloff = computeBlastFalloff(dist, radius, minMult)
-					local damage = params.PlayerDamage * falloff
-					if damage > 0 then
-						table.insert(pendingHumanoidHits, {
-							Model = charModel,
-							Humanoid = humanoid,
-							Damage = damage,
-						})
-					end
-				else
-					summary.OccludedHumanoids += 1
-				end
-			end
-		end
-	end
-
-	-- Phase 2: Apply structure and humanoid damage
-	local nowClock = os.clock()
-	local nowServer = Workspace:GetServerTimeNow()
-	local sessionsWithDestroyedPieces: { [RaidSession]: boolean } = {}
-	for _, hit in pendingStructureHits do
-		local record = hit.Record
-		if hit.Session.Pieces[record.Piece.Uid] == record and record.Model.Parent ~= nil then
-			record.Piece.Hp -= hit.Damage
-			record.Piece.LastDamagedAt = nowClock
-			record.Model:SetAttribute("LastDamagedAt", nowClock)
-			record.Model:SetAttribute("LastDamagedServerTime", nowServer)
-			summary.DamagedStructures += 1
-			if record.Piece.Hp <= 0 then
-				destroyRaidPiece(hit.Session, record.Piece.Uid, true)
-				sessionsWithDestroyedPieces[hit.Session] = true
-				summary.DestroyedStructures += 1
-			else
-				record.Model:SetAttribute("Health", record.Piece.Hp)
-				record.Model:SetAttribute("Hp", record.Piece.Hp)
-				DefenseService.UpdateDefenseHp(record.Piece.Uid, record.Piece.Hp, nil)
-				updatePieceDamageBillboard(record)
-			end
-		end
-	end
-
-	for session in sessionsWithDestroyedPieces do
-		local remainingPieces: { SavedBuildPiece } = {}
-		for _, rec in session.Pieces do
-			table.insert(remainingPieces, rec.Piece)
-		end
-		for _, unsupportedUid in BuildingValidator.FindUnsupportedPieces(remainingPieces, nil) do
-			if session.Pieces[unsupportedUid] ~= nil then
-				destroyRaidPiece(session, unsupportedUid, true)
-				summary.DestroyedStructures += 1
-			end
-		end
-	end
-
-	for _, hit in pendingBaseHits do
-		local damaged, destroyed = BaseService.DamagePiece(hit.Uid, hit.Damage, "Explosion", params.Attacker)
-		if damaged then
-			summary.DamagedStructures += 1
-		end
-		if destroyed then
-			summary.DestroyedStructures += 1
-		end
-	end
-
-	local dmgSource = if params.SourceId == "landmine"
-		then "Killed by Landmine"
-		elseif params.SourceId == "c4_charge" then "Killed by Timed C4"
-		elseif params.SourceId == "satchel_charge" then "Killed by Satchel Charge"
-		elseif params.ProjectileId == "rocket" or params.SourceId == "rocket" then "Killed by Rocket"
-		else "Killed by Explosive"
-
-	if params.Attacker ~= nil and (params.ProjectileId == "rocket" or params.SourceId == "rocket") then
-		local attackerSession = activeSessions[params.Attacker]
-		if attackerSession ~= nil then
-			local expValues = Config.Raid.ExplosiveScrapValues :: { [string]: number }
-			attackerSession.RaiderSpentScrapValue += (expValues.rocket or 60)
-		end
-	end
-
-	for _, hit in pendingHumanoidHits do
-		if hit.Model.Parent ~= nil and hit.Humanoid.Health > 0 and not isCharacterInvulnerable(hit.Model) then
-			if params.Attacker ~= nil and params.Attacker.Parent == Players then
-				hit.Model:SetAttribute("LastAttackerUserId", params.Attacker.UserId)
-			end
-			hit.Model:SetAttribute("LastDamageSource", dmgSource)
-			hit.Humanoid:TakeDamage(hit.Damage)
-			local hitPlayer = Players:GetPlayerFromCharacter(hit.Model)
-			if hitPlayer ~= nil then
-				RaidService.NotifyRaiderDamaged(hitPlayer)
-			end
-			summary.DamagedHumanoids += 1
-		end
-	end
-
-	-- Phase 3: Replicate VFX & audio to clients
-	broadcastExplosionEffect(origin, radius, params.SourceId or "explosion", params.ProjectileId, params.Attacker)
-
-	return summary
+	return RaidExplosives.TriggerExplosion(params, getExplosionDeps())
 end
 
 function RaidService.NotifyRaiderDamaged(player: Player)
@@ -3151,43 +1403,6 @@ function RaidService.DamageRaidPiece(
 	return false, false
 end
 
-local function detonateExplosive(
-	session: RaidSession,
-	explosiveRecord: ActiveExplosiveRecord,
-	blastOrigin: Vector3,
-	itemId: string
-)
-	if explosiveRecord.CancelFlag or activeSessions[session.Raider] ~= session then
-		return
-	end
-
-	local cfg = Explosives[itemId]
-	if cfg == nil then
-		return
-	end
-
-	local excludePart: { Instance } = {}
-	if explosiveRecord.Part.Parent then
-		table.insert(excludePart, explosiveRecord.Part)
-		explosiveRecord.Part:Destroy()
-	end
-
-	local idx = table.find(session.ActiveExplosives, explosiveRecord)
-	if idx ~= nil then
-		table.remove(session.ActiveExplosives, idx)
-	end
-
-	RaidService.TriggerExplosion({
-		Origin = blastOrigin,
-		Radius = cfg.Radius,
-		StructureDamage = cfg.StructureDamage,
-		PlayerDamage = cfg.PlayerDamage,
-		Attacker = session.Raider,
-		SourceId = itemId,
-		ExcludeInstances = excludePart,
-	})
-end
-
 local function canUseRaidTerminal(player: Player): boolean
 	if Workspace:GetAttribute("RaidServerMode") == true or activeSessions[player] ~= nil then
 		return false
@@ -3210,145 +1425,12 @@ local function formatCostRequirementText(costMap: { [string]: number }): string
 	return table.concat(parts, ", ")
 end
 
-local function enrichTargetWithIntel(target: RaidTargetInfo, baseData: BaseData?, tier: number): RaidTargetInfo
-	local intel = computeBaseIntel(baseData, tier)
-	target.DominantTier = intel.DominantTier
-	target.UsedDefenseCapacity = intel.UsedDefenseCapacity
-	target.MaxDefenseCapacity = intel.MaxDefenseCapacity
-	target.TurretCount = intel.TurretCount
-	target.TrapCount = intel.TrapCount
-	target.LootCategory = intel.LootCategory
-	return target
-end
-
-local function buildIntelCardsForTier(player: Player, tier: number, seedOffset: number?): { RaidTargetInfo }
-	local clampedTier = math.clamp(math.floor(tier), 1, 3)
-	local cardsCount = Config.Raid.IntelCardsCount
-	local tierCfg = Config.Raid.Tiers[clampedTier]
-	local rng = Random.new((seedOffset or os.time()) + math.abs(player.UserId) + clampedTier * 37)
-
-	local realCandidates: { RaidTargetInfo } = {}
-	for _, entry in DataService.GetRaidTargets(player.UserId, 30) do
-		if not entry.IsPreset and (entry.BaseTier or 1) == clampedTier then
-			local snap: BaseData? = nil
-			local onlineTarget = Players:GetPlayerByUserId(entry.UserId)
-			local onlineData = if onlineTarget ~= nil then DataService.GetData(onlineTarget) else nil
-			if onlineData ~= nil then
-				snap = onlineData.Base
-			else
-				snap = DataService.LoadBaseSnapshot(entry.UserId)
-			end
-			table.insert(realCandidates, enrichTargetWithIntel(entry, snap, clampedTier))
-		end
-	end
-
-	-- Shuffle real candidates
-	for i = #realCandidates, 2, -1 do
-		local j = rng:NextInteger(1, i)
-		realCandidates[i], realCandidates[j] = realCandidates[j], realCandidates[i]
-	end
-
-	local selected: { RaidTargetInfo } = {}
-	local usedIds: { [number]: boolean } = {}
-	for _, candidate in realCandidates do
-		if #selected >= cardsCount then
-			break
-		end
-		usedIds[candidate.UserId] = true
-		table.insert(selected, candidate)
-	end
-
-	if #selected < cardsCount then
-		local presetCandidates: { RaidTargetInfo } = {}
-		for _, preset in DataService.GetPresetTargets() do
-			if preset.BaseTier == clampedTier and not usedIds[preset.UserId] then
-				local presetBase = buildPresetBaseForTarget(clampedTier, preset.UserId)
-				local info: RaidTargetInfo = {
-					UserId = preset.UserId,
-					DisplayName = preset.DisplayName,
-					PieceCount = #presetBase.Pieces,
-					BaseTier = clampedTier,
-					DangerLabel = if tierCfg ~= nil then tierCfg.DangerLabel else "Unknown",
-					RewardLabel = if tierCfg ~= nil then tierCfg.RewardLabel else "Loot",
-					LaunchCost = if tierCfg ~= nil then tierCfg.LaunchCost else nil,
-					IsPreset = true,
-				}
-				table.insert(presetCandidates, enrichTargetWithIntel(info, presetBase, clampedTier))
-			end
-		end
-		for i = #presetCandidates, 2, -1 do
-			local j = rng:NextInteger(1, i)
-			presetCandidates[i], presetCandidates[j] = presetCandidates[j], presetCandidates[i]
-		end
-		for _, pCard in presetCandidates do
-			if #selected >= cardsCount then
-				break
-			end
-			table.insert(selected, pCard)
-		end
-	end
-
-	return selected
-end
-
-local function getOrCreateIntelPool(player: Player, tier: number): RaidIntelPool
-	local clampedTier = math.clamp(math.floor(tier), 1, 3)
-	local byTier = intelPoolsByPlayer[player]
-	if byTier == nil then
-		byTier = {}
-		intelPoolsByPlayer[player] = byTier
-	end
-	local existing = byTier[clampedTier]
-	if existing ~= nil then
-		return existing
-	end
-	local created: RaidIntelPool = {
-		Tier = clampedTier,
-		Targets = buildIntelCardsForTier(player, clampedTier, os.time()),
-		FreeRefreshAt = os.time() + Config.Raid.IntelFreeRefreshCooldown,
-		RefreshCostScrap = Config.Raid.IntelPaidRefreshScrap,
-	}
-	byTier[clampedTier] = created
-	return created
-end
-
 function RaidService.GetIntelPool(player: Player, tier: number): RaidIntelPool
-	return getOrCreateIntelPool(player, tier)
+	return RaidIntel.GetIntelPool(player, tier)
 end
 
 function RaidService.RefreshIntelPool(player: Player, tier: number, paid: boolean): (boolean, string, RaidIntelPool?)
-	local clampedTier = math.clamp(math.floor(tier), 1, 3)
-	local pool = getOrCreateIntelPool(player, clampedTier)
-	local nowUnix = os.time()
-
-	if not paid then
-		if nowUnix < pool.FreeRefreshAt then
-			local rem = pool.FreeRefreshAt - nowUnix
-			return false, string.format("Free refresh ready in %02d:%02d", math.floor(rem / 60), rem % 60), pool
-		end
-		pool.Targets = buildIntelCardsForTier(player, clampedTier, nowUnix + math.random(1, 9999))
-		pool.FreeRefreshAt = nowUnix + Config.Raid.IntelFreeRefreshCooldown
-		return true, string.format("Scouted 3 new Tier %d targets (Free)", clampedTier), pool
-	end
-
-	local costScrap = Config.Raid.IntelPaidRefreshScrap
-	local paidOk = false
-	SecurityService.RunLocked(player, "RaidRefreshIntel", function()
-		if DataService.GetData(player) == nil then
-			return
-		end
-		local costBatch: { ItemBatchEntry } = { { Id = "scrap", Count = costScrap } }
-		if InventoryService.HasItems(player, costBatch) and InventoryService.RemoveItems(player, costBatch) then
-			paidOk = true
-		end
-	end)
-
-	if not paidOk then
-		return false, string.format("Need %d Scrap to refresh Tier %d intel", costScrap, clampedTier), pool
-	end
-
-	pool.Targets = buildIntelCardsForTier(player, clampedTier, nowUnix + math.random(1, 9999))
-	return true, string.format("Scouted 3 new Tier %d targets (-%d Scrap)", clampedTier, costScrap), pool
+	return RaidIntel.RefreshIntelPool(player, tier, paid)
 end
 
 local function onRaidListRequest(player: Player, tierAny: any)
@@ -3379,7 +1461,7 @@ local function onRaidListRequest(player: Player, tierAny: any)
 	local requestedTier = if SecurityService.IsValidInteger(tierAny, 1, 3)
 		then math.floor(tierAny :: number)
 		else math.clamp(BaseService.GetPlayerBaseTier(player), 1, 3)
-	local pool = getOrCreateIntelPool(player, requestedTier)
+	local pool = RaidIntel.GetIntelPool(player, requestedTier)
 	if player.Parent == Players then
 		Net.GetEvent(Net.Events.RaidListSync):FireClient(player, pool)
 	end
@@ -3414,34 +1496,6 @@ local function onRaidRefreshRequest(player: Player, tierAny: any, paidAny: any)
 	end
 end
 
-local function resolveTargetTier(targetUserId: number): number
-	local presetTier = DataService.GetPresetTier(targetUserId)
-	if presetTier ~= nil then
-		return math.clamp(presetTier, 1, 3)
-	end
-	local targetBaseTier = 1
-	if targetUserId > 0 then
-		local onlineTarget = Players:GetPlayerByUserId(targetUserId)
-		local onlineData = if onlineTarget ~= nil then DataService.GetData(onlineTarget) else nil
-		if onlineData ~= nil then
-			targetBaseTier = onlineData.Base.BaseTier
-		else
-			local snapshot = DataService.LoadBaseSnapshot(targetUserId)
-			if snapshot ~= nil then
-				local hasTc = false
-				for _, p in snapshot.Pieces do
-					if BuildingGeometry.CanonicalPieceType(p.PieceType) == "tool_cupboard" then
-						hasTc = true
-						break
-					end
-				end
-				targetBaseTier = math.max(snapshot.BaseTier, BaseService.ComputeBaseTier(snapshot.Pieces, hasTc))
-			end
-		end
-	end
-	return math.clamp(math.floor(targetBaseTier), 1, 3)
-end
-
 local function onStartRaidRequest(player: Player, targetUserIdAny: any)
 	if not SecurityService.CheckRateLimit(player, Net.Events.StartRaidRequest) then
 		return
@@ -3473,8 +1527,8 @@ local function onStartRaidRequest(player: Player, targetUserIdAny: any)
 		return
 	end
 
-	local targetName = resolveTargetName(targetUserId)
-	local targetBaseTier = resolveTargetTier(targetUserId)
+	local targetName = RaidIntel.ResolveTargetName(targetUserId)
+	local targetBaseTier = RaidIntel.ResolveTargetTier(targetUserId)
 	local attackerBaseTier = BaseService.GetPlayerBaseTier(player)
 	if attackerBaseTier < targetBaseTier then
 		local msg = string.format(
@@ -3903,7 +1957,11 @@ local function onPlaceExplosiveRequest(player: Player, targetUidAny: any, hitPos
 		local nudge = if toPlayer.Magnitude > 0.05 then toPlayer.Unit * 0.3 else Vector3.new(0, 0.3, 0)
 		local blastOrigin = clampedPos + nudge
 
-		local visualPart, timerLabel = createExplosiveVisual(blastOrigin, explosiveId)
+		local visualPart, timerLabel = RaidExplosives.CreateExplosiveVisual(
+			blastOrigin,
+			explosiveId,
+			getOrCreateFolder(RAID_STRUCTURES_FOLDER_NAME)
+		)
 		local explosiveRecord: ActiveExplosiveRecord = {
 			Part = visualPart,
 			Label = timerLabel,
@@ -3925,7 +1983,7 @@ local function onPlaceExplosiveRequest(player: Player, targetUidAny: any, hitPos
 			end
 
 			if not explosiveRecord.CancelFlag and activeSessions[player] == session then
-				detonateExplosive(session, explosiveRecord, blastOrigin, explosiveId)
+				RaidExplosives.DetonateExplosive(session, explosiveRecord, blastOrigin, explosiveId, getExplosionDeps())
 			elseif explosiveRecord.Part.Parent then
 				explosiveRecord.Part:Destroy()
 			end
@@ -4107,7 +2165,7 @@ local function startRaidSession(session: RaidSession, baseData: BaseData)
 	player:SetAttribute("InRaid", true)
 	player:SetAttribute("InSelfRaid", session.IsSelfRaid)
 	spawnRaidTargetBase(session, baseData)
-	spawnRaidOutpost(session)
+	RaidOutpost.SpawnRaidOutpost(session, getOutpostDeps())
 	bindRaiderLifecycle(session)
 	teleportCharacterToPosition(player, session.RespawnPosition)
 	startSessionTimerLoop(session)
@@ -4140,7 +2198,7 @@ local function onPlayerDataLoaded(player: Player, _data: Types.PlayerData)
 	local targetUserId = math.floor(targetUserIdAny :: number)
 	local targetName = if type(teleportData.TargetName) == "string" and #teleportData.TargetName > 0
 		then teleportData.TargetName
-		else resolveTargetName(targetUserId)
+		else RaidIntel.ResolveTargetName(targetUserId)
 
 	local presetTier = DataService.GetPresetTier(targetUserId)
 	local targetBaseTier = if presetTier ~= nil
@@ -4150,7 +2208,7 @@ local function onPlayerDataLoaded(player: Player, _data: Types.PlayerData)
 			1,
 			3
 		)
-		else resolveTargetTier(targetUserId)
+		else RaidIntel.ResolveTargetTier(targetUserId)
 
 	Workspace:SetAttribute("RaidServerMode", true)
 
@@ -4159,7 +2217,7 @@ local function onPlayerDataLoaded(player: Player, _data: Types.PlayerData)
 		baseData = DataService.LoadBaseSnapshot(targetUserId)
 	end
 	if baseData == nil or #baseData.Pieces == 0 then
-		baseData = buildPresetBaseForTarget(targetBaseTier, targetUserId)
+		baseData = RaidIntel.BuildPresetBaseForTarget(targetBaseTier, targetUserId)
 	end
 
 	if activeSessions[player] ~= nil then
@@ -4200,16 +2258,16 @@ function RaidService.EnterStudioMockRaid(player: Player, targetUserId: number, i
 		returnPos = hrp.Position + Vector3.new(0, 1, 0)
 	end
 
-	local targetBaseTier = resolveTargetTier(targetUserId)
+	local targetBaseTier = RaidIntel.ResolveTargetTier(targetUserId)
 	local baseData: BaseData? = nil
 	if targetUserId > 0 then
 		baseData = DataService.LoadBaseSnapshot(targetUserId)
 	end
 	if baseData == nil or #baseData.Pieces == 0 then
-		baseData = buildPresetBaseForTarget(targetBaseTier, targetUserId)
+		baseData = RaidIntel.BuildPresetBaseForTarget(targetBaseTier, targetUserId)
 	end
 
-	local targetName = resolveTargetName(targetUserId)
+	local targetName = RaidIntel.ResolveTargetName(targetUserId)
 	local session = createRaidSessionRecord(
 		player,
 		targetUserId,
@@ -4362,7 +2420,7 @@ function RaidService.Init()
 			activeSessions[player] = nil
 			cleanupSession(session)
 		end
-		intelPoolsByPlayer[player] = nil
+		RaidIntel.ClearPlayerState(player)
 		lastListRequest[player] = nil
 		lastExplosivePlaceTime[player] = nil
 		teleportInProgress[player] = nil

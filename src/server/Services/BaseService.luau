@@ -14,8 +14,9 @@ local BuildingConfig = require(ReplicatedStorage.Shared.configs.BuildingConfig)
 local Defenses = require(ReplicatedStorage.Shared.configs.Defenses)
 local Recipes = require(ReplicatedStorage.Shared.configs.Recipes)
 local BuildingGeometry = require(ReplicatedStorage.Shared.BuildingGeometry)
-local Janitor = require(ReplicatedStorage.Shared.Janitor)
 local Net = require(ReplicatedStorage.Shared.Net)
+local BaseGhosts = require(ServerScriptService.Server.Services.Base.BaseGhosts)
+local BaseUpkeep = require(ServerScriptService.Server.Services.Base.BaseUpkeep)
 local BuildingValidator = require(ServerScriptService.Server.Services.BuildingValidator)
 local DataService = require(ServerScriptService.Server.Services.DataService)
 local DefenseService = require(ServerScriptService.Server.Services.DefenseService)
@@ -49,7 +50,6 @@ export type RaidHooks = {
 }
 
 local STRUCTURES_FOLDER_NAME = "PlayerBaseStructures"
-local GHOSTS_FOLDER_NAME = "SessionDeathGhosts"
 local STUDIO_SIM_BANNER_DURATION = 4
 local BUILD_ACTION_COOLDOWN = 0.15
 
@@ -61,9 +61,6 @@ local lastBuildActionTime: { [Player]: number } = {}
 local teleportInProgress: { [Player]: boolean } = {}
 local pendingTeleports: { [Player]: boolean } = {}
 local openTcByPlayer: { [Player]: string } = {}
-local upkeepFractions: { [Player]: { [string]: number } } = {}
-local decayFractions: { [string]: number } = {}
-local sessionGhostsJanitors: { [Player]: Janitor.Janitor } = {}
 local raidHooks: RaidHooks = {}
 local isInitialized = false
 
@@ -136,121 +133,14 @@ local function isWorkbenchType(canonicalType: BuildPieceType): boolean
 	return canonicalType == "workbench_1" or canonicalType == "workbench_2" or canonicalType == "workbench_3"
 end
 
-local function findToolCupboardPiece(pieces: { SavedBuildPiece }): SavedBuildPiece?
-	for _, piece in pieces do
-		if BuildingGeometry.CanonicalPieceType(piece.PieceType) == "tool_cupboard" then
-			return piece
-		end
-	end
-	return nil
-end
-
-local function computeTcStorageTotals(tcPiece: SavedBuildPiece?): { [string]: number }
-	local totals: { [string]: number } = {}
-	if tcPiece == nil or type(tcPiece.Storage) ~= "table" then
-		return totals
-	end
-	for _, slot in tcPiece.Storage do
-		if type(slot) == "table" and type(slot.Id) == "string" and type(slot.Count) == "number" and slot.Count > 0 then
-			totals[slot.Id] = (totals[slot.Id] or 0) + math.floor(slot.Count)
-		end
-	end
-	return totals
-end
-
-local function computeProtectedHours(
-	tcPiece: SavedBuildPiece?,
-	hourlyUpkeep: { [string]: number }
-): (number, { [string]: boolean })
-	local missingByRes: { [string]: boolean } = {}
-	if tcPiece == nil then
-		return 0, missingByRes
-	end
-	local totals = computeTcStorageTotals(tcPiece)
-	local minHours: number? = nil
-	for resId, hourlyRate in hourlyUpkeep do
-		if hourlyRate > 0 then
-			local stored = totals[resId] or 0
-			if stored <= 0 then
-				missingByRes[resId] = true
-				minHours = 0
-			else
-				local hrs = stored / hourlyRate
-				if minHours == nil or hrs < minHours then
-					minHours = hrs
-				end
-			end
-		end
-	end
-	if minHours == nil then
-		return 24, missingByRes
-	end
-	return minHours, missingByRes
-end
+local getUpkeepDeps: () -> BaseUpkeep.UpkeepDeps
 
 function BaseService.ComputeHourlyUpkeep(pieces: { SavedBuildPiece }): { [string]: number }
-	local upkeep: { [string]: number } = {}
-	local resourceByTier = Config.Upkeep.ResourceByBuildTier :: { [string]: string }
-	local costByTier = Config.Upkeep.HourlyCostPerPiece :: { [string]: number }
-
-	for _, piece in pieces do
-		local canonical = BuildingGeometry.CanonicalPieceType(piece.PieceType)
-		local pieceCfg = BuildingConfig.Pieces[canonical]
-		if pieceCfg ~= nil and pieceCfg.Upgradeable then
-			local resId = resourceByTier[piece.Tier]
-			local rate = costByTier[piece.Tier]
-			if resId ~= nil and rate ~= nil and rate > 0 then
-				upkeep[resId] = (upkeep[resId] or 0) + rate
-			end
-		end
-	end
-	return upkeep
+	return BaseUpkeep.ComputeHourlyUpkeep(pieces)
 end
 
 function BaseService.ComputeBaseTier(pieces: { SavedBuildPiece }, hasActiveTc: boolean): number
-	if not hasActiveTc then
-		return 0
-	end
-
-	local totalStructural = 0
-	local tier2Qualified = 0
-	local tier3Qualified = 0
-	local t2MinRank = Config.BaseProgression.Tier2.MinTierRank
-	local t3MinRank = Config.BaseProgression.Tier3.MinTierRank
-
-	for _, piece in pieces do
-		local canonical = BuildingGeometry.CanonicalPieceType(piece.PieceType)
-		local pieceCfg = BuildingConfig.Pieces[canonical]
-		if
-			pieceCfg ~= nil
-			and (
-				pieceCfg.Category == "Foundation"
-				or pieceCfg.Category == "Wall"
-				or pieceCfg.Category == "Floor"
-				or pieceCfg.Category == "Stairs"
-			)
-		then
-			totalStructural += 1
-			local tierCfg = BuildingConfig.Tiers[piece.Tier]
-			local rank = if tierCfg ~= nil then tierCfg.Rank else 1
-			if rank >= t2MinRank then
-				tier2Qualified += 1
-			end
-			if rank >= t3MinRank then
-				tier3Qualified += 1
-			end
-		end
-	end
-
-	local prog = Config.BaseProgression
-	if totalStructural >= prog.Tier3.MinStructuralPieces and tier3Qualified >= prog.Tier3.MinQualifiedPieces then
-		return 3
-	elseif totalStructural >= prog.Tier2.MinStructuralPieces and tier2Qualified >= prog.Tier2.MinQualifiedPieces then
-		return 2
-	elseif totalStructural >= prog.Tier1.MinStructuralPieces then
-		return 1
-	end
-	return 0
+	return BaseUpkeep.ComputeBaseTier(pieces, hasActiveTc)
 end
 
 function BaseService.GetPlayerBaseTier(player: Player): number
@@ -259,45 +149,7 @@ function BaseService.GetPlayerBaseTier(player: Player): number
 end
 
 function BaseService.BuildToolCupboardState(player: Player): Types.ToolCupboardState?
-	local data = DataService.GetData(player)
-	if data == nil then
-		return nil
-	end
-	local tcPiece = findToolCupboardPiece(data.Base.Pieces)
-	if tcPiece == nil then
-		return nil
-	end
-
-	local hourlyUpkeep = BaseService.ComputeHourlyUpkeep(data.Base.Pieces)
-	local protectedHours = computeProtectedHours(tcPiece, hourlyUpkeep)
-	local status: Types.ToolCupboardStatus = if protectedHours > 0 then "Protected" else "Decaying"
-
-	local playerRecords = spawnedByPlayer[player] or {}
-	local pathValid, pathMessage, minLayers = BuildingValidator.CheckMaxWallsToTC(
-		(playerRecords :: any) :: { [string]: BuildingValidator.LivePieceEntry },
-		occupiedSockets,
-		nil
-	)
-	if pathValid and minLayers ~= nil then
-		pathMessage = string.format("Защита TC: %d/%d слоёв", minLayers, Config.MAX_TC_WALL_LAYERS)
-	end
-
-	local maxSlots = Config.Upkeep.TcStorageSlots
-	local defUsed, defMax = BuildingValidator.ComputeDefenseCapacity(data.Base.Pieces, data.Base.BaseTier)
-	return {
-		Uid = tcPiece.Uid,
-		ContainerId = tcPiece.Uid,
-		BaseTier = data.Base.BaseTier,
-		Status = status,
-		HourlyUpkeep = hourlyUpkeep,
-		ProtectedHours = protectedHours,
-		PathValid = pathValid,
-		PathMessage = pathMessage,
-		DefenseUsed = defUsed,
-		DefenseMax = defMax,
-		Slots = storageMapToInventory(tcPiece.Storage, maxSlots),
-		DefenseLogs = data.DefenseLogs,
-	}
+	return BaseUpkeep.BuildToolCupboardState(player, getUpkeepDeps())
 end
 
 local function syncToolCupboardForPlayer(player: Player)
@@ -319,7 +171,7 @@ local function recalculateAndSyncBaseTier(player: Player)
 	if data == nil then
 		return
 	end
-	local tcPiece = findToolCupboardPiece(data.Base.Pieces)
+	local tcPiece = BaseUpkeep.FindToolCupboardPiece(data.Base.Pieces)
 	local tier = BaseService.ComputeBaseTier(data.Base.Pieces, tcPiece ~= nil)
 	data.Base.BaseTier = tier
 	if player.Parent == Players then
@@ -336,7 +188,7 @@ end
 
 local function cleanupPieceRuntime(record: LivePieceRecord)
 	recordsByUid[record.Piece.Uid] = nil
-	decayFractions[record.Piece.Uid] = nil
+	BaseUpkeep.ClearDecayFraction(record.Piece.Uid)
 	DefenseService.UnregisterDefense(record.Piece.Uid)
 	BuildingValidator.UnregisterSocketsForPiece(record.Piece.Uid, occupiedSockets, occupiedWorldKeys)
 	if record.ContainerId ~= nil then
@@ -372,7 +224,7 @@ local function destroyUnsupportedCascade(player: Player, data: Types.PlayerData)
 
 	local playerRecords = spawnedByPlayer[player]
 	for _, dropUid in unsupportedUids do
-		decayFractions[dropUid] = nil
+		BaseUpkeep.ClearDecayFraction(dropUid)
 		local rec = if playerRecords ~= nil then playerRecords[dropUid] else recordsByUid[dropUid]
 		if playerRecords ~= nil then
 			playerRecords[dropUid] = nil
@@ -429,6 +281,19 @@ local function syncBaseState(player: Player)
 	if data ~= nil then
 		Net.GetEvent(Net.Events.BaseStateSync):FireClient(player, data.Base.Pieces)
 	end
+end
+
+getUpkeepDeps = function(): BaseUpkeep.UpkeepDeps
+	return {
+		SpawnedByPlayer = spawnedByPlayer,
+		OccupiedSockets = occupiedSockets,
+		StorageMapToInventory = storageMapToInventory,
+		CleanupPieceRuntime = cleanupPieceRuntime,
+		DestroyUnsupportedCascade = destroyUnsupportedCascade,
+		RecalculateAndSyncBaseTier = recalculateAndSyncBaseTier,
+		SyncBaseState = syncBaseState,
+		SyncToolCupboardForPlayer = syncToolCupboardForPlayer,
+	}
 end
 
 local function spawnPieceForPlayer(player: Player, piece: SavedBuildPiece)
@@ -537,174 +402,16 @@ local function spawnPieceForPlayer(player: Player, piece: SavedBuildPiece)
 	)
 end
 
-local function getOrCreateGhostsFolder(): Folder
-	local existing = Workspace:FindFirstChild(GHOSTS_FOLDER_NAME)
-	if existing and existing:IsA("Folder") then
-		return existing
-	end
-	local folder = Instance.new("Folder")
-	folder.Name = GHOSTS_FOLDER_NAME
-	folder.Parent = Workspace
-	return folder
-end
-
-local function createGhostPrimitive(
-	parent: Instance,
-	name: string,
-	size: Vector3,
-	cf: CFrame,
-	material: Enum.Material,
-	color: Color3,
-	transparency: number,
-	shape: Enum.PartType?
-): Part
-	local part = Instance.new("Part")
-	part.Name = name
-	part.Size = size
-	part.CFrame = cf
-	part.Anchored = true
-	part.CanCollide = false
-	part.CanQuery = false
-	part.CanTouch = false
-	part.CastShadow = false
-	part.Material = material
-	part.Color = color
-	part.Transparency = transparency
-	if shape ~= nil then
-		part.Shape = shape
-	end
-	part.TopSurface = Enum.SurfaceType.Smooth
-	part.BottomSurface = Enum.SurfaceType.Smooth
-	part.Parent = parent
-	return part
-end
-
 function BaseService.BindRaidHooks(hooks: RaidHooks)
 	raidHooks = hooks
 end
 
 function BaseService.ClearSessionGhosts(player: Player)
-	local janitor = sessionGhostsJanitors[player]
-	if janitor ~= nil then
-		janitor:Destroy()
-		sessionGhostsJanitors[player] = nil
-	end
+	BaseGhosts.ClearSessionGhosts(player)
 end
 
 function BaseService.SpawnSessionDeathGhosts(player: Player): number
-	local data = DataService.GetData(player)
-	if data == nil or type(data.DefenseLogs) ~= "table" then
-		return 0
-	end
-
-	local janitor = sessionGhostsJanitors[player]
-	local ghostsFolder = getOrCreateGhostsFolder()
-	local spawnedCount = 0
-	local outpostOrigin = Vector3.new(0, 0, Config.Raid.OutpostOffsetZ)
-
-	for _, logEntry in data.DefenseLogs do
-		if not logEntry.GhostsShown then
-			logEntry.GhostsShown = true
-			for idx, point in logEntry.DeathPoints do
-				local worldPos = Vector3.new(point.PosX, point.PosY, point.PosZ)
-				if
-					not BuildingValidator.IsPointInRaidOutpostOrBuffer(
-						worldPos,
-						Config.Raid.OutpostGhostBufferMargin,
-						outpostOrigin
-					)
-				then
-					if janitor == nil then
-						janitor = Janitor.new()
-						sessionGhostsJanitors[player] = janitor
-					end
-
-					local ghostModel = Instance.new("Model")
-					ghostModel.Name = string.format("DeathGhost_%d_%d", player.UserId, idx)
-
-					createGhostPrimitive(
-						ghostModel,
-						"MarkerRing",
-						Vector3.new(2.6, 0.2, 2.6),
-						CFrame.new(worldPos + Vector3.new(0, 0.12, 0)),
-						Enum.Material.Neon,
-						Color3.fromRGB(255, 85, 85),
-						0.35,
-						nil
-					)
-					local body = createGhostPrimitive(
-						ghostModel,
-						"GhostBody",
-						Vector3.new(1.5, 3.4, 1.0),
-						CFrame.new(worldPos + Vector3.new(0, 2.0, 0)),
-						Enum.Material.ForceField,
-						Color3.fromRGB(110, 225, 255),
-						0.3,
-						nil
-					)
-					local head = createGhostPrimitive(
-						ghostModel,
-						"GhostHead",
-						Vector3.new(1.3, 1.3, 1.3),
-						CFrame.new(worldPos + Vector3.new(0, 4.5, 0)),
-						Enum.Material.ForceField,
-						Color3.fromRGB(255, 115, 125),
-						0.2,
-						Enum.PartType.Ball
-					)
-					ghostModel.PrimaryPart = body
-
-					local bb = Instance.new("BillboardGui")
-					bb.Name = "DeathGhostInfo"
-					bb.Adornee = head
-					bb.Size = UDim2.fromOffset(220, 48)
-					bb.StudsOffset = Vector3.new(0, 1.8, 0)
-					bb.AlwaysOnTop = false
-					bb.MaxDistance = 80
-					bb.Parent = head
-
-					local bg = Instance.new("Frame")
-					bg.Size = UDim2.fromScale(1, 1)
-					bg.BackgroundColor3 = Color3.fromRGB(18, 22, 30)
-					bg.BackgroundTransparency = 0.25
-					bg.BorderSizePixel = 0
-					bg.Parent = bb
-
-					local bgCorner = Instance.new("UICorner")
-					bgCorner.CornerRadius = UDim.new(0, 6)
-					bgCorner.Parent = bg
-
-					local nameLbl = Instance.new("TextLabel")
-					nameLbl.Name = "RaiderNameLabel"
-					nameLbl.Position = UDim2.fromOffset(6, 3)
-					nameLbl.Size = UDim2.new(1, -12, 0, 20)
-					nameLbl.BackgroundTransparency = 1
-					nameLbl.Font = Enum.Font.GothamBold
-					nameLbl.TextSize = 12
-					nameLbl.TextColor3 = Color3.fromRGB(255, 235, 235)
-					nameLbl.Text = point.RaiderName
-					nameLbl.Parent = bg
-
-					local causeLbl = Instance.new("TextLabel")
-					causeLbl.Name = "DeathCauseLabel"
-					causeLbl.Position = UDim2.fromOffset(6, 23)
-					causeLbl.Size = UDim2.new(1, -12, 0, 20)
-					causeLbl.BackgroundTransparency = 1
-					causeLbl.Font = Enum.Font.Gotham
-					causeLbl.TextSize = 11
-					causeLbl.TextColor3 = Color3.fromRGB(255, 145, 145)
-					causeLbl.Text = point.Cause
-					causeLbl.Parent = bg
-
-					ghostModel.Parent = ghostsFolder;
-					(janitor :: Janitor.Janitor):Add(ghostModel)
-					spawnedCount += 1
-				end
-			end
-		end
-	end
-
-	return spawnedCount
+	return BaseGhosts.SpawnSessionDeathGhosts(player)
 end
 
 local function despawnBaseForPlayer(player: Player)
@@ -1273,228 +980,8 @@ local function onBuildRepairRequest(player: Player, uidAny: any)
 	end)
 end
 
-local function consumeFromTcStorage(tcPiece: SavedBuildPiece, itemId: string, amount: number): number
-	if amount <= 0 or type(tcPiece.Storage) ~= "table" then
-		return 0
-	end
-	local remaining = amount
-	local maxSlots = Config.Upkeep.TcStorageSlots
-	for i = maxSlots, 1, -1 do
-		if remaining <= 0 then
-			break
-		end
-		local key = tostring(i)
-		local slot = tcPiece.Storage[key]
-		if slot ~= nil and slot.Id == itemId and slot.Count > 0 then
-			local take = math.min(remaining, slot.Count)
-			slot.Count -= take
-			remaining -= take
-			if slot.Count <= 0 then
-				tcPiece.Storage[key] = nil
-			end
-		end
-	end
-	return amount - remaining
-end
-
-local function isOuterBasePiece(
-	piece: SavedBuildPiece,
-	allPieces: { SavedBuildPiece },
-	tcPos: Vector3,
-	maxRadiusFromTc: number
-): boolean
-	local canonical = BuildingGeometry.CanonicalPieceType(piece.PieceType)
-	if canonical == "tool_cupboard" then
-		return false
-	end
-	local pos = Vector3.new(piece.PosX, piece.PosY, piece.PosZ)
-	local dx = pos.X - tcPos.X
-	local dz = pos.Z - tcPos.Z
-	local distXZ = math.sqrt(dx * dx + dz * dz)
-	if maxRadiusFromTc <= 13.0 then
-		return true
-	end
-	if distXZ >= maxRadiusFromTc - 13.0 then
-		return true
-	end
-	local cfg = BuildingConfig.Pieces[canonical]
-	if cfg ~= nil and cfg.Category == "Wall" then
-		local neighborCount = 0
-		for _, other in allPieces do
-			if other.Uid ~= piece.Uid then
-				local ox = other.PosX - piece.PosX
-				local oz = other.PosZ - piece.PosZ
-				if (ox * ox + oz * oz) <= 64 then
-					neighborCount += 1
-				end
-			end
-		end
-		if neighborCount <= 2 then
-			return true
-		end
-	end
-	return false
-end
-
 function BaseService.ProcessUpkeepAndDecay(player: Player, elapsedSeconds: number): boolean
-	local data = DataService.GetData(player)
-	if data == nil then
-		return false
-	end
-	if #data.Base.Pieces == 0 then
-		data.Base.LastUpkeepTimestamp = os.time()
-		return false
-	end
-
-	local clampedElapsed = math.clamp(elapsedSeconds, 0, Config.Decay.OfflineMaxHours * 3600)
-	if clampedElapsed <= 0 then
-		return false
-	end
-
-	local hours = clampedElapsed / 3600
-	local tcPiece = findToolCupboardPiece(data.Base.Pieces)
-	local hourlyUpkeep = BaseService.ComputeHourlyUpkeep(data.Base.Pieces)
-
-	local playerFracs = upkeepFractions[player]
-	if playerFracs == nil then
-		playerFracs = {}
-		upkeepFractions[player] = playerFracs
-	end
-
-	local decayingResources: { [string]: boolean } = {}
-	local storageChanged = false
-	if tcPiece == nil then
-		for resId, rate in hourlyUpkeep do
-			if rate > 0 then
-				decayingResources[resId] = true
-			end
-		end
-	else
-		tcPiece.Storage = tcPiece.Storage or {}
-		local tcTotals = computeTcStorageTotals(tcPiece)
-		for resId, hourlyRate in hourlyUpkeep do
-			if hourlyRate > 0 then
-				local neededFloat = hourlyRate * hours + (playerFracs[resId] or 0)
-				local wholeNeeded = math.floor(neededFloat)
-				playerFracs[resId] = neededFloat - wholeNeeded
-				if wholeNeeded > 0 then
-					local consumed = consumeFromTcStorage(tcPiece, resId, wholeNeeded)
-					if consumed > 0 then
-						storageChanged = true
-					end
-					if consumed < wholeNeeded then
-						decayingResources[resId] = true
-						playerFracs[resId] = 0
-					end
-				elseif (tcTotals[resId] or 0) <= 0 then
-					decayingResources[resId] = true
-				end
-			end
-		end
-	end
-
-	local isAnyDecaying = (tcPiece == nil) or (next(decayingResources) ~= nil)
-	local structureChanged = false
-
-	if isAnyDecaying then
-		local centerPos: Vector3
-		if tcPiece ~= nil then
-			centerPos = Vector3.new(tcPiece.PosX, tcPiece.PosY, tcPiece.PosZ)
-		else
-			local sumX, sumY, sumZ = 0, 0, 0
-			for _, p in data.Base.Pieces do
-				sumX += p.PosX
-				sumY += p.PosY
-				sumZ += p.PosZ
-			end
-			local count = math.max(1, #data.Base.Pieces)
-			centerPos = Vector3.new(sumX / count, sumY / count, sumZ / count)
-		end
-
-		local resourceByTier = Config.Upkeep.ResourceByBuildTier :: { [string]: string }
-		local damagePerHourByTier = Config.Decay.HourlyDamageByTier :: { [string]: number }
-		local maxRadius = 0
-		local candidatePieces: { SavedBuildPiece } = {}
-
-		for _, piece in data.Base.Pieces do
-			local canonical = BuildingGeometry.CanonicalPieceType(piece.PieceType)
-			local pieceCfg = BuildingConfig.Pieces[canonical]
-			local resId = resourceByTier[piece.Tier]
-			local shouldDecay = (tcPiece == nil)
-				or (pieceCfg ~= nil and pieceCfg.Upgradeable and resId ~= nil and decayingResources[resId] == true)
-			if shouldDecay then
-				table.insert(candidatePieces, piece)
-				if canonical ~= "tool_cupboard" then
-					local dx = piece.PosX - centerPos.X
-					local dz = piece.PosZ - centerPos.Z
-					local d = math.sqrt(dx * dx + dz * dz)
-					if d > maxRadius then
-						maxRadius = d
-					end
-				end
-			end
-		end
-
-		local targetList: { SavedBuildPiece } = {}
-		for _, piece in candidatePieces do
-			if isOuterBasePiece(piece, data.Base.Pieces, centerPos, maxRadius) then
-				table.insert(targetList, piece)
-			end
-		end
-		if #targetList == 0 then
-			targetList = candidatePieces
-		end
-
-		local noTcMult = if tcPiece == nil then Config.Decay.NoTcMultiplier else 1.0
-		local destroyedUids: { [string]: boolean } = {}
-		local playerRecords = spawnedByPlayer[player]
-
-		for _, piece in targetList do
-			local hourlyDamage = damagePerHourByTier[piece.Tier] or 50
-			local rawDmg = hourlyDamage * hours * noTcMult + (decayFractions[piece.Uid] or 0)
-			local wholeDmg = math.floor(rawDmg)
-			decayFractions[piece.Uid] = rawDmg - wholeDmg
-			if wholeDmg > 0 then
-				piece.Hp -= wholeDmg
-				structureChanged = true
-				local record = if playerRecords ~= nil then playerRecords[piece.Uid] else nil
-				if piece.Hp <= 0 then
-					destroyedUids[piece.Uid] = true
-					decayFractions[piece.Uid] = nil
-					if playerRecords ~= nil and record ~= nil then
-						playerRecords[piece.Uid] = nil
-					end
-					if record ~= nil then
-						cleanupPieceRuntime(record)
-					end
-				elseif record ~= nil and record.Model.Parent ~= nil then
-					record.Model:SetAttribute("Health", piece.Hp)
-					record.Model:SetAttribute("Hp", piece.Hp)
-					DefenseService.UpdateDefenseHp(piece.Uid, piece.Hp, nil)
-				end
-			end
-		end
-
-		if next(destroyedUids) ~= nil then
-			local kept: { SavedBuildPiece } = {}
-			for _, piece in data.Base.Pieces do
-				if not destroyedUids[piece.Uid] then
-					table.insert(kept, piece)
-				end
-			end
-			data.Base.Pieces = kept
-			destroyUnsupportedCascade(player, data)
-		end
-	end
-
-	data.Base.LastUpkeepTimestamp = os.time()
-	recalculateAndSyncBaseTier(player)
-	if structureChanged then
-		syncBaseState(player)
-	elseif storageChanged then
-		syncToolCupboardForPlayer(player)
-	end
-	return isAnyDecaying or storageChanged
+	return BaseUpkeep.ProcessUpkeepAndDecay(player, elapsedSeconds, getUpkeepDeps())
 end
 
 local function onToolCupboardAction(player: Player, actionAny: any, arg1Any: any)
@@ -1532,7 +1019,7 @@ local function onToolCupboardAction(player: Player, actionAny: any, arg1Any: any
 		if data == nil then
 			return
 		end
-		local tcPiece = findToolCupboardPiece(data.Base.Pieces)
+		local tcPiece = BaseUpkeep.FindToolCupboardPiece(data.Base.Pieces)
 		if tcPiece == nil then
 			openTcByPlayer[player] = nil
 			Net.GetEvent(Net.Events.ToolCupboardSync):FireClient(player, nil)
@@ -1871,132 +1358,12 @@ function BaseService.GetStorageContainerId(player: Player, uid: string): string?
 	return if record ~= nil then record.ContainerId else nil
 end
 
-local function depositIntoSavedPieceStorage(
-	piece: SavedBuildPiece,
-	itemId: string,
-	count: number,
-	maxSlots: number
-): number
-	local itemCfg = Items[itemId]
-	if itemCfg == nil or count <= 0 then
-		return 0
-	end
-	if type(piece.Storage) ~= "table" then
-		piece.Storage = {}
-	end
-	local storage = piece.Storage :: { [string]: Slot }
-	local maxStack = itemCfg.MaxStack
-	local remaining = count
-
-	for i = 1, maxSlots do
-		if remaining <= 0 then
-			break
-		end
-		local key = tostring(i)
-		local existing = storage[key]
-		if existing ~= nil and existing.Id == itemId and existing.Count < maxStack then
-			local addAmt = math.min(remaining, maxStack - existing.Count)
-			if addAmt > 0 then
-				existing.Count += addAmt
-				remaining -= addAmt
-			end
-		end
-	end
-
-	for i = 1, maxSlots do
-		if remaining <= 0 then
-			break
-		end
-		local key = tostring(i)
-		if storage[key] == nil then
-			local addAmt = math.min(remaining, maxStack)
-			storage[key] = { Id = itemId, Count = addAmt }
-			remaining -= addAmt
-		end
-	end
-
-	return count - remaining
-end
-
 function BaseService.DepositScrapToToolCupboard(player: Player, amount: number): number
-	local data = DataService.GetData(player)
-	if data == nil or amount <= 0 then
-		return 0
-	end
-	local intAmount = math.floor(amount)
-	if intAmount <= 0 then
-		return 0
-	end
-
-	local depositedTotal = 0
-	local tcPiece = findToolCupboardPiece(data.Base.Pieces)
-	if tcPiece ~= nil then
-		local inTc = depositIntoSavedPieceStorage(tcPiece, "scrap", intAmount, Config.Upkeep.TcStorageSlots)
-		depositedTotal += inTc
-		intAmount -= inTc
-		if inTc > 0 then
-			syncToolCupboardForPlayer(player)
-			syncBaseState(player)
-		end
-	end
-
-	if intAmount > 0 then
-		local invAdded, storageAdded = BaseService.DepositItemsToPlayerBase(player, {
-			{ Id = "scrap", Count = intAmount },
-		})
-		depositedTotal += invAdded + storageAdded
-	end
-
-	return depositedTotal
+	return BaseUpkeep.DepositScrapToToolCupboard(player, amount, getUpkeepDeps())
 end
 
 function BaseService.DepositItemsToPlayerBase(player: Player, items: { ItemBatchEntry }): (number, number)
-	local data = DataService.GetData(player)
-	if data == nil or #items == 0 then
-		return 0, 0
-	end
-
-	local addedInvTotal = 0
-	local addedStorageTotal = 0
-	local playerRecords = spawnedByPlayer[player]
-
-	for _, entry in items do
-		if entry.Count <= 0 or Items[entry.Id] == nil then
-			continue
-		end
-		local addedInv = InventoryService.AddItem(player, entry.Id, entry.Count)
-		addedInvTotal += addedInv
-		local remaining = entry.Count - addedInv
-		if remaining <= 0 then
-			continue
-		end
-
-		for _, piece in data.Base.Pieces do
-			if remaining <= 0 then
-				break
-			end
-			if BuildingGeometry.CanonicalPieceType(piece.PieceType) == "storage_box" then
-				local liveRecord = if playerRecords ~= nil then playerRecords[piece.Uid] else nil
-				if liveRecord ~= nil and liveRecord.ContainerId ~= nil then
-					local deposited = LootService.DepositToStorageContainer(liveRecord.ContainerId, entry.Id, remaining)
-					remaining -= deposited
-					addedStorageTotal += deposited
-				else
-					local boxCfg = BuildingConfig.Pieces.storage_box
-					local slotsLimit = if boxCfg and boxCfg.StorageSlots then boxCfg.StorageSlots else 18
-					local deposited = depositIntoSavedPieceStorage(piece, entry.Id, remaining, slotsLimit)
-					remaining -= deposited
-					addedStorageTotal += deposited
-				end
-			end
-		end
-	end
-
-	if addedStorageTotal > 0 then
-		syncBaseState(player)
-	end
-
-	return addedInvTotal, addedStorageTotal
+	return BaseUpkeep.DepositItemsToPlayerBase(player, items, getUpkeepDeps())
 end
 
 function BaseService.Init()
@@ -2066,7 +1433,7 @@ function BaseService.Init()
 		teleportInProgress[player] = nil
 		pendingTeleports[player] = nil
 		openTcByPlayer[player] = nil
-		upkeepFractions[player] = nil
+		BaseUpkeep.ClearPlayerState(player)
 	end)
 
 	task.spawn(function()
