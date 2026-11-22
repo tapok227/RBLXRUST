@@ -641,6 +641,10 @@ local function onVendorTradeRequest(player: Player, vendorIdAny: any, offerIdAny
 
 		local remainder = InventoryService.AddItem(player, offer.ReceiveId, totalReceive)
 		if remainder > 0 then
+			local addedCount = totalReceive - remainder
+			if addedCount > 0 then
+				InventoryService.RemoveItem(player, offer.ReceiveId, addedCount)
+			end
 			InventoryService.AddItem(player, offer.GiveId, totalGive)
 			sendFeedback(player, false, "Inventory is full", vendorCfg.Id, offer.OfferId)
 			return

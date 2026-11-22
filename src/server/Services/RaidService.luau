@@ -95,6 +95,7 @@ type RaidSession = {
 	MaxLives: number,
 	LastDamagedAt: number,
 	Extracting: boolean,
+	StashExtracted: boolean,
 	PendingReturnOnRespawn: boolean,
 	ReturnPosition: Vector3?,
 	Janitor: Janitor.Janitor,
@@ -1460,15 +1461,7 @@ local function createPrimitivePart(
 end
 
 local function completeStudioReturn(player: Player, session: RaidSession, statusText: string?)
-	local released = DataService.ReleaseForTeleport(player)
-	print(
-		string.format(
-			"[RaidService] Studio raid ended for %s (Target=%s, ProfileSaved=%s)",
-			player.Name,
-			session.TargetName,
-			tostring(released)
-		)
-	)
+	DataService.ReleaseForTeleport(player)
 	DataService.RestoreAfterFailedTeleport(player)
 
 	activeSessions[player] = nil
@@ -1495,6 +1488,10 @@ local function finishRaidSession(player: Player, statusText: string?, delayForRe
 	end
 	session.Extracting = true
 	cancelTcHack(session, nil)
+	for uid in session.Pieces do
+		DefenseService.UnregisterDefense(uid)
+	end
+	CraftingService.CancelCraftForPlayer(player, true, false)
 	SecurityService.SetTeleportLock(player, true)
 	LootService.CloseContainerForPlayer(player, true)
 
@@ -1635,7 +1632,11 @@ local function tryExtractFromRaid(player: Player)
 	if session == nil or session.Extracting then
 		return
 	end
-	if teleportInProgress[player] or SecurityService.IsTeleportLocked(player) then
+	if
+		teleportInProgress[player]
+		or SecurityService.IsTeleportLocked(player)
+		or SecurityService.IsTransactionLocked(player)
+	then
 		return
 	end
 	if DataService.GetData(player) == nil then
@@ -1662,10 +1663,30 @@ local function tryExtractFromRaid(player: Player)
 		return
 	end
 
-	local extractedItems, totalCount = collectStashBatch(session)
-	if #extractedItems > 0 then
-		BaseService.DepositItemsToPlayerBase(player, extractedItems)
+	local totalCount = 0
+	local extractedItems: { ItemBatchEntry } = {}
+	local lockOk = SecurityService.RunLocked(player, "RaidExtract", function()
+		if activeSessions[player] ~= session or session.Extracting then
+			return
+		end
+		if DataService.GetData(player) == nil or not session.TcCaptured then
+			return
+		end
+		if not session.StashExtracted then
+			extractedItems, totalCount = collectStashBatch(session)
+			if #extractedItems > 0 then
+				BaseService.DepositItemsToPlayerBase(player, extractedItems)
+			end
+			session.StashExtracted = true
+			if session.ExtractionStashContainerId ~= nil then
+				LootService.ClearContainerSlots(session.ExtractionStashContainerId)
+			end
+		end
+	end)
+	if not lockOk or not session.StashExtracted then
+		return
 	end
+
 	recordDefenseReport(
 		session,
 		false,
@@ -2882,16 +2903,7 @@ local function onStartRaidRequest(player: Player, targetUserIdAny: any)
 	LootService.CloseContainerForPlayer(player, true)
 
 	if RunService:IsStudio() then
-		local released = DataService.ReleaseForTeleport(player)
-		print(
-			string.format(
-				"[RaidService] Studio ReservedServer simulation: ReserveServer(PlaceId=%d) & TeleportToPrivateServer for TargetUserId=%d Tier=%d (ProfileReleased=%s)",
-				Config.Places.PlayerBase,
-				targetUserId,
-				targetBaseTier,
-				tostring(released)
-			)
-		)
+		DataService.ReleaseForTeleport(player)
 		DataService.RestoreAfterFailedTeleport(player)
 		teleportInProgress[player] = nil
 		SecurityService.SetTeleportLock(player, false)
@@ -3388,6 +3400,7 @@ local function createRaidSessionRecord(
 		MaxLives = Config.Raid.MaxLives,
 		LastDamagedAt = 0,
 		Extracting = false,
+		StashExtracted = false,
 		PendingReturnOnRespawn = false,
 		ReturnPosition = returnPos,
 		Janitor = Janitor.new(),
@@ -3470,6 +3483,8 @@ function RaidService.EnterStudioMockRaid(player: Player, targetUserId: number): 
 	if activeSessions[player] ~= nil then
 		return false
 	end
+
+	CraftingService.CancelCraftForPlayer(player, true, false)
 
 	local returnPos = getDefaultSpawnPosition()
 	local _, hrp, _ = getAliveCharacterParts(player)

@@ -28,6 +28,7 @@ local ROCKET_LAUNCHER_ITEM_ID = "rocket_launcher"
 local VFX_FOLDER_NAME = "ClientProjectileVfx"
 local EXPLOSION_SOUND_ID = "rbxasset://sounds/impact_explosion_03.mp3"
 local TRAIL_FADE_DELAY = 0.7
+local ARROW_STICK_DURATION = 3.0
 
 local vfxFolder: Folder? = nil
 local nextLocalSimSeq = 0
@@ -227,6 +228,102 @@ local function buildFallbackRocket(): Model
 	return rocket
 end
 
+local function buildFallbackArrow(): Model
+	local arrow = Instance.new("Model")
+	arrow.Name = "Arrow"
+
+	local body = Instance.new("Part")
+	body.Name = "Body"
+	body.Size = Vector3.new(0.14, 0.14, 2.2)
+	body.CFrame = CFrame.new(0, 0, 0)
+	body.Transparency = 1
+	body.Anchored = true
+	body.CanCollide = false
+	body.CanQuery = false
+	body.CanTouch = false
+	body.Massless = true
+	body.CastShadow = false
+	body.Parent = arrow
+
+	local shaft = Instance.new("Part")
+	shaft.Name = "Shaft"
+	shaft.Shape = Enum.PartType.Cylinder
+	shaft.Size = Vector3.new(2.0, 0.08, 0.08)
+	shaft.CFrame = CFrame.new(0, 0, 0.02) * CFrame.Angles(0, math.rad(90), 0)
+	shaft.Material = Enum.Material.Wood
+	shaft.Color = Color3.fromRGB(160, 112, 62)
+	shaft.Anchored = true
+	shaft.CanCollide = false
+	shaft.CanQuery = false
+	shaft.CanTouch = false
+	shaft.Massless = true
+	shaft.Parent = arrow
+
+	local tip = Instance.new("WedgePart")
+	tip.Name = "Arrowhead"
+	tip.Size = Vector3.new(0.14, 0.14, 0.3)
+	tip.CFrame = CFrame.new(0, 0, -1.08)
+	tip.Material = Enum.Material.Metal
+	tip.Color = Color3.fromRGB(72, 78, 86)
+	tip.Anchored = true
+	tip.CanCollide = false
+	tip.CanQuery = false
+	tip.CanTouch = false
+	tip.Massless = true
+	tip.Parent = arrow
+
+	local fletchA = Instance.new("Part")
+	fletchA.Name = "FletchA"
+	fletchA.Size = Vector3.new(0.03, 0.22, 0.38)
+	fletchA.CFrame = CFrame.new(0, 0, 0.82) * CFrame.Angles(0, 0, math.rad(45))
+	fletchA.Material = Enum.Material.Fabric
+	fletchA.Color = Color3.fromRGB(220, 65, 55)
+	fletchA.Anchored = true
+	fletchA.CanCollide = false
+	fletchA.CanQuery = false
+	fletchA.CanTouch = false
+	fletchA.Massless = true
+	fletchA.Parent = arrow
+
+	local fletchB = Instance.new("Part")
+	fletchB.Name = "FletchB"
+	fletchB.Size = Vector3.new(0.03, 0.22, 0.38)
+	fletchB.CFrame = CFrame.new(0, 0, 0.82) * CFrame.Angles(0, 0, math.rad(-45))
+	fletchB.Material = Enum.Material.Fabric
+	fletchB.Color = Color3.fromRGB(240, 240, 245)
+	fletchB.Anchored = true
+	fletchB.CanCollide = false
+	fletchB.CanQuery = false
+	fletchB.CanTouch = false
+	fletchB.Massless = true
+	fletchB.Parent = arrow
+
+	local trailTop = Instance.new("Attachment")
+	trailTop.Name = "TrailTop"
+	trailTop.Position = Vector3.new(0, 0.06, 0.9)
+	trailTop.Parent = body
+
+	local trailBottom = Instance.new("Attachment")
+	trailBottom.Name = "TrailBottom"
+	trailBottom.Position = Vector3.new(0, -0.06, 0.9)
+	trailBottom.Parent = body
+
+	local trail = Instance.new("Trail")
+	trail.Name = "FlightTrail"
+	trail.Attachment0 = trailTop
+	trail.Attachment1 = trailBottom
+	trail.Lifetime = 0.35
+	trail.MinLength = 0.08
+	trail.FaceCamera = true
+	trail.Color = ColorSequence.new(Color3.fromRGB(255, 245, 210), Color3.fromRGB(220, 220, 230))
+	trail.Transparency = NumberSequence.new(0.2, 1)
+	trail.Parent = body
+
+	arrow.PrimaryPart = body
+	arrow.WorldPivot = body.CFrame
+	return arrow
+end
+
 local function cloneLauncherTemplate(): Model
 	local assets = ReplicatedStorage:FindFirstChild("Assets")
 	local weapons = if assets then assets:FindFirstChild("Weapons") else nil
@@ -245,11 +342,16 @@ local function cloneLauncherTemplate(): Model
 	return model
 end
 
-local function cloneRocketTemplate(): Model
+local function cloneProjectileTemplate(projectileConfigId: string): Model
+	local isArrow = projectileConfigId == "arrow"
+	local assetName = if isArrow then "Arrow" else "Rocket"
 	local assets = ReplicatedStorage:FindFirstChild("Assets")
 	local projectiles = if assets then assets:FindFirstChild("Projectiles") else nil
-	local template = if projectiles then projectiles:FindFirstChild("Rocket") else nil
-	local model = if template and template:IsA("Model") then template:Clone() else buildFallbackRocket()
+	local template = if projectiles then projectiles:FindFirstChild(assetName) else nil
+	local model = if template and template:IsA("Model")
+		then template:Clone()
+		elseif isArrow then buildFallbackArrow()
+		else buildFallbackRocket()
 
 	for _, desc in model:GetDescendants() do
 		if desc:IsA("BasePart") then
@@ -327,8 +429,23 @@ local function hideVisualBodyAndFadeTrail(record: ActiveVisualProjectile)
 	end)
 end
 
+local function freezeArrowAndCleanup(record: ActiveVisualProjectile)
+	if record.CleanedUp then
+		return
+	end
+	for _, desc in record.Model:GetDescendants() do
+		if desc:IsA("Trail") or desc:IsA("ParticleEmitter") then
+			desc.Enabled = false
+		end
+	end
+	task.delay(ARROW_STICK_DURATION, function()
+		cleanupVisualRecord(record)
+	end)
+end
+
 local function spawnVisualBallistic(
 	serverId: string?,
+	projectileConfigId: string,
 	origin: Vector3,
 	initialVelocity: Vector3,
 	gravity: number,
@@ -338,15 +455,15 @@ local function spawnVisualBallistic(
 	nextLocalSimSeq += 1
 	local simId = string.format("vis_proj_%d", nextLocalSimSeq)
 
-	local rocketModel = cloneRocketTemplate()
-	rocketModel.Name = if serverId ~= nil then serverId else simId
-	rocketModel:PivotTo(Ballistics.ComputeCFrame(origin, initialVelocity))
-	rocketModel.Parent = getVfxFolder()
+	local projModel = cloneProjectileTemplate(projectileConfigId)
+	projModel.Name = if serverId ~= nil then serverId else simId
+	projModel:PivotTo(Ballistics.ComputeCFrame(origin, initialVelocity))
+	projModel.Parent = getVfxFolder()
 
 	local record: ActiveVisualProjectile = {
 		SimId = simId,
 		ServerId = serverId,
-		Model = rocketModel,
+		Model = projModel,
 		CreatedAt = os.clock(),
 		CleanedUp = false,
 	}
@@ -371,7 +488,11 @@ local function spawnVisualBallistic(
 		OnHit = function(hitResult: RaycastResult, vel: Vector3)
 			if not record.CleanedUp and record.Model.Parent then
 				record.Model:PivotTo(Ballistics.ComputeCFrame(hitResult.Position, vel))
-				hideVisualBodyAndFadeTrail(record)
+				if projectileConfigId == "arrow" then
+					freezeArrowAndCleanup(record)
+				else
+					hideVisualBodyAndFadeTrail(record)
+				end
 			end
 		end,
 		OnExpire = function()
@@ -552,8 +673,10 @@ local function onProjectileSpawn(
 		table.insert(excludes, shooterAny.Character)
 	end
 
-	spawnVisualBallistic(projectileId, origin, velocity, gravity, maxLifetime, excludes)
-	playSoundAtPosition(origin, 1.85, 0.55, 180)
+	spawnVisualBallistic(projectileId, projectileConfigIdAny, origin, velocity, gravity, maxLifetime, excludes)
+	if projectileConfigIdAny ~= "arrow" then
+		playSoundAtPosition(origin, 1.85, 0.55, 180)
+	end
 end
 
 local function onExplosionEffect(originAny: any, radiusAny: any, _sourceIdAny: any, projectileIdAny: any)
@@ -624,7 +747,8 @@ function ProjectileController.SpawnLocalProjectile(
 	projectileConfigId: string,
 	origin: Vector3,
 	direction: Vector3,
-	shooterCharacter: Model
+	shooterCharacter: Model,
+	speedOverride: number?
 ): string
 	local projCfg = Projectiles[projectileConfigId]
 	if projCfg == nil then
@@ -632,11 +756,13 @@ function ProjectileController.SpawnLocalProjectile(
 	end
 
 	local unitDir = if direction.Magnitude > 1e-4 then direction.Unit else Vector3.new(0, 0, -1)
-	local initialVelocity = unitDir * projCfg.Speed
+	local speed = if speedOverride ~= nil then speedOverride else projCfg.Speed
+	local initialVelocity = unitDir * speed
 	local maxLifetime = math.min(projCfg.MaxLifetime, Types.MAX_PROJECTILE_LIFETIME)
 
 	local record = spawnVisualBallistic(
 		nil,
+		projectileConfigId,
 		origin,
 		initialVelocity,
 		projCfg.Gravity,
@@ -644,7 +770,9 @@ function ProjectileController.SpawnLocalProjectile(
 		{ shooterCharacter, getVfxFolder() }
 	)
 	table.insert(pendingLocalQueue, record)
-	playSoundAtPosition(origin, 1.85, 0.55, 180)
+	if projectileConfigId ~= "arrow" then
+		playSoundAtPosition(origin, 1.85, 0.55, 180)
+	end
 
 	return record.SimId
 end

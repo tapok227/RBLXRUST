@@ -20,6 +20,7 @@ local CraftingController = require(script.Parent.CraftingController)
 local LootController = require(script.Parent.LootController)
 local ToolCupboardController = require(script.Parent.ToolCupboardController)
 local DefenseController = require(script.Parent.DefenseController)
+local VendorController = require(script.Parent.VendorController)
 
 type BuildPieceType = Types.BuildPieceType
 type BuildTier = Types.BuildTier
@@ -143,6 +144,7 @@ local function isAnyModalUiOpen(): boolean
 		or LootController.IsOpen()
 		or ToolCupboardController.IsOpen()
 		or DefenseController.IsOpen()
+		or VendorController.IsOpen()
 end
 
 local function getLocalBaseTier(): number

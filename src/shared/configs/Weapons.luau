@@ -14,14 +14,6 @@ local FISTS: WeaponConfig = table.freeze({
 })
 
 local Weapons: { [string]: WeaponConfig } = {
-	wooden_spear = table.freeze({
-		Category = "Melee" :: Types.WeaponCategory,
-		Damage = 25,
-		HeadshotMultiplier = 1.5,
-		Range = 10,
-		Cooldown = 0.75,
-		AmmoId = nil,
-	}),
 	spear = table.freeze({
 		Category = "Melee" :: Types.WeaponCategory,
 		Damage = 25,
@@ -56,11 +48,15 @@ local Weapons: { [string]: WeaponConfig } = {
 	}),
 	hunting_bow = table.freeze({
 		Category = "Ranged" :: Types.WeaponCategory,
-		Damage = 45,
+		Damage = 55,
+		MinDamage = 18,
 		HeadshotMultiplier = 2.0,
-		Range = 160,
-		Cooldown = 1.1,
+		Range = 180,
+		Cooldown = 0.6,
 		AmmoId = "arrow",
+		ProjectileId = "arrow",
+		DrawMinTime = 0.25,
+		DrawFullTime = 1.0,
 	}),
 	pipe_pistol = table.freeze({
 		Category = "Ranged" :: Types.WeaponCategory,

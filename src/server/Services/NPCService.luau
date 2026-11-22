@@ -50,6 +50,7 @@ type ActiveNpcRecord = {
 	ReturnStartedAt: number,
 	StrafeSign: number,
 	BurstActive: boolean,
+	ActiveBurstThread: thread?,
 	Alive: boolean,
 	PrevHealth: number,
 	HpFill: Frame?,
@@ -80,7 +81,7 @@ local isInitialized = false
 local NPCService = {}
 
 local function isMainMapPlace(): boolean
-	return game.PlaceId ~= Config.Places.PlayerBase
+	return game.PlaceId ~= Config.Places.PlayerBase and Workspace:GetAttribute("RaidServerMode") ~= true
 end
 
 local function getOrCreateFolder(name: string): Folder
@@ -108,11 +109,14 @@ local function getAlivePlayerParts(player: Player): (Model?, BasePart?, Humanoid
 	if player.Parent ~= Players then
 		return nil, nil, nil
 	end
+	if player:GetAttribute("InRaid") == true then
+		return nil, nil, nil
+	end
 	local character = player.Character
 	if not character then
 		return nil, nil, nil
 	end
-	if character:FindFirstChildOfClass("ForceField") ~= nil then
+	if character:GetAttribute("RaidInvulnerable") == true or character:FindFirstChildOfClass("ForceField") ~= nil then
 		return nil, nil, nil
 	end
 	local hrp = character:FindFirstChild("HumanoidRootPart")
@@ -874,8 +878,16 @@ local function fireGuardBurst(record: ActiveNpcRecord, targetChar: Model, target
 	local speed = cfg.ProjectileSpeed or 210
 	local gravity = cfg.ProjectileGravity or 12
 
+	if record.ActiveBurstThread ~= nil then
+		if coroutine.status(record.ActiveBurstThread) == "suspended" then
+			task.cancel(record.ActiveBurstThread)
+		end
+		record.ActiveBurstThread = nil
+	end
+
 	record.BurstActive = true
-	local burstThread = task.spawn(function()
+	local burstThread: thread
+	burstThread = task.spawn(function()
 		for i = 1, burstCount do
 			if not record.Alive or record.State ~= "Combat" then
 				break
@@ -910,7 +922,15 @@ local function fireGuardBurst(record: ActiveNpcRecord, targetChar: Model, target
 						broadcastNpcTracer(muzzlePos, hitResult.Position)
 						local hitPlayer, hitHum = findPlayerFromHit(hitResult.Instance)
 						if hitPlayer ~= nil and hitHum ~= nil and hitHum.Health > 0 then
-							hitHum:TakeDamage(cfg.Damage)
+							local hitChar = hitPlayer.Character
+							if
+								hitPlayer:GetAttribute("InRaid") ~= true
+								and hitChar ~= nil
+								and hitChar:GetAttribute("RaidInvulnerable") ~= true
+								and hitChar:FindFirstChildOfClass("ForceField") == nil
+							then
+								hitHum:TakeDamage(cfg.Damage)
+							end
 						end
 					end,
 					OnExpire = function(endPos: Vector3)
@@ -923,15 +943,12 @@ local function fireGuardBurst(record: ActiveNpcRecord, targetChar: Model, target
 				task.wait(burstInterval)
 			end
 		end
-		record.BurstActive = false
-	end)
-
-	record.Janitor:Add(function()
-		record.BurstActive = false
-		if coroutine.status(burstThread) == "suspended" then
-			task.cancel(burstThread)
+		if record.ActiveBurstThread == burstThread then
+			record.ActiveBurstThread = nil
 		end
+		record.BurstActive = false
 	end)
+	record.ActiveBurstThread = burstThread
 end
 
 local function findSafeGroundWaypoint(
@@ -986,6 +1003,13 @@ local function cleanupActiveNpc(record: ActiveNpcRecord)
 		record.Marker.ActiveNpc = nil
 	end
 	record.Alive = false
+	record.BurstActive = false
+	if record.ActiveBurstThread ~= nil then
+		if coroutine.status(record.ActiveBurstThread) == "suspended" then
+			task.cancel(record.ActiveBurstThread)
+		end
+		record.ActiveBurstThread = nil
+	end
 	record.Janitor:Destroy()
 end
 
@@ -1060,6 +1084,7 @@ local function spawnNpcInternal(marker: SpawnMarkerRecord): Model?
 		ReturnStartedAt = 0,
 		StrafeSign = if rng:NextNumber() < 0.5 then -1 else 1,
 		BurstActive = false,
+		ActiveBurstThread = nil,
 		Alive = true,
 		PrevHealth = cfg.MaxHealth,
 		HpFill = hpFill,
@@ -1431,6 +1456,9 @@ local function stepPassiveAnimal(record: ActiveNpcRecord, now: number, exclude: 
 end
 
 local function stepAiTick()
+	if not isMainMapPlace() then
+		return
+	end
 	local now = os.clock()
 	local exclude = buildEnvironmentExcludeList()
 
@@ -1629,6 +1657,12 @@ function NPCService.Init()
 			serverHasPlayers = true
 			spawnMissingMarkers()
 			ensureAiLoopRunning()
+		end
+	end)
+
+	Workspace:GetAttributeChangedSignal("RaidServerMode"):Connect(function()
+		if Workspace:GetAttribute("RaidServerMode") == true then
+			NPCService.DespawnAll()
 		end
 	end)
 

@@ -1104,6 +1104,18 @@ function LootService.DepositToStorageContainer(containerId: string, itemId: stri
 	return deposited
 end
 
+function LootService.ClearContainerSlots(containerId: string)
+	local container = containers[containerId]
+	if container == nil then
+		return
+	end
+	table.clear(container.Slots)
+	if container.OnChanged then
+		container.OnChanged(container.Slots)
+	end
+	notifyContainerViewers(container)
+end
+
 function LootService.IsContainerDepleted(containerId: string): boolean
 	local container = containers[containerId]
 	if not container then

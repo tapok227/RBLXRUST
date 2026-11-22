@@ -42,6 +42,7 @@ local WORKBENCH_SYNC_INTERVAL = 0.25
 local stations: { StationEntry } = {}
 local dynamicStations: { [string]: StationEntry } = {}
 local activeCrafts: { [Player]: ActiveCraft } = {}
+local playerCraftConnections: { [Player]: { RBXScriptConnection } } = {}
 local lastSyncedTierByPlayer: { [Player]: number } = {}
 local lastSyncedCampfireByPlayer: { [Player]: boolean } = {}
 local nextToken = 0
@@ -149,13 +150,14 @@ function CraftingService.GetPlayerWorkbenchTier(player: Player, includePingToler
 	return bestTier
 end
 
-local function hasNearbyStation(player: Player, stationType: string): boolean
+local function hasNearbyStation(player: Player, stationType: string, includePingTolerance: boolean?): boolean
 	local _, hrp = SecurityService.GetAliveCharacterRoot(player)
 	if not hrp then
 		return false
 	end
 
-	local maxDistance = Config.WORKBENCH_RADIUS + Types.PING_DISTANCE_TOLERANCE
+	local pingPad = if includePingTolerance == false then 0 else Types.PING_DISTANCE_TOLERANCE
+	local maxDistance = Config.WORKBENCH_RADIUS + pingPad
 
 	for _, entry in stations do
 		if canPlayerUseStation(player, entry) and doesStationSatisfy(entry.StationType, stationType) then
@@ -243,7 +245,7 @@ local function onCraftRequest(player: Player, recipeIdAny: any)
 			if CraftingService.GetPlayerWorkbenchTier(player, true) < recipe.RequiredWorkbench then
 				return
 			end
-		elseif recipe.Station ~= nil and not hasNearbyStation(player, recipe.Station) then
+		elseif recipe.Station ~= nil and not hasNearbyStation(player, recipe.Station, true) then
 			return
 		end
 		if
@@ -292,13 +294,17 @@ local function onCraftRequest(player: Player, recipeIdAny: any)
 				return
 			end
 
+			if player.Parent ~= Players or DataService.GetData(player) == nil then
+				activeCrafts[player] = nil
+				return
+			end
+
 			if
-				player.Parent ~= Players
-				or DataService.GetData(player) == nil
-				or DataService.IsTeleporting(player)
+				DataService.IsTeleporting(player)
 				or SecurityService.IsTeleportLocked(player)
 				or SecurityService.GetAliveCharacterRoot(player) == nil
 			then
+				CraftingService.CancelCraftForPlayer(player, true, false)
 				return
 			end
 
@@ -309,7 +315,14 @@ local function onCraftRequest(player: Player, recipeIdAny: any)
 				end
 				activeCrafts[player] = nil
 				if player.Parent == Players and DataService.GetData(player) ~= nil then
-					InventoryService.AddItem(player, recipe.ResultId, recipe.ResultCount)
+					local remainder = InventoryService.AddItem(player, recipe.ResultId, recipe.ResultCount)
+					if remainder > 0 then
+						local addedCount = recipe.ResultCount - remainder
+						if addedCount > 0 then
+							InventoryService.RemoveItem(player, recipe.ResultId, addedCount)
+						end
+						InventoryService.AddItems(player, latest.ConsumedIngredients)
+					end
 					Net.GetEvent(Net.Events.CraftStateSync):FireClient(player, nil)
 				end
 			end)
@@ -370,10 +383,46 @@ local function syncWorkbenchAttribute(player: Player)
 		player:SetAttribute("WorkbenchTier", tier)
 	end
 
-	local nearCampfire = hasNearbyStation(player, "campfire")
+	local nearCampfire = hasNearbyStation(player, "campfire", false)
 	if lastSyncedCampfireByPlayer[player] ~= nearCampfire then
 		lastSyncedCampfireByPlayer[player] = nearCampfire
 		player:SetAttribute("NearCampfire", nearCampfire)
+	end
+end
+
+local function bindCraftPlayerLifecycle(player: Player)
+	if playerCraftConnections[player] ~= nil then
+		return
+	end
+	local conns: { RBXScriptConnection } = {}
+	playerCraftConnections[player] = conns
+
+	local function bindCharacter(character: Model)
+		local humanoid = character:FindFirstChildOfClass("Humanoid") or character:WaitForChild("Humanoid", 5)
+		if humanoid and humanoid:IsA("Humanoid") and playerCraftConnections[player] == conns then
+			table.insert(
+				conns,
+				humanoid.Died:Connect(function()
+					CraftingService.CancelCraftForPlayer(player, true, false)
+				end)
+			)
+		end
+	end
+
+	table.insert(
+		conns,
+		player.CharacterAdded:Connect(function(character: Model)
+			task.spawn(bindCharacter, character)
+		end)
+	)
+	table.insert(
+		conns,
+		player.CharacterRemoving:Connect(function()
+			CraftingService.CancelCraftForPlayer(player, true, false)
+		end)
+	)
+	if player.Character ~= nil then
+		task.spawn(bindCharacter, player.Character)
 	end
 end
 
@@ -398,6 +447,7 @@ function CraftingService.Init()
 		lastSyncedCampfireByPlayer[player] = false
 		player:SetAttribute("WorkbenchTier", 0)
 		player:SetAttribute("NearCampfire", false)
+		bindCraftPlayerLifecycle(player)
 	end
 
 	Players.PlayerAdded:Connect(function(player: Player)
@@ -405,9 +455,17 @@ function CraftingService.Init()
 		lastSyncedCampfireByPlayer[player] = false
 		player:SetAttribute("WorkbenchTier", 0)
 		player:SetAttribute("NearCampfire", false)
+		bindCraftPlayerLifecycle(player)
 	end)
 
 	Players.PlayerRemoving:Connect(function(player: Player)
+		local conns = playerCraftConnections[player]
+		if conns ~= nil then
+			for _, conn in conns do
+				conn:Disconnect()
+			end
+			playerCraftConnections[player] = nil
+		end
 		CraftingService.CancelCraftForPlayer(player, false, true)
 		lastSyncedTierByPlayer[player] = nil
 		lastSyncedCampfireByPlayer[player] = nil

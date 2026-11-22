@@ -12,6 +12,7 @@ local Types = require(ReplicatedStorage.Shared.Types)
 local Items = require(ReplicatedStorage.Shared.configs.Items)
 local BuildingConfig = require(ReplicatedStorage.Shared.configs.BuildingConfig)
 local Defenses = require(ReplicatedStorage.Shared.configs.Defenses)
+local Recipes = require(ReplicatedStorage.Shared.configs.Recipes)
 local BuildingGeometry = require(ReplicatedStorage.Shared.BuildingGeometry)
 local Net = require(ReplicatedStorage.Shared.Net)
 local BuildingValidator = require(ServerScriptService.Server.Services.BuildingValidator)
@@ -56,6 +57,13 @@ local openTcByPlayer: { [Player]: string } = {}
 local upkeepFractions: { [Player]: { [string]: number } } = {}
 local decayFractions: { [string]: number } = {}
 local isInitialized = false
+
+local REQUIRED_WB_BY_PIECE: { [string]: number } = {}
+for _, recipe in Recipes do
+	if recipe.ResultCount == 1 and recipe.RequiredWorkbench > 0 then
+		REQUIRED_WB_BY_PIECE[recipe.ResultId] = recipe.RequiredWorkbench
+	end
+end
 
 local BaseService = {}
 
@@ -638,17 +646,37 @@ local function onBuildPlaceRequest(
 
 		local equippedSlotIdx = InventoryService.GetEquippedSlot(player)
 		local equippedSlot = InventoryService.GetEquippedItem(player)
-		local isUsingEquippedDefenseItem = pieceConfig.IsDefense == true
+		local isDeployableItem = pieceConfig.IsDefense == true
+			or pieceType == "tool_cupboard"
+			or pieceType == "workbench_1"
+			or pieceType == "workbench_2"
+			or pieceType == "workbench_3"
+		local isUsingEquippedDeployableItem = isDeployableItem
 			and equippedSlot ~= nil
 			and BuildingGeometry.CanonicalPieceType(equippedSlot.Id) == pieceType
 			and equippedSlot.Count > 0
 
-		if isUsingEquippedDefenseItem then
+		if isUsingEquippedDeployableItem then
 			if not InventoryService.ConsumeSlot(player, equippedSlotIdx, 1) then
 				sendBuildFeedback(player, false, "Недостаточно предметов", data.Base.BaseTier)
 				return
 			end
 		else
+			if pieceConfig.IsDefense == true then
+				local reqWb = REQUIRED_WB_BY_PIECE[pieceType] or 0
+				if reqWb > 0 and CraftingService.GetPlayerWorkbenchTier(player, true) < reqWb then
+					sendBuildFeedback(
+						player,
+						false,
+						string.format(
+							"Требуется верстак Lv.%d рядом или предмет в слоте",
+							reqWb
+						),
+						data.Base.BaseTier
+					)
+					return
+				end
+			end
 			if not InventoryService.RemoveItems(player, costMapToBatch(pieceConfig.Cost)) then
 				sendBuildFeedback(player, false, "Недостаточно ресурсов", data.Base.BaseTier)
 				return
@@ -838,10 +866,44 @@ local function onBuildDemolishRequest(player: Player, uidAny: any)
 			return
 		end
 
-		lastBuildActionTime[player] = now
 		local canonicalRemoved = BuildingGeometry.CanonicalPieceType(record.Piece.PieceType)
+		local removedConfig = BuildingConfig.Pieces[canonicalRemoved]
+		local playerRecords = spawnedByPlayer[player]
+		if removedConfig ~= nil and removedConfig.Category == "Stairs" and playerRecords ~= nil then
+			local reachOk, reachReason = BuildingValidator.CheckMaxWallsToTC(
+				(playerRecords :: any) :: { [string]: BuildingValidator.LivePieceEntry },
+				occupiedSockets,
+				nil,
+				uid
+			)
+			if not reachOk then
+				sendBuildFeedback(
+					player,
+					false,
+					reachReason
+						or "Нельзя снести лестницу: превышен лимит слоёв стен до TC",
+					data.Base.BaseTier
+				)
+				return
+			end
+		end
+
 		local isDefense = Defenses.Get(canonicalRemoved) ~= nil
 		if isDefense then
+			if not InventoryService.CanCraftTransaction(player, {}, canonicalRemoved, 1) then
+				sendBuildFeedback(
+					player,
+					false,
+					"Освободите слот в инвентаре для снятия защиты",
+					data.Base.BaseTier
+				)
+				return
+			end
+		end
+
+		lastBuildActionTime[player] = now
+		if isDefense then
+			InventoryService.AddItem(player, canonicalRemoved, 1)
 			if type(record.Piece.Storage) == "table" then
 				for _, slot in record.Piece.Storage do
 					if
@@ -855,10 +917,8 @@ local function onBuildDemolishRequest(player: Player, uidAny: any)
 				end
 				record.Piece.Storage = nil
 			end
-			InventoryService.AddItem(player, canonicalRemoved, 1)
 		end
 
-		local playerRecords = spawnedByPlayer[player]
 		if playerRecords ~= nil then
 			playerRecords[uid] = nil
 		end

@@ -434,6 +434,34 @@ local function hasLineOfSight(origin: Vector3, targetPart: BasePart, targetModel
 	return false
 end
 
+local function isSegmentClear(fromPos: Vector3, toPos: Vector3, defenseModel: Model): boolean
+	local delta = toPos - fromPos
+	if delta.Magnitude <= 0.05 then
+		return true
+	end
+
+	local excludeList: { Instance } = { defenseModel }
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.IgnoreWater = true
+	params.FilterDescendantsInstances = excludeList
+
+	for _ = 1, MAX_LOS_PASSES do
+		local hit = Workspace:Raycast(fromPos, delta, params)
+		if hit == nil then
+			return true
+		end
+		if hit.Instance.CanCollide == false and not hit.Instance:IsA("Terrain") then
+			table.insert(excludeList, hit.Instance)
+			params.FilterDescendantsInstances = excludeList
+		else
+			return false
+		end
+	end
+
+	return false
+end
+
 local function isCharacterInvulnerable(targetModel: Model): boolean
 	return targetModel:GetAttribute("RaidInvulnerable") == true
 		or targetModel:FindFirstChildOfClass("ForceField") ~= nil
@@ -495,6 +523,7 @@ local function tickFloorSpikes(record: ActiveDefenseRecord, now: number)
 			horizDist <= cfg.Range
 			and math.abs(tPos.Y - trapPos.Y) <= 4.0
 			and not isCharacterInvulnerable(target.Model)
+			and hasLineOfSight(trapPos + Vector3.new(0, 0.6, 0), target.Root, target.Model, record.Model)
 		then
 			hitAny = true
 			table.insert(hitPositions, tPos)
@@ -525,7 +554,12 @@ local function tickLandmine(record: ActiveDefenseRecord)
 		local dx = tPos.X - minePos.X
 		local dz = tPos.Z - minePos.Z
 		local horizDist = math.sqrt(dx * dx + dz * dz)
-		if horizDist <= cfg.Range and math.abs(tPos.Y - minePos.Y) <= 4.0 then
+		if
+			horizDist <= cfg.Range
+			and math.abs(tPos.Y - minePos.Y) <= 4.0
+			and not isCharacterInvulnerable(target.Model)
+			and hasLineOfSight(minePos + Vector3.new(0, 0.6, 0), target.Root, target.Model, record.Model)
+		then
 			record.Triggered = true
 			broadcastDefenseEffect("MineArm", minePos, { tPos })
 			task.delay(0.15, function()
@@ -681,6 +715,9 @@ local function fireTurretRound(record: ActiveDefenseRecord, targetPos: Vector3)
 	local muzzlePos = if muzzlePart and muzzlePart:IsA("BasePart")
 		then muzzlePart.Position
 		else (pivotPos + (targetPos - pivotPos).Unit * 2.5)
+	if not isSegmentClear(pivotPos, muzzlePos, record.Model) then
+		muzzlePos = pivotPos
+	end
 
 	local delta = targetPos - muzzlePos
 	local aimDir = if delta.Magnitude > 0.1 then delta.Unit else record.BaseWorldCF.LookVector
@@ -700,6 +737,9 @@ local function fireTurretRound(record: ActiveDefenseRecord, targetPos: Vector3)
 		MaxLifetime = 0.6,
 		ExcludeInstances = { record.Model },
 		OnHit = function(hitResult: RaycastResult, _vel: Vector3, _elapsed: number)
+			if defensesByUid[record.Uid] ~= record or record.Model.Parent == nil then
+				return
+			end
 			local charModel, humanoid = findCharacterModelFromPart(hitResult.Instance)
 			if charModel ~= nil and humanoid ~= nil and humanoid.Health > 0 then
 				local plr = Players:GetPlayerFromCharacter(charModel)
@@ -776,7 +816,7 @@ local function tickAutoTurret(record: ActiveDefenseRecord, now: number)
 	end
 
 	if (now - record.LastFireTime) >= cfg.Cooldown then
-		record.BurstRemaining = math.max(1, (cfg.BurstCount or 3) - 1)
+		record.BurstRemaining = math.max(0, (cfg.BurstCount or 3) - 1)
 		record.NextBurstShotTime = now + (cfg.BurstInterval or 0.14)
 		fireTurretRound(record, targetPos)
 		if record.BurstRemaining <= 0 then

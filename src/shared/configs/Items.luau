@@ -67,22 +67,22 @@ local Items: { [string]: ItemConfig } = {
 	},
 	workbench_1 = {
 		Name = "Workbench Lv.1",
-		Type = "Consumable",
+		Type = "Tool",
 		MaxStack = 1,
 	},
 	workbench_2 = {
 		Name = "Workbench Lv.2",
-		Type = "Consumable",
+		Type = "Tool",
 		MaxStack = 1,
 	},
 	workbench_3 = {
 		Name = "Workbench Lv.3",
-		Type = "Consumable",
+		Type = "Tool",
 		MaxStack = 1,
 	},
 	tool_cupboard = {
 		Name = "Tool Cupboard",
-		Type = "Consumable",
+		Type = "Tool",
 		MaxStack = 1,
 	},
 	spear = {
@@ -92,11 +92,6 @@ local Items: { [string]: ItemConfig } = {
 	},
 	metal_hatchet = {
 		Name = "Metal Hatchet",
-		Type = "Tool",
-		MaxStack = 1,
-	},
-	wooden_spear = {
-		Name = "Wooden Spear",
 		Type = "Tool",
 		MaxStack = 1,
 	},

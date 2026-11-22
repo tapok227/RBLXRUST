@@ -486,7 +486,8 @@ end
 function BuildingValidator.CheckMaxWallsToTC(
 	playerRecords: { [string]: LivePieceEntry },
 	_occupiedSockets: { [string]: { [string]: string } },
-	candidatePiece: CandidatePieceInput?
+	candidatePiece: CandidatePieceInput?,
+	excludeUid: string?
 ): (boolean, string?, number?)
 	type SurfaceNode = {
 		Uid: string,
@@ -513,7 +514,7 @@ function BuildingValidator.CheckMaxWallsToTC(
 	local tcPos: Vector3? = nil
 
 	for uid, record in playerRecords do
-		if record.Model.Parent == nil then
+		if record.Model.Parent == nil or (excludeUid ~= nil and uid == excludeUid) then
 			continue
 		end
 		local canonical = BuildingGeometry.CanonicalPieceType(record.Piece.PieceType)
@@ -668,9 +669,32 @@ function BuildingValidator.CheckMaxWallsToTC(
 	end
 
 	local hasUpperFloor: { [string]: boolean } = {}
-	local stairConnectedPairs: { [string]: boolean } = {}
+	local connectedPairs: { [string]: boolean } = {}
 
-	-- Connect stairs (0 layers when unobstructed)
+	-- Connect solid ceiling/floor slabs above lower surfaces (+1 layer) first so stairs cannot bypass solid slabs
+	for _, lower in surfaceList do
+		local lowerPos = lower.CFrame.Position
+		for _, upper in surfaceList do
+			if upper.Uid ~= lower.Uid and upper.Category == "Floor" then
+				local dy = upper.CFrame.Position.Y - lowerPos.Y
+				if dy >= 7.0 and dy <= 12.5 then
+					local dx = upper.CFrame.Position.X - lowerPos.X
+					local dz = upper.CFrame.Position.Z - lowerPos.Z
+					local xzDist = math.sqrt(dx * dx + dz * dz)
+					if xzDist <= 3.0 then
+						hasUpperFloor[lower.Uid] = true
+						local pKey = pairKey(lower.Uid, upper.Uid)
+						if not connectedPairs[pKey] then
+							connectedPairs[pKey] = true
+							addUndirectedEdge(lower.Uid, upper.Uid, 1)
+						end
+					end
+				end
+			end
+		end
+	end
+
+	-- Connect unobstructed stairs to adjacent upper floors across shared upper/lower edge
 	for _, stair in stairsList do
 		local hostNode: SurfaceNode? = if stair.ParentUid ~= nil then surfaces[stair.ParentUid] else nil
 		if hostNode == nil then
@@ -687,8 +711,9 @@ function BuildingValidator.CheckMaxWallsToTC(
 			end
 		end
 
-		if hostNode ~= nil then
+		if hostNode ~= nil and not hasUpperFloor[hostNode.Uid] then
 			local hostPos = hostNode.CFrame.Position
+			local lowerWallYOffset = getSurfaceWallYOffset(hostNode.Category)
 			for _, upper in surfaceList do
 				if upper.Uid ~= hostNode.Uid and upper.Category == "Floor" then
 					local dy = upper.CFrame.Position.Y - hostPos.Y
@@ -697,29 +722,22 @@ function BuildingValidator.CheckMaxWallsToTC(
 						local dz = upper.CFrame.Position.Z - hostPos.Z
 						local xzDist = math.sqrt(dx * dx + dz * dz)
 						local pKey = pairKey(hostNode.Uid, upper.Uid)
-						if xzDist <= 3.5 then
-							hasUpperFloor[hostNode.Uid] = true
-							if not stairConnectedPairs[pKey] then
-								stairConnectedPairs[pKey] = true
-								addUndirectedEdge(hostNode.Uid, upper.Uid, 0)
-							end
-						else
-							-- Check if stair opens onto an adjacent upper floor across an upper edge
+						if xzDist > 3.0 and not connectedPairs[pKey] then
 							for _, socket in BuildingGeometry.GetPieceSockets(hostNode.PieceType) do
 								if socket.Kind == "Edge" then
-									local upperEdgePos = (hostNode.CFrame * socket.LocalCFrame).Position
-										+ Vector3.new(0, dy, 0)
+									local lowerEdgeCF = hostNode.CFrame * socket.LocalCFrame
+									local lowerWallPos = (lowerEdgeCF * CFrame.new(0, lowerWallYOffset, 0)).Position
+									local upperEdgePos = lowerEdgeCF.Position + Vector3.new(0, dy, 0)
 									local upperWallPos = upperEdgePos + Vector3.new(0, BuildingConfig.FloorThickness, 0)
-									local upperEdgeCost = getEdgeBarrierCost(upperWallPos)
+									local stairEdgeCost =
+										math.max(getEdgeBarrierCost(lowerWallPos), getEdgeBarrierCost(upperWallPos))
 									local linked = false
 									for _, uSock in BuildingGeometry.GetPieceSockets(upper.PieceType) do
 										if uSock.Kind == "Edge" then
 											local uEdgePos = (upper.CFrame * uSock.LocalCFrame).Position
 											if (uEdgePos - upperEdgePos).Magnitude <= 1.5 then
-												if not stairConnectedPairs[pKey] then
-													stairConnectedPairs[pKey] = true
-													addUndirectedEdge(hostNode.Uid, upper.Uid, upperEdgeCost)
-												end
+												connectedPairs[pKey] = true
+												addUndirectedEdge(hostNode.Uid, upper.Uid, stairEdgeCost)
 												linked = true
 												break
 											end
@@ -730,29 +748,6 @@ function BuildingValidator.CheckMaxWallsToTC(
 									end
 								end
 							end
-						end
-					end
-				end
-			end
-		end
-	end
-
-	-- Connect solid ceiling/floor slabs above lower surfaces (+1 layer unless bridged by stairs)
-	for _, lower in surfaceList do
-		local lowerPos = lower.CFrame.Position
-		for _, upper in surfaceList do
-			if upper.Uid ~= lower.Uid and upper.Category == "Floor" then
-				local dy = upper.CFrame.Position.Y - lowerPos.Y
-				if dy >= 7.0 and dy <= 12.5 then
-					local dx = upper.CFrame.Position.X - lowerPos.X
-					local dz = upper.CFrame.Position.Z - lowerPos.Z
-					local xzDist = math.sqrt(dx * dx + dz * dz)
-					if xzDist <= 3.5 then
-						hasUpperFloor[lower.Uid] = true
-						local pKey = pairKey(lower.Uid, upper.Uid)
-						if not stairConnectedPairs[pKey] then
-							stairConnectedPairs[pKey] = true
-							addUndirectedEdge(lower.Uid, upper.Uid, 1)
 						end
 					end
 				end

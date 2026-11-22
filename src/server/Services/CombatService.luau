@@ -224,9 +224,12 @@ local function launchServerProjectile(
 	player: Player,
 	character: Model,
 	hrp: BasePart,
+	weaponId: string,
+	weapon: WeaponConfig,
 	projectileConfigId: string,
 	requestedOrigin: Vector3,
-	unitDir: Vector3
+	unitDir: Vector3,
+	chargeRatio: number
 )
 	local projCfg = Projectiles[projectileConfigId]
 	if projCfg == nil then
@@ -236,9 +239,31 @@ local function launchServerProjectile(
 		return
 	end
 
+	local clampedCharge = math.clamp(chargeRatio, 0, 1)
+	local speed = projCfg.Speed
+	if projCfg.MinSpeed ~= nil and projCfg.MaxSpeed ~= nil then
+		speed = projCfg.MinSpeed + (projCfg.MaxSpeed - projCfg.MinSpeed) * clampedCharge
+	end
+
+	local minDmg = weapon.MinDamage or projCfg.MinDamage or weapon.Damage
+	local maxDmg = weapon.Damage
+	local baseDamage = minDmg + (maxDmg - minDmg) * clampedCharge
+	local headMult = weapon.HeadshotMultiplier or projCfg.HeadshotMultiplier or 1.5
+	local isDirect = projCfg.ImpactKind == "Direct"
+
 	local safeOrigin = validateProjectileOrigin(character, hrp, requestedOrigin)
-	local initialVelocity = unitDir * projCfg.Speed
+	local initialVelocity = unitDir * speed
 	local maxLifetime = math.min(projCfg.MaxLifetime, Types.MAX_PROJECTILE_LIFETIME)
+
+	local excludeInstances: { Instance } = { character }
+	if isDirect then
+		if cachedLootFolder == nil or cachedLootFolder.Parent == nil then
+			cachedLootFolder = Workspace:FindFirstChild("LootContainers")
+		end
+		if cachedLootFolder ~= nil then
+			table.insert(excludeInstances, cachedLootFolder)
+		end
+	end
 
 	nextProjectileSeq += 1
 	local projectileId = string.format("proj_%d_%d", player.UserId, nextProjectileSeq)
@@ -262,9 +287,55 @@ local function launchServerProjectile(
 		InitialVelocity = initialVelocity,
 		Gravity = projCfg.Gravity,
 		MaxLifetime = maxLifetime,
-		ExcludeInstances = { character },
+		ExcludeInstances = excludeInstances,
 		OnHit = function(hitResult: RaycastResult)
 			releaseActiveSlot()
+			if isDirect then
+				local didHit = false
+				local isHeadshot = false
+				local targetModel, targetHumanoid = findTargetCharacter(hitResult.Instance)
+				if
+					targetModel ~= nil
+					and targetHumanoid ~= nil
+					and targetModel ~= character
+					and targetHumanoid.Health > 0
+				then
+					didHit = true
+					isHeadshot = hitResult.Instance.Name == "Head"
+					local multiplier = if isHeadshot then headMult else 1.0
+					local finalDamage = math.max(1, math.floor(baseDamage * multiplier + 0.5))
+					targetModel:SetAttribute("LastAttackerUserId", player.UserId)
+					targetHumanoid:TakeDamage(finalDamage)
+					local targetPlayer = Players:GetPlayerFromCharacter(targetModel)
+					if targetPlayer ~= nil then
+						RaidService.NotifyRaiderDamaged(targetPlayer)
+					end
+				else
+					local structDmg = projCfg.StructureDamage or weapon.Damage
+					local buildUid = findBuildPieceUid(hitResult.Instance)
+					if buildUid ~= nil then
+						local hitPiece = BaseService.DamagePiece(buildUid, structDmg, "Bullet", player)
+						if hitPiece then
+							didHit = true
+						end
+					else
+						local raidUid = findRaidPieceUid(hitResult.Instance)
+						if raidUid ~= nil then
+							local hitRaidPiece = RaidService.DamageRaidPiece(raidUid, structDmg, "Bullet", player)
+							if hitRaidPiece then
+								didHit = true
+							end
+						end
+					end
+				end
+
+				if didHit and player.Parent == Players then
+					Net.GetEvent(Net.Events.AttackEffect)
+						:FireClient(player, player, weaponId, safeOrigin, hitResult.Position, true, isHeadshot)
+				end
+				return
+			end
+
 			local blastOrigin = hitResult.Position + hitResult.Normal * 0.25
 			RaidService.TriggerExplosion({
 				Origin = blastOrigin,
@@ -341,13 +412,26 @@ local function onAttackRequest(
 	originAny: any,
 	directionAny: any,
 	_targetModelAny: any,
-	_isHeadshotHintAny: any
+	_isHeadshotHintAny: any,
+	chargeRatioAny: any
 )
 	if not SecurityService.CheckRateLimit(player, Net.Events.AttackRequest) then
 		return
 	end
 	if not SecurityService.IsValidVector3(originAny) or not SecurityService.IsValidVector3(directionAny) then
 		return
+	end
+
+	local chargeRatio = 1.0
+	if chargeRatioAny ~= nil then
+		if
+			not SecurityService.IsFiniteNumber(chargeRatioAny)
+			or (chargeRatioAny :: number) < 0
+			or (chargeRatioAny :: number) > 1
+		then
+			return
+		end
+		chargeRatio = chargeRatioAny :: number
 	end
 
 	local origin = originAny :: Vector3
@@ -384,7 +468,10 @@ local function onAttackRequest(
 
 		local now = os.clock()
 		local prevAttack = lastAttackTime[player]
-		if prevAttack ~= nil and (now - prevAttack) < weapon.Cooldown then
+		local cooldownRequired = if weapon.DrawMinTime ~= nil
+			then math.max(weapon.DrawMinTime, weapon.Cooldown)
+			else weapon.Cooldown
+		if prevAttack ~= nil and (now - prevAttack) < cooldownRequired then
 			return
 		end
 
@@ -417,7 +504,17 @@ local function onAttackRequest(
 
 	local unitDir = direction.Unit
 	if weapon.ProjectileId ~= nil then
-		launchServerProjectile(player, character, hrp, weapon.ProjectileId, origin, unitDir)
+		launchServerProjectile(
+			player,
+			character,
+			hrp,
+			weaponId,
+			weapon,
+			weapon.ProjectileId,
+			origin,
+			unitDir,
+			chargeRatio
+		)
 		return
 	end
 

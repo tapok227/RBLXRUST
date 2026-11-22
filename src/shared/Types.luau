@@ -292,11 +292,14 @@ export type WeaponCategory = "Melee" | "Ranged"
 export type WeaponConfig = {
 	Category: WeaponCategory,
 	Damage: number,
+	MinDamage: number?,
 	HeadshotMultiplier: number,
 	Range: number,
 	Cooldown: number,
 	AmmoId: string?,
 	ProjectileId: string?,
+	DrawMinTime: number?,
+	DrawFullTime: number?,
 }
 
 export type LootDropEntry = {
@@ -336,12 +339,18 @@ export type ExplosiveConfig = {
 
 export type ProjectileConfig = {
 	Id: string,
+	ImpactKind: ("Explosive" | "Direct")?,
 	Speed: number,
+	MinSpeed: number?,
+	MaxSpeed: number?,
 	Gravity: number,
 	MaxLifetime: number,
 	BlastRadius: number,
 	StructureDamage: number,
 	PlayerDamage: number,
+	Damage: number?,
+	MinDamage: number?,
+	HeadshotMultiplier: number?,
 	MinFalloffMultiplier: number,
 }
 
@@ -441,7 +450,6 @@ local Types = {
 	BASE_TOOL_MULTIPLIER = 1.0,
 	MAX_GATHER_DISTANCE_SERVER = 14,
 	MAX_GATHER_DISTANCE_CLIENT = 12,
-	MAX_STATION_DISTANCE = 16,
 	MAX_HEALTH = 100,
 	MAX_HUNGER = 100,
 	MAX_THIRST = 100,
@@ -459,7 +467,7 @@ local Types = {
 	MAX_BUILD_DISTANCE = 20,
 	MAX_RAID_TERMINAL_DISTANCE = 24,
 	MAX_PROJECTILE_LIFETIME = 10,
-	MAX_ACTIVE_PROJECTILES_PER_PLAYER = 3,
+	MAX_ACTIVE_PROJECTILES_PER_PLAYER = 6,
 }
 
 return Types

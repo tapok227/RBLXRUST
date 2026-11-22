@@ -283,8 +283,7 @@ local function teleportPlayerToPlace(
 	targetPlaceId: number,
 	zoneName: string,
 	totalTime: number,
-	teleportData: { [string]: any },
-	studioLabel: string
+	teleportData: { [string]: any }
 )
 	if teleportInProgress[player] or SecurityService.IsTeleportLocked(player) or player.Parent ~= Players then
 		return
@@ -294,16 +293,7 @@ local function teleportPlayerToPlace(
 	LootService.CloseContainerForPlayer(player, true)
 
 	if RunService:IsStudio() then
-		local released = DataService.ReleaseForTeleport(player)
-		print(
-			string.format(
-				"[ExtractionService] Studio mock teleport to %s (%d) for %s (ProfileReleased=%s)",
-				studioLabel,
-				targetPlaceId,
-				player.Name,
-				tostring(released)
-			)
-		)
+		DataService.ReleaseForTeleport(player)
 		sendExtractionState(player, {
 			Active = true,
 			ZoneName = zoneName,
@@ -314,6 +304,9 @@ local function teleportPlayerToPlace(
 
 		task.delay(STUDIO_SIM_BANNER_DURATION, function()
 			if player.Parent == Players and pendingTeleports[player] == nil then
+				DataService.RestoreAfterFailedTeleport(player)
+				teleportInProgress[player] = nil
+				SecurityService.SetTeleportLock(player, false)
 				sendExtractionState(player, {
 					Active = false,
 					ZoneName = zoneName,
@@ -380,7 +373,7 @@ local function completeExtraction(player: Player, zoneName: string, totalTime: n
 		FromPlaceId = game.PlaceId,
 		OwnerUserId = player.UserId,
 		Mode = "Base",
-	}, "PlayerBase")
+	})
 end
 
 local function onTeleportInitFailed(
