@@ -1862,7 +1862,7 @@ local function spawnRaidOutpost(session: RaidSession)
 		Model = wbModel,
 		CFrame = wbCF,
 	}
-	CraftingService.RegisterStation(wbId, "workbench_1", wbCF.Position)
+	CraftingService.RegisterStation(wbId, "workbench_1", wbCF.Position, session.Raider.UserId)
 	session.OutpostWorkbenchId = wbId
 
 	-- Respawn Pad (Sleeping Bag) inside shack

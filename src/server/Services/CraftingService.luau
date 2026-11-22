@@ -4,6 +4,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 local Workspace = game:GetService("Workspace")
 
+local Config = require(ReplicatedStorage.Shared.Config)
 local Types = require(ReplicatedStorage.Shared.Types)
 local Recipes = require(ReplicatedStorage.Shared.configs.Recipes)
 local Net = require(ReplicatedStorage.Shared.Net)
@@ -16,7 +17,9 @@ type CraftingState = Types.CraftingState
 
 type StationEntry = {
 	StationType: string,
+	Tier: number,
 	Position: Vector3,
+	OwnerUserId: number?,
 }
 
 type ActiveCraft = {
@@ -28,13 +31,30 @@ type ActiveCraft = {
 	DelayThread: thread?,
 }
 
+local WORKBENCH_TIERS: { [string]: number } = table.freeze({
+	workbench_1 = 1,
+	workbench_2 = 2,
+	workbench_3 = 3,
+})
+
+local WORKBENCH_SYNC_INTERVAL = 0.25
+
 local stations: { StationEntry } = {}
 local dynamicStations: { [string]: StationEntry } = {}
 local activeCrafts: { [Player]: ActiveCraft } = {}
+local lastSyncedTierByPlayer: { [Player]: number } = {}
 local nextToken = 0
 local isInitialized = false
 
 local CraftingService = {}
+
+local function resolveStationTier(stationType: string): number
+	return WORKBENCH_TIERS[stationType] or 0
+end
+
+local function canPlayerUseStation(player: Player, entry: StationEntry): boolean
+	return entry.OwnerUserId == nil or entry.OwnerUserId == player.UserId
+end
 
 local function scanWorkbenches()
 	table.clear(stations)
@@ -48,10 +68,14 @@ local function scanWorkbenches()
 		if child:IsA("Model") then
 			local primaryPart = child.PrimaryPart
 			local stationType = child:GetAttribute("StationType")
+			local ownerAttr = child:GetAttribute("OwnerUserId")
+			local ownerUserId: number? = if typeof(ownerAttr) == "number" then ownerAttr else nil
 			if primaryPart and typeof(stationType) == "string" and #stationType > 0 then
 				table.insert(stations, {
 					StationType = stationType,
+					Tier = resolveStationTier(stationType),
 					Position = primaryPart.Position,
+					OwnerUserId = ownerUserId,
 				})
 			else
 				warn(
@@ -65,12 +89,6 @@ local function scanWorkbenches()
 	end
 end
 
-local WORKBENCH_TIERS: { [string]: number } = table.freeze({
-	workbench_1 = 1,
-	workbench_2 = 2,
-	workbench_3 = 3,
-})
-
 local function doesStationSatisfy(availableStation: string, requiredStation: string): boolean
 	local availTier = WORKBENCH_TIERS[availableStation]
 	local reqTier = WORKBENCH_TIERS[requiredStation]
@@ -80,16 +98,44 @@ local function doesStationSatisfy(availableStation: string, requiredStation: str
 	return availableStation == requiredStation
 end
 
+function CraftingService.GetPlayerWorkbenchTier(player: Player, includePingTolerance: boolean?): number
+	local _, hrp = SecurityService.GetAliveCharacterRoot(player)
+	if not hrp then
+		return 0
+	end
+
+	local radius = Config.WORKBENCH_RADIUS + (if includePingTolerance == true then Types.PING_DISTANCE_TOLERANCE else 0)
+	local bestTier = 0
+
+	for _, entry in stations do
+		if entry.Tier > bestTier and canPlayerUseStation(player, entry) then
+			if (hrp.Position - entry.Position).Magnitude <= radius then
+				bestTier = entry.Tier
+			end
+		end
+	end
+
+	for _, entry in dynamicStations do
+		if entry.Tier > bestTier and canPlayerUseStation(player, entry) then
+			if (hrp.Position - entry.Position).Magnitude <= radius then
+				bestTier = entry.Tier
+			end
+		end
+	end
+
+	return bestTier
+end
+
 local function hasNearbyStation(player: Player, stationType: string): boolean
 	local _, hrp = SecurityService.GetAliveCharacterRoot(player)
 	if not hrp then
 		return false
 	end
 
-	local maxDistance = Types.MAX_STATION_DISTANCE + Types.PING_DISTANCE_TOLERANCE
+	local maxDistance = Config.WORKBENCH_RADIUS + Types.PING_DISTANCE_TOLERANCE
 
 	for _, entry in stations do
-		if doesStationSatisfy(entry.StationType, stationType) then
+		if canPlayerUseStation(player, entry) and doesStationSatisfy(entry.StationType, stationType) then
 			if (hrp.Position - entry.Position).Magnitude <= maxDistance then
 				return true
 			end
@@ -97,7 +143,7 @@ local function hasNearbyStation(player: Player, stationType: string): boolean
 	end
 
 	for _, entry in dynamicStations do
-		if doesStationSatisfy(entry.StationType, stationType) then
+		if canPlayerUseStation(player, entry) and doesStationSatisfy(entry.StationType, stationType) then
 			if (hrp.Position - entry.Position).Magnitude <= maxDistance then
 				return true
 			end
@@ -170,7 +216,11 @@ local function onCraftRequest(player: Player, recipeIdAny: any)
 		if SecurityService.GetAliveCharacterRoot(player) == nil then
 			return
 		end
-		if recipe.Station ~= nil and not hasNearbyStation(player, recipe.Station) then
+		if recipe.RequiredWorkbench > 0 then
+			if CraftingService.GetPlayerWorkbenchTier(player, true) < recipe.RequiredWorkbench then
+				return
+			end
+		elseif recipe.Station ~= nil and not hasNearbyStation(player, recipe.Station) then
 			return
 		end
 		if
@@ -257,13 +307,20 @@ local function onCraftCancel(player: Player)
 	CraftingService.CancelCraftForPlayer(player, true, false)
 end
 
-function CraftingService.RegisterStation(stationId: string, stationType: string, position: Vector3)
+function CraftingService.RegisterStation(
+	stationId: string,
+	stationType: string,
+	position: Vector3,
+	ownerUserId: number?
+)
 	if typeof(stationId) ~= "string" or #stationId == 0 or typeof(stationType) ~= "string" or #stationType == 0 then
 		return
 	end
 	dynamicStations[stationId] = {
 		StationType = stationType,
+		Tier = resolveStationTier(stationType),
 		Position = position,
+		OwnerUserId = ownerUserId,
 	}
 end
 
@@ -283,6 +340,14 @@ function CraftingService.GetActiveCraft(player: Player): CraftingState?
 	}
 end
 
+local function syncWorkbenchAttribute(player: Player)
+	local tier = CraftingService.GetPlayerWorkbenchTier(player, false)
+	if lastSyncedTierByPlayer[player] ~= tier then
+		lastSyncedTierByPlayer[player] = tier
+		player:SetAttribute("WorkbenchTier", tier)
+	end
+end
+
 function CraftingService.Init()
 	if isInitialized then
 		return
@@ -299,8 +364,28 @@ function CraftingService.Init()
 		CraftingService.CancelCraftForPlayer(player, false, true)
 	end)
 
+	for _, player in Players:GetPlayers() do
+		lastSyncedTierByPlayer[player] = 0
+		player:SetAttribute("WorkbenchTier", 0)
+	end
+
+	Players.PlayerAdded:Connect(function(player: Player)
+		lastSyncedTierByPlayer[player] = 0
+		player:SetAttribute("WorkbenchTier", 0)
+	end)
+
 	Players.PlayerRemoving:Connect(function(player: Player)
 		CraftingService.CancelCraftForPlayer(player, false, true)
+		lastSyncedTierByPlayer[player] = nil
+	end)
+
+	task.spawn(function()
+		while true do
+			task.wait(WORKBENCH_SYNC_INTERVAL)
+			for _, player in Players:GetPlayers() do
+				syncWorkbenchAttribute(player)
+			end
+		end
 	end)
 end
 

@@ -45,6 +45,9 @@ local Events = table.freeze({
 	RaidReportNotify = "RaidReportNotify",
 	ProjectileSpawn = "ProjectileSpawn",
 	ExplosionEffect = "ExplosionEffect",
+	VendorOpen = "VendorOpen",
+	VendorTradeRequest = "VendorTradeRequest",
+	VendorTradeFeedback = "VendorTradeFeedback",
 })
 
 local Net = {

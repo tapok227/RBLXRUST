@@ -5,11 +5,13 @@ local Types = require(ReplicatedStorage.Shared.Types)
 export type RecipeConfig = Types.RecipeConfig
 
 local Recipes: { [string]: RecipeConfig } = {
+	-- Tier 0: Hand Craft
 	craft_bandage = {
 		Id = "craft_bandage",
 		ResultId = "bandage",
 		ResultCount = 1,
 		CraftTime = 2,
+		RequiredWorkbench = 0,
 		Station = nil,
 		Ingredients = {
 			{ Id = "cloth", Count = 2 },
@@ -20,6 +22,7 @@ local Recipes: { [string]: RecipeConfig } = {
 		ResultId = "water_bottle",
 		ResultCount = 1,
 		CraftTime = 2,
+		RequiredWorkbench = 0,
 		Station = nil,
 		Ingredients = {
 			{ Id = "cloth", Count = 1 },
@@ -31,6 +34,7 @@ local Recipes: { [string]: RecipeConfig } = {
 		ResultId = "hatchet",
 		ResultCount = 1,
 		CraftTime = 4,
+		RequiredWorkbench = 0,
 		Station = nil,
 		Ingredients = {
 			{ Id = "wood", Count = 50 },
@@ -42,77 +46,45 @@ local Recipes: { [string]: RecipeConfig } = {
 		ResultId = "pickaxe",
 		ResultCount = 1,
 		CraftTime = 4,
+		RequiredWorkbench = 0,
 		Station = nil,
 		Ingredients = {
 			{ Id = "wood", Count = 50 },
 			{ Id = "stone", Count = 25 },
 		},
 	},
-	craft_tool_cupboard = {
-		Id = "craft_tool_cupboard",
-		ResultId = "tool_cupboard",
+	craft_building_plan = {
+		Id = "craft_building_plan",
+		ResultId = "building_plan",
 		ResultCount = 1,
-		CraftTime = 5,
+		CraftTime = 2,
+		RequiredWorkbench = 0,
 		Station = nil,
 		Ingredients = {
-			{ Id = "wood", Count = 200 },
+			{ Id = "wood", Count = 20 },
 		},
 	},
-	craft_workbench_1 = {
-		Id = "craft_workbench_1",
-		ResultId = "workbench_1",
+	craft_hammer = {
+		Id = "craft_hammer",
+		ResultId = "hammer",
 		ResultCount = 1,
-		CraftTime = 5,
+		CraftTime = 3,
+		RequiredWorkbench = 0,
 		Station = nil,
 		Ingredients = {
-			{ Id = "wood", Count = 100 },
-			{ Id = "stone", Count = 50 },
-		},
-	},
-	craft_workbench_2 = {
-		Id = "craft_workbench_2",
-		ResultId = "workbench_2",
-		ResultCount = 1,
-		CraftTime = 8,
-		Station = "workbench_1",
-		Ingredients = {
-			{ Id = "wood", Count = 150 },
-			{ Id = "metal_ore", Count = 120 },
-			{ Id = "scrap", Count = 80 },
-		},
-	},
-	craft_workbench_3 = {
-		Id = "craft_workbench_3",
-		ResultId = "workbench_3",
-		ResultCount = 1,
-		CraftTime = 12,
-		Station = "workbench_2",
-		Ingredients = {
-			{ Id = "high_quality_metal", Count = 40 },
-			{ Id = "tech_parts", Count = 6 },
-			{ Id = "scrap", Count = 150 },
+			{ Id = "wood", Count = 40 },
 		},
 	},
 	craft_spear = {
 		Id = "craft_spear",
 		ResultId = "spear",
 		ResultCount = 1,
-		CraftTime = 5,
-		Station = "workbench_1",
+		CraftTime = 4,
+		RequiredWorkbench = 0,
+		Station = nil,
 		Ingredients = {
 			{ Id = "wood", Count = 80 },
 			{ Id = "cloth", Count = 10 },
-		},
-	},
-	craft_metal_hatchet = {
-		Id = "craft_metal_hatchet",
-		ResultId = "metal_hatchet",
-		ResultCount = 1,
-		CraftTime = 6,
-		Station = "workbench_1",
-		Ingredients = {
-			{ Id = "wood", Count = 60 },
-			{ Id = "metal_ore", Count = 30 },
 		},
 	},
 	craft_hunting_bow = {
@@ -120,7 +92,8 @@ local Recipes: { [string]: RecipeConfig } = {
 		ResultId = "hunting_bow",
 		ResultCount = 1,
 		CraftTime = 5,
-		Station = "workbench_1",
+		RequiredWorkbench = 0,
+		Station = nil,
 		Ingredients = {
 			{ Id = "wood", Count = 60 },
 			{ Id = "cloth", Count = 15 },
@@ -131,10 +104,48 @@ local Recipes: { [string]: RecipeConfig } = {
 		ResultId = "arrow",
 		ResultCount = 4,
 		CraftTime = 2,
+		RequiredWorkbench = 0,
 		Station = nil,
 		Ingredients = {
 			{ Id = "wood", Count = 10 },
 			{ Id = "stone", Count = 5 },
+		},
+	},
+	craft_workbench_1 = {
+		Id = "craft_workbench_1",
+		ResultId = "workbench_1",
+		ResultCount = 1,
+		CraftTime = 5,
+		RequiredWorkbench = 0,
+		Station = nil,
+		Ingredients = {
+			{ Id = "wood", Count = 100 },
+			{ Id = "stone", Count = 50 },
+		},
+	},
+
+	-- Tier 1: Workbench Lv.1+
+	craft_tool_cupboard = {
+		Id = "craft_tool_cupboard",
+		ResultId = "tool_cupboard",
+		ResultCount = 1,
+		CraftTime = 5,
+		RequiredWorkbench = 1,
+		Station = "workbench_1",
+		Ingredients = {
+			{ Id = "wood", Count = 200 },
+		},
+	},
+	craft_metal_hatchet = {
+		Id = "craft_metal_hatchet",
+		ResultId = "metal_hatchet",
+		ResultCount = 1,
+		CraftTime = 6,
+		RequiredWorkbench = 1,
+		Station = "workbench_1",
+		Ingredients = {
+			{ Id = "wood", Count = 60 },
+			{ Id = "metal_ore", Count = 30 },
 		},
 	},
 	craft_pipe_pistol = {
@@ -142,6 +153,7 @@ local Recipes: { [string]: RecipeConfig } = {
 		ResultId = "pipe_pistol",
 		ResultCount = 1,
 		CraftTime = 6,
+		RequiredWorkbench = 1,
 		Station = "workbench_1",
 		Ingredients = {
 			{ Id = "metal_ore", Count = 40 },
@@ -153,9 +165,61 @@ local Recipes: { [string]: RecipeConfig } = {
 		ResultId = "pistol_ammo",
 		ResultCount = 6,
 		CraftTime = 3,
+		RequiredWorkbench = 1,
 		Station = "workbench_1",
 		Ingredients = {
 			{ Id = "metal_ore", Count = 10 },
+		},
+	},
+	craft_floor_spikes = {
+		Id = "craft_floor_spikes",
+		ResultId = "floor_spikes",
+		ResultCount = 1,
+		CraftTime = 3,
+		RequiredWorkbench = 1,
+		Station = "workbench_1",
+		Ingredients = {
+			{ Id = "wood", Count = 60 },
+			{ Id = "metal_ore", Count = 20 },
+		},
+	},
+	craft_high_quality_metal = {
+		Id = "craft_high_quality_metal",
+		ResultId = "high_quality_metal",
+		ResultCount = 5,
+		CraftTime = 6,
+		RequiredWorkbench = 1,
+		Station = "workbench_1",
+		Ingredients = {
+			{ Id = "metal_ore", Count = 20 },
+			{ Id = "scrap", Count = 10 },
+		},
+	},
+	craft_workbench_2 = {
+		Id = "craft_workbench_2",
+		ResultId = "workbench_2",
+		ResultCount = 1,
+		CraftTime = 8,
+		RequiredWorkbench = 1,
+		Station = "workbench_1",
+		Ingredients = {
+			{ Id = "wood", Count = 150 },
+			{ Id = "metal_ore", Count = 120 },
+			{ Id = "scrap", Count = 80 },
+		},
+	},
+
+	-- Tier 2: Workbench Lv.2+
+	craft_shotgun_shell = {
+		Id = "craft_shotgun_shell",
+		ResultId = "shotgun_shell",
+		ResultCount = 4,
+		CraftTime = 3,
+		RequiredWorkbench = 2,
+		Station = "workbench_2",
+		Ingredients = {
+			{ Id = "metal_ore", Count = 12 },
+			{ Id = "scrap", Count = 6 },
 		},
 	},
 	craft_satchel_charge = {
@@ -163,19 +227,61 @@ local Recipes: { [string]: RecipeConfig } = {
 		ResultId = "satchel_charge",
 		ResultCount = 1,
 		CraftTime = 6,
-		Station = "workbench_1",
+		RequiredWorkbench = 2,
+		Station = "workbench_2",
 		Ingredients = {
 			{ Id = "scrap", Count = 25 },
 			{ Id = "cloth", Count = 10 },
 			{ Id = "metal_ore", Count = 20 },
 		},
 	},
+	craft_landmine = {
+		Id = "craft_landmine",
+		ResultId = "landmine",
+		ResultCount = 1,
+		CraftTime = 5,
+		RequiredWorkbench = 2,
+		Station = "workbench_2",
+		Ingredients = {
+			{ Id = "metal_ore", Count = 35 },
+			{ Id = "scrap", Count = 20 },
+		},
+	},
+	craft_shotgun_trap = {
+		Id = "craft_shotgun_trap",
+		ResultId = "shotgun_trap",
+		ResultCount = 1,
+		CraftTime = 6,
+		RequiredWorkbench = 2,
+		Station = "workbench_2",
+		Ingredients = {
+			{ Id = "wood", Count = 50 },
+			{ Id = "metal_ore", Count = 60 },
+			{ Id = "scrap", Count = 25 },
+		},
+	},
+	craft_workbench_3 = {
+		Id = "craft_workbench_3",
+		ResultId = "workbench_3",
+		ResultCount = 1,
+		CraftTime = 12,
+		RequiredWorkbench = 2,
+		Station = "workbench_2",
+		Ingredients = {
+			{ Id = "high_quality_metal", Count = 40 },
+			{ Id = "tech_parts", Count = 6 },
+			{ Id = "scrap", Count = 150 },
+		},
+	},
+
+	-- Tier 3: Workbench Lv.3
 	craft_c4_charge = {
 		Id = "craft_c4_charge",
 		ResultId = "c4_charge",
 		ResultCount = 1,
 		CraftTime = 10,
-		Station = "workbench_2",
+		RequiredWorkbench = 3,
+		Station = "workbench_3",
 		Ingredients = {
 			{ Id = "tech_parts", Count = 4 },
 			{ Id = "scrap", Count = 60 },
@@ -187,6 +293,7 @@ local Recipes: { [string]: RecipeConfig } = {
 		ResultId = "rocket_launcher",
 		ResultCount = 1,
 		CraftTime = 12,
+		RequiredWorkbench = 3,
 		Station = "workbench_3",
 		Ingredients = {
 			{ Id = "tech_parts", Count = 5 },
@@ -199,6 +306,7 @@ local Recipes: { [string]: RecipeConfig } = {
 		ResultId = "rocket",
 		ResultCount = 1,
 		CraftTime = 5,
+		RequiredWorkbench = 3,
 		Station = "workbench_3",
 		Ingredients = {
 			{ Id = "scrap", Count = 20 },
@@ -206,88 +314,13 @@ local Recipes: { [string]: RecipeConfig } = {
 			{ Id = "cloth", Count = 5 },
 		},
 	},
-	craft_building_plan = {
-		Id = "craft_building_plan",
-		ResultId = "building_plan",
-		ResultCount = 1,
-		CraftTime = 2,
-		Station = nil,
-		Ingredients = {
-			{ Id = "wood", Count = 20 },
-		},
-	},
-	craft_hammer = {
-		Id = "craft_hammer",
-		ResultId = "hammer",
-		ResultCount = 1,
-		CraftTime = 3,
-		Station = nil,
-		Ingredients = {
-			{ Id = "wood", Count = 40 },
-		},
-	},
-	craft_high_quality_metal = {
-		Id = "craft_high_quality_metal",
-		ResultId = "high_quality_metal",
-		ResultCount = 5,
-		CraftTime = 6,
-		Station = "workbench_1",
-		Ingredients = {
-			{ Id = "metal_ore", Count = 20 },
-			{ Id = "scrap", Count = 10 },
-		},
-	},
-	craft_shotgun_shell = {
-		Id = "craft_shotgun_shell",
-		ResultId = "shotgun_shell",
-		ResultCount = 4,
-		CraftTime = 3,
-		Station = "workbench_1",
-		Ingredients = {
-			{ Id = "metal_ore", Count = 12 },
-			{ Id = "scrap", Count = 6 },
-		},
-	},
-	craft_floor_spikes = {
-		Id = "craft_floor_spikes",
-		ResultId = "floor_spikes",
-		ResultCount = 1,
-		CraftTime = 3,
-		Station = nil,
-		Ingredients = {
-			{ Id = "wood", Count = 60 },
-			{ Id = "metal_ore", Count = 20 },
-		},
-	},
-	craft_landmine = {
-		Id = "craft_landmine",
-		ResultId = "landmine",
-		ResultCount = 1,
-		CraftTime = 5,
-		Station = "workbench_1",
-		Ingredients = {
-			{ Id = "metal_ore", Count = 35 },
-			{ Id = "scrap", Count = 20 },
-		},
-	},
-	craft_shotgun_trap = {
-		Id = "craft_shotgun_trap",
-		ResultId = "shotgun_trap",
-		ResultCount = 1,
-		CraftTime = 6,
-		Station = "workbench_1",
-		Ingredients = {
-			{ Id = "wood", Count = 50 },
-			{ Id = "metal_ore", Count = 60 },
-			{ Id = "scrap", Count = 25 },
-		},
-	},
 	craft_auto_turret = {
 		Id = "craft_auto_turret",
 		ResultId = "auto_turret",
 		ResultCount = 1,
 		CraftTime = 10,
-		Station = "workbench_2",
+		RequiredWorkbench = 3,
+		Station = "workbench_3",
 		Ingredients = {
 			{ Id = "high_quality_metal", Count = 15 },
 			{ Id = "tech_parts", Count = 3 },

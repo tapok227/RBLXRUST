@@ -91,6 +91,8 @@ local NO_BUILD_FOLDERS = {
 	"Workbenches",
 	"RaidTerminal",
 	"RaidOutpostZone",
+	"VendorHubZone",
+	"QA_VendorHubZone",
 }
 
 local BuildingGeometry = {}

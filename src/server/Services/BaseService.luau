@@ -434,7 +434,7 @@ local function spawnPieceForPlayer(player: Player, piece: SavedBuildPiece)
 			syncToolCupboardForPlayer(triggerPlayer)
 		end)
 	elseif isWorkbenchType(canonicalType) and model.PrimaryPart then
-		CraftingService.RegisterStation(piece.Uid, canonicalType, model.PrimaryPart.Position)
+		CraftingService.RegisterStation(piece.Uid, canonicalType, model.PrimaryPart.Position, player.UserId)
 	elseif Defenses.Get(canonicalType) ~= nil then
 		local maxHp = BuildingGeometry.ComputeMaxHp(canonicalType, piece.Tier)
 		DefenseService.RegisterDefense({

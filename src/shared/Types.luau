@@ -247,6 +247,7 @@ export type RecipeConfig = {
 	ResultId: string,
 	ResultCount: number,
 	CraftTime: number,
+	RequiredWorkbench: number,
 	Station: string?,
 	Ingredients: { Ingredient },
 }
@@ -255,6 +256,35 @@ export type CraftingState = {
 	RecipeId: string,
 	StartTime: number,
 	EndTime: number,
+}
+
+export type VendorId = "recycler" | "weaponsmith" | "quartermaster"
+
+export type VendorOfferMode = "Buy" | "Sell"
+
+export type VendorOffer = {
+	OfferId: string,
+	Mode: VendorOfferMode,
+	GiveId: string,
+	GiveCount: number,
+	ReceiveId: string,
+	ReceiveCount: number,
+}
+
+export type VendorConfig = {
+	Id: VendorId,
+	Name: string,
+	RoleTitle: string,
+	AccentColor: Color3,
+	Description: string,
+	Offers: { VendorOffer },
+}
+
+export type VendorTradeFeedback = {
+	Success: boolean,
+	Message: string,
+	VendorId: string?,
+	OfferId: string?,
 }
 
 export type WeaponCategory = "Melee" | "Ranged"
@@ -378,7 +408,7 @@ local Types = {
 	BASE_TOOL_MULTIPLIER = 1.0,
 	MAX_GATHER_DISTANCE_SERVER = 14,
 	MAX_GATHER_DISTANCE_CLIENT = 12,
-	MAX_STATION_DISTANCE = 14,
+	MAX_STATION_DISTANCE = 16,
 	MAX_HEALTH = 100,
 	MAX_HUNGER = 100,
 	MAX_THIRST = 100,

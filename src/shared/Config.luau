@@ -3,6 +3,13 @@ return table.freeze({
 	MAX_TC_WALL_LAYERS = 2,
 	MIN_TURRET_DISTANCE = 14,
 	MIN_TRAP_DISTANCE = 6,
+	WORKBENCH_RADIUS = 16,
+	VendorHub = table.freeze({
+		Origin = Vector3.new(0, 0, -68),
+		ZoneSize = Vector3.new(44, 32, 34),
+		InteractDistance = 14,
+		MaxTradeQuantity = 10,
+	}),
 	Game = table.freeze({
 		Name = "MyRobloxGame",
 		MaxPlayers = 50,
