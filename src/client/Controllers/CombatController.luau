@@ -24,6 +24,8 @@ local DefenseController = require(script.Parent.DefenseController)
 local ToolCupboardController = require(script.Parent.ToolCupboardController)
 local VendorController = require(script.Parent.VendorController)
 local ProjectileController = require(script.Parent.ProjectileController)
+local BlueprintController = require(script.Parent.BlueprintController)
+local RecyclerController = require(script.Parent.RecyclerController)
 
 type WeaponConfig = Types.WeaponConfig
 
@@ -66,6 +68,8 @@ local function isAnyUiOpen(): boolean
 		or DefenseController.IsOpen()
 		or ToolCupboardController.IsOpen()
 		or VendorController.IsOpen()
+		or BlueprintController.IsOpen()
+		or RecyclerController.IsOpen()
 end
 
 local function hasAmmoInInventory(ammoId: string): boolean

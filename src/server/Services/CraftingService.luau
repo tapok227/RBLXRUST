@@ -11,6 +11,7 @@ local Net = require(ReplicatedStorage.Shared.Net)
 local DataService = require(ServerScriptService.Server.Services.DataService)
 local InventoryService = require(ServerScriptService.Server.Services.InventoryService)
 local SecurityService = require(ServerScriptService.Server.Services.SecurityService)
+local BlueprintService = require(ServerScriptService.Server.Services.BlueprintService)
 
 type Ingredient = Types.Ingredient
 type CraftingState = Types.CraftingState
@@ -246,6 +247,9 @@ local function onCraftRequest(player: Player, recipeIdAny: any)
 				return
 			end
 		elseif recipe.Station ~= nil and not hasNearbyStation(player, recipe.Station, true) then
+			return
+		end
+		if not BlueprintService.CanCraftRecipe(player, recipe.Id) then
 			return
 		end
 		if

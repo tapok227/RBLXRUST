@@ -48,6 +48,15 @@ local Events = table.freeze({
 	VendorOpen = "VendorOpen",
 	VendorTradeRequest = "VendorTradeRequest",
 	VendorTradeFeedback = "VendorTradeFeedback",
+	RecyclerOpen = "RecyclerOpen",
+	RecyclerClose = "RecyclerClose",
+	RecyclerAction = "RecyclerAction",
+	RecyclerStateSync = "RecyclerStateSync",
+	BlueprintSync = "BlueprintSync",
+	ResearchTableOpen = "ResearchTableOpen",
+	ResearchItemRequest = "ResearchItemRequest",
+	LearnBlueprintRequest = "LearnBlueprintRequest",
+	ResearchFeedback = "ResearchFeedback",
 })
 
 local Net = {

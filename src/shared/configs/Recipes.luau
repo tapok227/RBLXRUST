@@ -13,6 +13,8 @@ local Recipes: { [string]: RecipeConfig } = {
 		CraftTime = 2,
 		RequiredWorkbench = 0,
 		Station = nil,
+		RequiresBlueprint = false,
+		ResearchCost = 0,
 		Ingredients = {
 			{ Id = "cloth", Count = 2 },
 		},
@@ -24,6 +26,8 @@ local Recipes: { [string]: RecipeConfig } = {
 		CraftTime = 2,
 		RequiredWorkbench = 0,
 		Station = nil,
+		RequiresBlueprint = false,
+		ResearchCost = 0,
 		Ingredients = {
 			{ Id = "cloth", Count = 1 },
 			{ Id = "stone", Count = 5 },
@@ -36,6 +40,8 @@ local Recipes: { [string]: RecipeConfig } = {
 		CraftTime = 4,
 		RequiredWorkbench = 0,
 		Station = nil,
+		RequiresBlueprint = false,
+		ResearchCost = 0,
 		Ingredients = {
 			{ Id = "wood", Count = 50 },
 			{ Id = "stone", Count = 25 },
@@ -48,6 +54,8 @@ local Recipes: { [string]: RecipeConfig } = {
 		CraftTime = 4,
 		RequiredWorkbench = 0,
 		Station = nil,
+		RequiresBlueprint = false,
+		ResearchCost = 0,
 		Ingredients = {
 			{ Id = "wood", Count = 50 },
 			{ Id = "stone", Count = 25 },
@@ -60,6 +68,8 @@ local Recipes: { [string]: RecipeConfig } = {
 		CraftTime = 2,
 		RequiredWorkbench = 0,
 		Station = nil,
+		RequiresBlueprint = false,
+		ResearchCost = 0,
 		Ingredients = {
 			{ Id = "wood", Count = 20 },
 		},
@@ -71,6 +81,8 @@ local Recipes: { [string]: RecipeConfig } = {
 		CraftTime = 3,
 		RequiredWorkbench = 0,
 		Station = nil,
+		RequiresBlueprint = false,
+		ResearchCost = 0,
 		Ingredients = {
 			{ Id = "wood", Count = 40 },
 		},
@@ -82,6 +94,8 @@ local Recipes: { [string]: RecipeConfig } = {
 		CraftTime = 4,
 		RequiredWorkbench = 0,
 		Station = nil,
+		RequiresBlueprint = false,
+		ResearchCost = 0,
 		Ingredients = {
 			{ Id = "wood", Count = 80 },
 			{ Id = "cloth", Count = 10 },
@@ -94,6 +108,8 @@ local Recipes: { [string]: RecipeConfig } = {
 		CraftTime = 5,
 		RequiredWorkbench = 0,
 		Station = nil,
+		RequiresBlueprint = false,
+		ResearchCost = 0,
 		Ingredients = {
 			{ Id = "wood", Count = 60 },
 			{ Id = "cloth", Count = 15 },
@@ -106,6 +122,8 @@ local Recipes: { [string]: RecipeConfig } = {
 		CraftTime = 2,
 		RequiredWorkbench = 0,
 		Station = nil,
+		RequiresBlueprint = false,
+		ResearchCost = 0,
 		Ingredients = {
 			{ Id = "wood", Count = 10 },
 			{ Id = "stone", Count = 5 },
@@ -118,6 +136,8 @@ local Recipes: { [string]: RecipeConfig } = {
 		CraftTime = 5,
 		RequiredWorkbench = 0,
 		Station = nil,
+		RequiresBlueprint = false,
+		ResearchCost = 0,
 		Ingredients = {
 			{ Id = "wood", Count = 100 },
 			{ Id = "stone", Count = 50 },
@@ -130,6 +150,8 @@ local Recipes: { [string]: RecipeConfig } = {
 		CraftTime = 3,
 		RequiredWorkbench = 0,
 		Station = "campfire",
+		RequiresBlueprint = false,
+		ResearchCost = 0,
 		Ingredients = {
 			{ Id = "raw_meat", Count = 1 },
 			{ Id = "wood", Count = 5 },
@@ -144,8 +166,25 @@ local Recipes: { [string]: RecipeConfig } = {
 		CraftTime = 5,
 		RequiredWorkbench = 1,
 		Station = "workbench_1",
+		RequiresBlueprint = false,
+		ResearchCost = 0,
 		Ingredients = {
 			{ Id = "wood", Count = 200 },
+		},
+	},
+	craft_research_table = {
+		Id = "craft_research_table",
+		ResultId = "research_table",
+		ResultCount = 1,
+		CraftTime = 6,
+		RequiredWorkbench = 1,
+		Station = "workbench_1",
+		RequiresBlueprint = false,
+		ResearchCost = 0,
+		Ingredients = {
+			{ Id = "wood", Count = 120 },
+			{ Id = "metal_ore", Count = 80 },
+			{ Id = "scrap", Count = 75 },
 		},
 	},
 	craft_metal_hatchet = {
@@ -155,6 +194,8 @@ local Recipes: { [string]: RecipeConfig } = {
 		CraftTime = 6,
 		RequiredWorkbench = 1,
 		Station = "workbench_1",
+		RequiresBlueprint = true,
+		ResearchCost = 75,
 		Ingredients = {
 			{ Id = "wood", Count = 60 },
 			{ Id = "metal_ore", Count = 30 },
@@ -167,6 +208,8 @@ local Recipes: { [string]: RecipeConfig } = {
 		CraftTime = 6,
 		RequiredWorkbench = 1,
 		Station = "workbench_1",
+		RequiresBlueprint = true,
+		ResearchCost = 75,
 		Ingredients = {
 			{ Id = "metal_ore", Count = 40 },
 			{ Id = "wood", Count = 30 },
@@ -179,6 +222,8 @@ local Recipes: { [string]: RecipeConfig } = {
 		CraftTime = 3,
 		RequiredWorkbench = 1,
 		Station = "workbench_1",
+		RequiresBlueprint = true,
+		ResearchCost = 75,
 		Ingredients = {
 			{ Id = "metal_ore", Count = 10 },
 		},
@@ -190,6 +235,8 @@ local Recipes: { [string]: RecipeConfig } = {
 		CraftTime = 3,
 		RequiredWorkbench = 1,
 		Station = "workbench_1",
+		RequiresBlueprint = true,
+		ResearchCost = 75,
 		Ingredients = {
 			{ Id = "wood", Count = 60 },
 			{ Id = "metal_ore", Count = 20 },
@@ -202,6 +249,8 @@ local Recipes: { [string]: RecipeConfig } = {
 		CraftTime = 6,
 		RequiredWorkbench = 1,
 		Station = "workbench_1",
+		RequiresBlueprint = false,
+		ResearchCost = 0,
 		Ingredients = {
 			{ Id = "metal_ore", Count = 20 },
 			{ Id = "scrap", Count = 10 },
@@ -214,6 +263,8 @@ local Recipes: { [string]: RecipeConfig } = {
 		CraftTime = 6,
 		RequiredWorkbench = 1,
 		Station = "workbench_1",
+		RequiresBlueprint = true,
+		ResearchCost = 75,
 		Ingredients = {
 			{ Id = "scrap", Count = 20 },
 			{ Id = "cloth", Count = 10 },
@@ -227,6 +278,8 @@ local Recipes: { [string]: RecipeConfig } = {
 		CraftTime = 8,
 		RequiredWorkbench = 1,
 		Station = "workbench_1",
+		RequiresBlueprint = false,
+		ResearchCost = 0,
 		Ingredients = {
 			{ Id = "wood", Count = 150 },
 			{ Id = "metal_ore", Count = 120 },
@@ -242,6 +295,8 @@ local Recipes: { [string]: RecipeConfig } = {
 		CraftTime = 3,
 		RequiredWorkbench = 2,
 		Station = "workbench_2",
+		RequiresBlueprint = true,
+		ResearchCost = 250,
 		Ingredients = {
 			{ Id = "metal_ore", Count = 12 },
 			{ Id = "scrap", Count = 4 },
@@ -254,6 +309,8 @@ local Recipes: { [string]: RecipeConfig } = {
 		CraftTime = 5,
 		RequiredWorkbench = 2,
 		Station = "workbench_2",
+		RequiresBlueprint = true,
+		ResearchCost = 250,
 		Ingredients = {
 			{ Id = "metal_ore", Count = 35 },
 			{ Id = "scrap", Count = 20 },
@@ -266,6 +323,8 @@ local Recipes: { [string]: RecipeConfig } = {
 		CraftTime = 6,
 		RequiredWorkbench = 2,
 		Station = "workbench_2",
+		RequiresBlueprint = true,
+		ResearchCost = 250,
 		Ingredients = {
 			{ Id = "wood", Count = 50 },
 			{ Id = "metal_ore", Count = 60 },
@@ -279,6 +338,8 @@ local Recipes: { [string]: RecipeConfig } = {
 		CraftTime = 5,
 		RequiredWorkbench = 2,
 		Station = "workbench_2",
+		RequiresBlueprint = true,
+		ResearchCost = 250,
 		Ingredients = {
 			{ Id = "scrap", Count = 25 },
 			{ Id = "metal_ore", Count = 35 },
@@ -292,6 +353,8 @@ local Recipes: { [string]: RecipeConfig } = {
 		CraftTime = 12,
 		RequiredWorkbench = 2,
 		Station = "workbench_2",
+		RequiresBlueprint = false,
+		ResearchCost = 0,
 		Ingredients = {
 			{ Id = "high_quality_metal", Count = 40 },
 			{ Id = "tech_parts", Count = 6 },
@@ -307,6 +370,8 @@ local Recipes: { [string]: RecipeConfig } = {
 		CraftTime = 10,
 		RequiredWorkbench = 3,
 		Station = "workbench_3",
+		RequiresBlueprint = true,
+		ResearchCost = 500,
 		Ingredients = {
 			{ Id = "tech_parts", Count = 3 },
 			{ Id = "scrap", Count = 50 },
@@ -320,6 +385,8 @@ local Recipes: { [string]: RecipeConfig } = {
 		CraftTime = 12,
 		RequiredWorkbench = 3,
 		Station = "workbench_3",
+		RequiresBlueprint = true,
+		ResearchCost = 500,
 		Ingredients = {
 			{ Id = "tech_parts", Count = 5 },
 			{ Id = "scrap", Count = 80 },
@@ -333,6 +400,8 @@ local Recipes: { [string]: RecipeConfig } = {
 		CraftTime = 10,
 		RequiredWorkbench = 3,
 		Station = "workbench_3",
+		RequiresBlueprint = true,
+		ResearchCost = 500,
 		Ingredients = {
 			{ Id = "high_quality_metal", Count = 15 },
 			{ Id = "tech_parts", Count = 3 },

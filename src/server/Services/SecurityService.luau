@@ -67,6 +67,10 @@ local RATE_LIMIT_RULES: { [string]: RateLimitRule } = table.freeze({
 	[Net.Events.ToolCupboardAction] = table.freeze({ Capacity = 10, RefillPerSec = 6, Category = "UI" }),
 	[Net.Events.DefenseAction] = table.freeze({ Capacity = 10, RefillPerSec = 6, Category = "UI" }),
 	[Net.Events.VendorTradeRequest] = table.freeze({ Capacity = 8, RefillPerSec = 4, Category = "UI" }),
+	[Net.Events.RecyclerAction] = table.freeze({ Capacity = 12, RefillPerSec = 6, Category = "Inventory" }),
+	[Net.Events.RecyclerClose] = table.freeze({ Capacity = 8, RefillPerSec = 5, Category = "UI" }),
+	[Net.Events.ResearchItemRequest] = table.freeze({ Capacity = 4, RefillPerSec = 2, Category = "Inventory" }),
+	[Net.Events.LearnBlueprintRequest] = table.freeze({ Capacity = 6, RefillPerSec = 3, Category = "Inventory" }),
 })
 
 local bucketsByUser: { [number]: { [string]: TokenBucket } } = {}

@@ -13,6 +13,7 @@ local Signal = require(ReplicatedStorage.Shared.Signal)
 local InventoryController = require(script.Parent.InventoryController)
 local InventoryUIController = require(script.Parent.InventoryUIController)
 local LootController = require(script.Parent.LootController)
+local BlueprintController = require(script.Parent.BlueprintController)
 
 type Inventory = Types.Inventory
 type RecipeConfig = Types.RecipeConfig
@@ -172,6 +173,7 @@ local function refreshRecipeCards()
 			then currentWorkbenchTier >= recipe.RequiredWorkbench
 			elseif recipe.Station == "campfire" then nearCampfire
 			else true
+		local bpMet = BlueprintController.HasBlueprint(recipe.Id)
 		cardUI.Card.Visible = matchesFilter(recipe, stationMet)
 
 		local canAffordAll = true
@@ -188,8 +190,12 @@ local function refreshRecipeCards()
 			end
 		end
 
-		cardUI.StationLabel.TextColor3 = if stationMet then COLOR_TIER_OK else COLOR_TIER_LOCKED
-		if not stationMet then
+		cardUI.StationLabel.TextColor3 = if stationMet and bpMet then COLOR_TIER_OK else COLOR_TIER_LOCKED
+		if not bpMet then
+			cardUI.CraftButton.Text = "Need BP"
+			cardUI.CraftButton.BackgroundColor3 = COLOR_BTN_DISABLED
+			cardUI.CardStroke.Color = COLOR_STROKE_LOCKED
+		elseif not stationMet then
 			cardUI.CraftButton.Text = if recipe.Station == "campfire"
 				then "Campfire"
 				else string.format("WB %d", recipe.RequiredWorkbench)
@@ -230,15 +236,20 @@ local function refreshActiveCraftPanel()
 end
 
 local function formatRequirementText(recipe: RecipeConfig): string
+	local baseText: string
 	if recipe.Station == "campfire" then
-		return "[Requires Campfire]"
+		baseText = "[Requires Campfire]"
 	elseif recipe.RequiredWorkbench <= 0 then
-		return "[Hand Craft - Tier 0]"
+		baseText = "[Hand Craft - Tier 0]"
 	elseif recipe.RequiredWorkbench == 3 then
-		return "[Requires Workbench Lv.3]"
+		baseText = "[Requires Workbench Lv.3]"
 	else
-		return string.format("[Requires Workbench Lv.%d+]", recipe.RequiredWorkbench)
+		baseText = string.format("[Requires Workbench Lv.%d+]", recipe.RequiredWorkbench)
 	end
+	if recipe.RequiresBlueprint then
+		return baseText .. " [BP]"
+	end
+	return baseText
 end
 
 local function buildRecipeCard(parent: Instance, recipe: RecipeConfig, layoutOrder: number)
@@ -295,6 +306,9 @@ local function buildRecipeCard(parent: Instance, recipe: RecipeConfig, layoutOrd
 	btnCorner.Parent = craftBtn
 
 	craftBtn.Activated:Connect(function()
+		if not BlueprintController.HasBlueprint(recipe.Id) then
+			return
+		end
 		if recipe.RequiredWorkbench > 0 and currentWorkbenchTier < recipe.RequiredWorkbench then
 			return
 		elseif recipe.Station == "campfire" and not nearCampfire then
@@ -698,8 +712,12 @@ function CraftingController.Init()
 		refreshRecipeCards()
 	end)
 
+	BlueprintController.Changed:Connect(function()
+		refreshRecipeCards()
+	end)
+
 	InventoryUIController.OpenChanged:Connect(function(open: boolean)
-		if open and LootController.IsOpen() then
+		if open and (LootController.IsOpen() or InventoryUIController.HasActiveInterceptor()) then
 			CraftingController.SetOpen(false)
 			return
 		end

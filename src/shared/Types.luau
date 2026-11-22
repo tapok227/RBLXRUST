@@ -1,6 +1,6 @@
 --!strict
 
-export type ItemType = "Resource" | "Tool" | "Consumable"
+export type ItemType = "Resource" | "Tool" | "Consumable" | "Blueprint"
 
 export type ItemConfig = {
 	Name: string,
@@ -50,6 +50,7 @@ export type BuildPieceType =
 	| "workbench_1"
 	| "workbench_2"
 	| "workbench_3"
+	| "research_table"
 	| "assault_ladder"
 	| "barricade"
 	| "floor_spikes"
@@ -203,6 +204,7 @@ export type PlayerData = {
 	Inventory: Inventory,
 	Stats: SurvivalStats,
 	Base: BaseData,
+	UnlockedBlueprints: { [string]: boolean },
 }
 
 export type ItemBatchEntry = {
@@ -249,6 +251,8 @@ export type RecipeConfig = {
 	CraftTime: number,
 	RequiredWorkbench: number,
 	Station: string?,
+	RequiresBlueprint: boolean,
+	ResearchCost: number,
 	Ingredients: { Ingredient },
 }
 
@@ -256,6 +260,34 @@ export type CraftingState = {
 	RecipeId: string,
 	StartTime: number,
 	EndTime: number,
+}
+
+export type RecycleOutputEntry = {
+	Id: string,
+	Count: number,
+}
+
+export type RecyclerState = {
+	RecyclerId: string,
+	Name: string,
+	EfficiencyMultiplier: number,
+	IsRunning: boolean,
+	InputSlots: Inventory,
+	OutputSlots: Inventory,
+	Progress: number,
+	Position: Vector3,
+}
+
+export type ResearchTableState = {
+	TableId: string,
+	Name: string,
+	Position: Vector3,
+}
+
+export type ResearchFeedback = {
+	Success: boolean,
+	Message: string,
+	RecipeId: string?,
 }
 
 export type VendorId = "recycler" | "weaponsmith" | "quartermaster"
@@ -477,7 +509,7 @@ local Types = {
 	MAX_ATTACK_ORIGIN_OFFSET = 8,
 	MAX_EXPLOSIVE_PLACE_DISTANCE = 14,
 	RAID_DURATION = 300,
-	CURRENT_DATA_VERSION = 4,
+	CURRENT_DATA_VERSION = 5,
 	PING_DISTANCE_TOLERANCE = 2,
 	MAX_BUILD_DISTANCE = 20,
 	MAX_RAID_TERMINAL_DISTANCE = 24,

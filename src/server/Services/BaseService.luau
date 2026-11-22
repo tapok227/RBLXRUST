@@ -22,6 +22,7 @@ local ExtractionService = require(ServerScriptService.Server.Services.Extraction
 local InventoryService = require(ServerScriptService.Server.Services.InventoryService)
 local LootService = require(ServerScriptService.Server.Services.LootService)
 local CraftingService = require(ServerScriptService.Server.Services.CraftingService)
+local BlueprintService = require(ServerScriptService.Server.Services.BlueprintService)
 local SecurityService = require(ServerScriptService.Server.Services.SecurityService)
 
 type Slot = Types.Slot
@@ -335,6 +336,8 @@ local function cleanupPieceRuntime(record: LivePieceRecord)
 	local canonicalType = BuildingGeometry.CanonicalPieceType(record.Piece.PieceType)
 	if isWorkbenchType(canonicalType) then
 		CraftingService.UnregisterStation(record.Piece.Uid)
+	elseif canonicalType == "research_table" then
+		BlueprintService.UnregisterResearchTable(record.Piece.Uid)
 	end
 	if canonicalType == "tool_cupboard" and openTcByPlayer[record.Owner] == record.Piece.Uid then
 		openTcByPlayer[record.Owner] = nil
@@ -476,6 +479,8 @@ local function spawnPieceForPlayer(player: Player, piece: SavedBuildPiece)
 		end)
 	elseif isWorkbenchType(canonicalType) and model.PrimaryPart then
 		CraftingService.RegisterStation(piece.Uid, canonicalType, model.PrimaryPart.Position, player.UserId)
+	elseif canonicalType == "research_table" and model.PrimaryPart then
+		BlueprintService.RegisterResearchTable(piece.Uid, model, player.UserId)
 	elseif Defenses.Get(canonicalType) ~= nil then
 		local maxHp = BuildingGeometry.ComputeMaxHp(canonicalType, piece.Tier)
 		DefenseService.RegisterDefense({
@@ -684,6 +689,7 @@ local function onBuildPlaceRequest(
 			or pieceType == "workbench_1"
 			or pieceType == "workbench_2"
 			or pieceType == "workbench_3"
+			or pieceType == "research_table"
 		local isUsingEquippedDeployableItem = isDeployableItem
 			and equippedSlot ~= nil
 			and BuildingGeometry.CanonicalPieceType(equippedSlot.Id) == pieceType

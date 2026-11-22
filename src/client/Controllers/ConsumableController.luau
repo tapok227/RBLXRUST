@@ -12,6 +12,8 @@ local InventoryUIController = require(script.Parent.InventoryUIController)
 local CraftingController = require(script.Parent.CraftingController)
 local LootController = require(script.Parent.LootController)
 local BuildingController = require(script.Parent.BuildingController)
+local BlueprintController = require(script.Parent.BlueprintController)
+local RecyclerController = require(script.Parent.RecyclerController)
 
 local nextUseTime = 0
 local isInitialized = false
@@ -27,6 +29,8 @@ local function tryUseEquippedConsumable()
 		or InventoryUIController.IsOpen()
 		or CraftingController.IsOpen()
 		or LootController.IsOpen()
+		or BlueprintController.IsOpen()
+		or RecyclerController.IsOpen()
 	then
 		return
 	end
@@ -38,6 +42,16 @@ local function tryUseEquippedConsumable()
 	end
 
 	local itemConfig = Items[slotData.Id]
+	if itemConfig and itemConfig.Type == "Blueprint" then
+		local now = os.clock()
+		if now < nextUseTime then
+			return
+		end
+		nextUseTime = now + 0.5
+		Net.GetEvent(Net.Events.LearnBlueprintRequest):FireServer(selectedSlot)
+		return
+	end
+
 	local consumableConfig = Consumables[slotData.Id]
 	if not itemConfig or itemConfig.Type ~= "Consumable" or not consumableConfig then
 		return

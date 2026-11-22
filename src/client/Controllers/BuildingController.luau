@@ -21,6 +21,8 @@ local LootController = require(script.Parent.LootController)
 local ToolCupboardController = require(script.Parent.ToolCupboardController)
 local DefenseController = require(script.Parent.DefenseController)
 local VendorController = require(script.Parent.VendorController)
+local BlueprintController = require(script.Parent.BlueprintController)
+local RecyclerController = require(script.Parent.RecyclerController)
 
 type BuildPieceType = Types.BuildPieceType
 type BuildTier = Types.BuildTier
@@ -145,6 +147,8 @@ local function isAnyModalUiOpen(): boolean
 		or ToolCupboardController.IsOpen()
 		or DefenseController.IsOpen()
 		or VendorController.IsOpen()
+		or BlueprintController.IsOpen()
+		or RecyclerController.IsOpen()
 end
 
 local function getLocalBaseTier(): number
@@ -461,6 +465,7 @@ local function updateBuildUiVisuals()
 				local affordable = canAffordPiece(selectedType, selectedCfg)
 				local costText = if toolMode == "DefenseItem" and selectedDefCfg ~= nil
 					then string.format("1x %s (+%d оч.)", selectedCfg.Name, selectedDefCfg.CapacityCost)
+					elseif toolMode == "DefenseItem" then string.format("1x %s", selectedCfg.Name)
 					elseif selectedDefCfg ~= nil then string.format(
 						"%s (+%d оч.)",
 						formatCostText(selectedCfg.Cost),
@@ -1614,7 +1619,7 @@ local function syncModeFromEquippedTool()
 		toolMode = "Hammer"
 		upgradeModeToggle = true
 		demolishModeToggle = false
-	elseif Defenses.Get(itemId) ~= nil then
+	elseif Defenses.Get(itemId) ~= nil or itemId == "research_table" then
 		toolMode = "DefenseItem"
 		upgradeModeToggle = false
 		demolishModeToggle = false

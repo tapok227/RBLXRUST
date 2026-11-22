@@ -17,6 +17,8 @@ local InventoryUIController = require(script.Parent.InventoryUIController)
 local CraftingController = require(script.Parent.CraftingController)
 local LootController = require(script.Parent.LootController)
 local BuildingController = require(script.Parent.BuildingController)
+local BlueprintController = require(script.Parent.BlueprintController)
+local RecyclerController = require(script.Parent.RecyclerController)
 
 type RaidTargetInfo = Types.RaidTargetInfo
 type RaidHudState = Types.RaidHudState
@@ -98,7 +100,12 @@ local function canAffordCostMap(costMap: { [string]: number }?): boolean
 end
 
 local function isAnyModalUiOpen(): boolean
-	return isSelectionOpen or InventoryUIController.IsOpen() or CraftingController.IsOpen() or LootController.IsOpen()
+	return isSelectionOpen
+		or InventoryUIController.IsOpen()
+		or CraftingController.IsOpen()
+		or LootController.IsOpen()
+		or BlueprintController.IsOpen()
+		or RecyclerController.IsOpen()
 end
 
 local function formatTimeMMSS(totalSeconds: number): string

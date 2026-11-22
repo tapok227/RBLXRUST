@@ -10,6 +10,7 @@ local Config = require(ReplicatedStorage.Shared.Config)
 local Signal = require(ReplicatedStorage.Shared.Signal)
 local BuildingConfig = require(ReplicatedStorage.Shared.configs.BuildingConfig)
 local BuildingGeometry = require(ReplicatedStorage.Shared.BuildingGeometry)
+local Recipes = require(ReplicatedStorage.Shared.configs.Recipes)
 local ProfileStore = require(ServerScriptService.Server.Vendor.ProfileStore)
 local SecurityService = require(ServerScriptService.Server.Services.SecurityService)
 
@@ -67,6 +68,7 @@ local DATA_TEMPLATE = {
 		BaseTier = 0,
 		LastUpkeepTimestamp = 0,
 	},
+	UnlockedBlueprints = {},
 }
 
 local PlayerStore = ProfileStore.New(PROFILE_STORE_NAME, DATA_TEMPLATE)
@@ -169,6 +171,26 @@ local function serializeStats(stats: SurvivalStats): SurvivalStats
 		Hunger = sanitizeStat(stats.Hunger, Types.MAX_HUNGER, 0, Types.MAX_HUNGER),
 		Thirst = sanitizeStat(stats.Thirst, Types.MAX_THIRST, 0, Types.MAX_THIRST),
 	}
+end
+
+local function deserializeBlueprints(rawBlueprints: any): { [string]: boolean }
+	local unlocked: { [string]: boolean } = {}
+	if type(rawBlueprints) ~= "table" then
+		return unlocked
+	end
+	for k, v in rawBlueprints do
+		if type(k) == "string" and v == true then
+			local recipe = Recipes[k]
+			if recipe ~= nil and recipe.RequiresBlueprint then
+				unlocked[k] = true
+			end
+		end
+	end
+	return unlocked
+end
+
+local function serializeBlueprints(unlocked: { [string]: boolean }?): { [string]: boolean }
+	return deserializeBlueprints(unlocked)
 end
 
 local function isValidMountSurface(val: any): boolean
@@ -612,6 +634,12 @@ function DataService.MigrateProfileData(rawData: { [string]: any }): { [string]:
 		data.DataVersion = 4
 	end
 
+	-- Step 5: Blueprint system (UnlockedBlueprints) (v4 -> v5)
+	if Types.CURRENT_DATA_VERSION >= 5 and data.DataVersion < 5 then
+		data.UnlockedBlueprints = deserializeBlueprints(data.UnlockedBlueprints)
+		data.DataVersion = 5
+	end
+
 	data.Version = data.DataVersion
 	return data
 end
@@ -622,6 +650,7 @@ local function syncRuntimeToProfile(profile: any, runtimePlayerData: PlayerData)
 	profile.Data.Inventory = serializeInventory(runtimePlayerData.Inventory)
 	profile.Data.Stats = serializeStats(runtimePlayerData.Stats)
 	profile.Data.Base = serializeBase(runtimePlayerData.Base)
+	profile.Data.UnlockedBlueprints = serializeBlueprints(runtimePlayerData.UnlockedBlueprints)
 end
 
 local function getRaidableBasesStore(): OrderedDataStore?
@@ -726,6 +755,7 @@ local function loadPlayerProfile(player: Player)
 			),
 			Stats = deserializeStats(profile.Data.Stats),
 			Base = deserializeBase(profile.Data.Base),
+			UnlockedBlueprints = deserializeBlueprints(profile.Data.UnlockedBlueprints),
 		}
 
 		profile.OnSave:Connect(function()

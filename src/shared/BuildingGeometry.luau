@@ -384,6 +384,40 @@ function BuildingGeometry.CreateModel(
 		if not isGhost then
 			model:SetAttribute("StationType", "workbench_3")
 		end
+	elseif canonical == "research_table" then
+		primaryLocalCF = CFrame.new(0, 2.35, 0)
+		primaryPart =
+			spawnPrim("Part", model, "TableTop", Vector3.new(4.8, 0.5, 2.9), worldCF * primaryLocalCF, isGhost)
+		spawnPrim("Part", model, "LeftLeg", Vector3.new(0.55, 2.1, 2.5), worldCF * CFrame.new(-1.95, 1.05, 0), isGhost)
+		spawnPrim("Part", model, "RightLeg", Vector3.new(0.55, 2.1, 2.5), worldCF * CFrame.new(1.95, 1.05, 0), isGhost)
+		spawnPrim(
+			"Part",
+			model,
+			"BlueprintPad",
+			Vector3.new(2.4, 0.08, 1.7),
+			worldCF * CFrame.new(-0.3, 2.64, 0),
+			isGhost
+		)
+		spawnPrim(
+			"Part",
+			model,
+			"LampPost",
+			Vector3.new(0.22, 1.4, 0.22),
+			worldCF * CFrame.new(1.65, 3.3, 0.9),
+			isGhost
+		)
+		spawnPrim(
+			"Part",
+			model,
+			"LampHead",
+			Vector3.new(0.75, 0.35, 0.55),
+			worldCF * CFrame.new(1.45, 4.0, 0.75),
+			isGhost
+		)
+		if not isGhost then
+			model:SetAttribute("StationType", "research_table")
+			model:SetAttribute("IsResearchTable", true)
+		end
 	elseif canonical == "assault_ladder" then
 		primaryLocalCF = CFrame.new(-1.1, 5.0, 0)
 		primaryPart =
@@ -680,6 +714,20 @@ function BuildingGeometry.ApplyTierVisuals(model: Model, pieceType: BuildPieceTy
 					child.Color = if child.Name == "TableTop"
 						then Color3.fromRGB(68, 78, 92)
 						else Color3.fromRGB(45, 52, 62)
+				end
+			elseif canonical == "research_table" then
+				if child.Name == "BlueprintPad" then
+					child.Material = Enum.Material.SmoothPlastic
+					child.Color = Color3.fromRGB(44, 118, 210)
+				elseif child.Name == "LampHead" then
+					child.Material = Enum.Material.Neon
+					child.Color = Color3.fromRGB(255, 224, 130)
+				elseif child.Name == "TableTop" then
+					child.Material = Enum.Material.WoodPlanks
+					child.Color = Color3.fromRGB(132, 92, 54)
+				else
+					child.Material = Enum.Material.Metal
+					child.Color = Color3.fromRGB(65, 72, 82)
 				end
 			elseif canonical == "assault_ladder" then
 				child.Material = Enum.Material.WoodPlanks
@@ -1052,6 +1100,8 @@ function BuildingGeometry.GetOverlapBoxes(
 		table.insert(boxes, { CFrame = worldCF * CFrame.new(0, 1.8, 0), Size = Vector3.new(4.6, 3.2, 2.7) })
 	elseif canonical == "workbench_3" then
 		table.insert(boxes, { CFrame = worldCF * CFrame.new(0, 2.0, 0), Size = Vector3.new(5.0, 3.6, 2.9) })
+	elseif canonical == "research_table" then
+		table.insert(boxes, { CFrame = worldCF * CFrame.new(0, 1.5, 0), Size = Vector3.new(4.4, 2.6, 2.6) })
 	elseif canonical == "assault_ladder" then
 		table.insert(boxes, { CFrame = worldCF * CFrame.new(0, 4.8, 0), Size = Vector3.new(2.6, 9.2, 1.2) })
 	elseif canonical == "barricade" then

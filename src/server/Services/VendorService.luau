@@ -12,8 +12,10 @@ local Items = require(ReplicatedStorage.Shared.configs.Items)
 local Vendors = require(ReplicatedStorage.Shared.configs.Vendors)
 local Net = require(ReplicatedStorage.Shared.Net)
 local BaseService = require(ServerScriptService.Server.Services.BaseService)
+local BlueprintService = require(ServerScriptService.Server.Services.BlueprintService)
 local DataService = require(ServerScriptService.Server.Services.DataService)
 local InventoryService = require(ServerScriptService.Server.Services.InventoryService)
+local RecyclerService = require(ServerScriptService.Server.Services.RecyclerService)
 local SecurityService = require(ServerScriptService.Server.Services.SecurityService)
 
 type VendorId = Types.VendorId
@@ -411,7 +413,202 @@ local function buildVendorNpc(vendorCfg: VendorConfig, stallCF: CFrame, parent: 
 	return npcModel
 end
 
+local function createStationLabel(adornee: BasePart, titleText: string, subText: string, accent: Color3)
+	local billboard = Instance.new("BillboardGui")
+	billboard.Name = "StationLabel"
+	billboard.Adornee = adornee
+	billboard.Size = UDim2.fromOffset(180, 44)
+	billboard.StudsOffset = Vector3.new(0, 2.5, 0)
+	billboard.MaxDistance = 48
+	billboard.AlwaysOnTop = false
+	billboard.Parent = adornee
+
+	local bg = Instance.new("Frame")
+	bg.Size = UDim2.fromScale(1, 1)
+	bg.BackgroundColor3 = Color3.fromRGB(20, 22, 28)
+	bg.BackgroundTransparency = 0.2
+	bg.BorderSizePixel = 0
+	bg.Parent = billboard
+
+	local bgCorner = Instance.new("UICorner")
+	bgCorner.CornerRadius = UDim.new(0, 6)
+	bgCorner.Parent = bg
+
+	local titleLbl = Instance.new("TextLabel")
+	titleLbl.Position = UDim2.fromOffset(6, 3)
+	titleLbl.Size = UDim2.new(1, -12, 0, 19)
+	titleLbl.BackgroundTransparency = 1
+	titleLbl.Font = Enum.Font.GothamBold
+	titleLbl.TextSize = 13
+	titleLbl.TextColor3 = Color3.fromRGB(245, 245, 250)
+	titleLbl.Text = titleText
+	titleLbl.Parent = bg
+
+	local subLbl = Instance.new("TextLabel")
+	subLbl.Position = UDim2.fromOffset(6, 22)
+	subLbl.Size = UDim2.new(1, -12, 0, 18)
+	subLbl.BackgroundTransparency = 1
+	subLbl.Font = Enum.Font.GothamMedium
+	subLbl.TextSize = 11
+	subLbl.TextColor3 = accent
+	subLbl.Text = subText
+	subLbl.Parent = bg
+end
+
+local function buildSafeRecyclerModel(cf: CFrame, parent: Instance): Model
+	local model = Instance.new("Model")
+	model.Name = "SafeRecycler"
+	model:SetAttribute("IsRecycler", true)
+	model:SetAttribute("StationType", "recycler")
+	model:SetAttribute("RecyclerId", "base_safe_recycler")
+	model:SetAttribute("RecyclerName", "Safe Recycler (40% Yield)")
+	model:SetAttribute("EfficiencyMultiplier", Config.Recycler.SafeEfficiency)
+	model:SetAttribute("NoBuild", true)
+
+	createPart(
+		model,
+		"BaseFrame",
+		Vector3.new(4.8, 0.4, 3.6),
+		cf * CFrame.new(0, 0.2, 0),
+		Enum.Material.DiamondPlate,
+		Color3.fromRGB(54, 60, 68),
+		true
+	)
+	local body = createPart(
+		model,
+		"Body",
+		Vector3.new(4.2, 2.4, 3.0),
+		cf * CFrame.new(0, 1.6, 0),
+		Enum.Material.Metal,
+		Color3.fromRGB(78, 108, 134),
+		true
+	)
+	model.PrimaryPart = body
+
+	createPart(
+		model,
+		"Hopper",
+		Vector3.new(2.8, 0.9, 2.2),
+		cf * CFrame.new(-0.4, 3.25, 0),
+		Enum.Material.Metal,
+		Color3.fromRGB(98, 134, 165),
+		true
+	)
+	createPart(
+		model,
+		"GrinderDrum",
+		Vector3.new(1.8, 0.6, 1.6),
+		cf * CFrame.new(-0.4, 2.9, 0),
+		Enum.Material.DiamondPlate,
+		Color3.fromRGB(45, 48, 54),
+		true
+	)
+	createPart(
+		model,
+		"OutputChute",
+		Vector3.new(1.1, 0.9, 1.4),
+		cf * CFrame.new(1.9, 1.4, 0),
+		Enum.Material.Metal,
+		Color3.fromRGB(62, 68, 76),
+		true
+	)
+	createPart(
+		model,
+		"ControlPanel",
+		Vector3.new(1.2, 1.4, 0.4),
+		cf * CFrame.new(1.1, 2.1, 1.55),
+		Enum.Material.SmoothPlastic,
+		Color3.fromRGB(34, 38, 46),
+		true
+	)
+	createPart(
+		model,
+		"IndicatorLight",
+		Vector3.new(0.45, 0.45, 0.45),
+		cf * CFrame.new(1.1, 3.05, 1.45),
+		Enum.Material.SmoothPlastic,
+		Color3.fromRGB(145, 50, 50),
+		false
+	)
+
+	createStationLabel(body, "SAFE RECYCLER", "40% Yield (No PvP)", Color3.fromRGB(100, 185, 245))
+	model.Parent = parent
+	return model
+end
+
+local function buildSafeResearchTableModel(cf: CFrame, parent: Instance): Model
+	local model = Instance.new("Model")
+	model.Name = "SafeResearchTable"
+	model:SetAttribute("StationType", "research_table")
+	model:SetAttribute("IsResearchTable", true)
+	model:SetAttribute("TableId", "base_safe_research_table")
+	model:SetAttribute("NoBuild", true)
+
+	local tableTop = createPart(
+		model,
+		"TableTop",
+		Vector3.new(4.8, 0.5, 2.9),
+		cf * CFrame.new(0, 2.35, 0),
+		Enum.Material.WoodPlanks,
+		Color3.fromRGB(132, 92, 54),
+		true
+	)
+	model.PrimaryPart = tableTop
+
+	createPart(
+		model,
+		"LeftLeg",
+		Vector3.new(0.55, 2.1, 2.5),
+		cf * CFrame.new(-1.95, 1.05, 0),
+		Enum.Material.Metal,
+		Color3.fromRGB(65, 72, 82),
+		true
+	)
+	createPart(
+		model,
+		"RightLeg",
+		Vector3.new(0.55, 2.1, 2.5),
+		cf * CFrame.new(1.95, 1.05, 0),
+		Enum.Material.Metal,
+		Color3.fromRGB(65, 72, 82),
+		true
+	)
+	createPart(
+		model,
+		"BlueprintPad",
+		Vector3.new(2.4, 0.08, 1.7),
+		cf * CFrame.new(-0.3, 2.64, 0),
+		Enum.Material.SmoothPlastic,
+		Color3.fromRGB(44, 118, 210),
+		false
+	)
+	createPart(
+		model,
+		"LampPost",
+		Vector3.new(0.22, 1.4, 0.22),
+		cf * CFrame.new(1.65, 3.3, 0.9),
+		Enum.Material.Metal,
+		Color3.fromRGB(65, 72, 82),
+		true
+	)
+	createPart(
+		model,
+		"LampHead",
+		Vector3.new(0.75, 0.35, 0.55),
+		cf * CFrame.new(1.45, 4.0, 0.75),
+		Enum.Material.Neon,
+		Color3.fromRGB(255, 224, 130),
+		false
+	)
+
+	createStationLabel(tableTop, "RESEARCH TABLE", "Learn Blueprints (Scrap)", Color3.fromRGB(100, 175, 255))
+	model.Parent = parent
+	return model
+end
+
 function VendorService.DespawnBaseVendorHub()
+	RecyclerService.UnregisterRecycler("base_safe_recycler")
+	BlueprintService.UnregisterResearchTable("base_safe_research_table")
 	for key, _ in registeredNpcs do
 		if string.sub(key, 1, 5) == "base_" then
 			registeredNpcs[key] = nil
@@ -518,6 +715,12 @@ function VendorService.SpawnBaseVendorHub()
 			registerNpcModel(string.format("base_%s", vendorId), vendorId, npcModel)
 		end
 	end
+
+	local safeRecyclerModel = buildSafeRecyclerModel(baseCF * CFrame.new(-15, 0, 7), hubModel)
+	RecyclerService.RegisterRecycler(safeRecyclerModel, "base_safe_recycler", Config.Recycler.SafeEfficiency)
+
+	local safeResearchModel = buildSafeResearchTableModel(baseCF * CFrame.new(15, 0, 7), hubModel)
+	BlueprintService.RegisterResearchTable("base_safe_research_table", safeResearchModel, nil)
 
 	hubModel.Parent = Workspace
 	dynamicHubModel = hubModel

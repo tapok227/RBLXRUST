@@ -7,6 +7,7 @@ local UserInputService = game:GetService("UserInputService")
 local Types = require(ReplicatedStorage.Shared.Types)
 local Signal = require(ReplicatedStorage.Shared.Signal)
 local Items = require(ReplicatedStorage.Shared.configs.Items)
+local Net = require(ReplicatedStorage.Shared.Net)
 local InventoryController = require(script.Parent.InventoryController)
 local LootController = require(script.Parent.LootController)
 
@@ -26,8 +27,11 @@ local COLOR_STROKE_DEFAULT = Color3.fromRGB(75, 75, 85)
 local COLOR_STROKE_SELECTED = Color3.fromRGB(245, 190, 65)
 
 local mainFrame: Frame? = nil
+local learnBlueprintBtn: TextButton? = nil
 local slotUIs: { [number]: SlotButtonUI } = {}
 local selectedSourceSlot: number? = nil
+local slotInterceptors: { [string]: (slotIndex: number) -> boolean } = {}
+local interceptorOrder: { string } = {}
 local isOpen = false
 local isInitialized = false
 local openChangedSignal: Signal.Signal<boolean> = Signal.new()
@@ -35,6 +39,23 @@ local openChangedSignal: Signal.Signal<boolean> = Signal.new()
 local InventoryUIController = {
 	OpenChanged = openChangedSignal,
 }
+
+local function updateLearnBlueprintButton()
+	if not learnBlueprintBtn then
+		return
+	end
+	local canLearn = false
+	if selectedSourceSlot ~= nil then
+		local slotData = InventoryController.GetSlot(selectedSourceSlot)
+		if slotData ~= nil and slotData.Count > 0 then
+			local cfg = Items[slotData.Id]
+			if cfg ~= nil and cfg.Type == "Blueprint" then
+				canLearn = true
+			end
+		end
+	end
+	learnBlueprintBtn.Visible = canLearn
+end
 
 local function updateSlotSelectionHighlight()
 	for i = 1, Types.INVENTORY_SIZE do
@@ -46,6 +67,7 @@ local function updateSlotSelectionHighlight()
 			ui.Stroke.Thickness = if isSelected then 2.5 else 1.5
 		end
 	end
+	updateLearnBlueprintButton()
 end
 
 local function refreshInventoryUI(inv: Inventory)
@@ -63,6 +85,7 @@ local function refreshInventoryUI(inv: Inventory)
 			end
 		end
 	end
+	updateLearnBlueprintButton()
 end
 
 local function onSlotClicked(slotIndex: number)
@@ -73,6 +96,16 @@ local function onSlotClicked(slotIndex: number)
 			LootController.RequestDeposit(slotIndex)
 		end
 		return
+	end
+
+	for idx = #interceptorOrder, 1, -1 do
+		local key = interceptorOrder[idx]
+		local fn = slotInterceptors[key]
+		if fn ~= nil and fn(slotIndex) then
+			selectedSourceSlot = nil
+			updateSlotSelectionHighlight()
+			return
+		end
 	end
 
 	if selectedSourceSlot == nil then
@@ -232,6 +265,33 @@ local function createInventoryGui()
 		InventoryUIController.SetOpen(false)
 	end)
 
+	local learnBtn = Instance.new("TextButton")
+	learnBtn.Name = "LearnBlueprintButton"
+	learnBtn.AnchorPoint = Vector2.new(1, 0)
+	learnBtn.Position = UDim2.new(1, -48, 0, 10)
+	learnBtn.Size = UDim2.fromOffset(132, 28)
+	learnBtn.BackgroundColor3 = Color3.fromRGB(48, 128, 210)
+	learnBtn.Font = Enum.Font.GothamBold
+	learnBtn.TextSize = 12
+	learnBtn.TextColor3 = Color3.new(1, 1, 1)
+	learnBtn.Text = "Use / Learn BP"
+	learnBtn.Visible = false
+	learnBtn.Parent = frame
+
+	local learnCorner = Instance.new("UICorner")
+	learnCorner.CornerRadius = UDim.new(0, 6)
+	learnCorner.Parent = learnBtn
+
+	learnBtn.Activated:Connect(function()
+		if selectedSourceSlot ~= nil then
+			local slot = selectedSourceSlot
+			selectedSourceSlot = nil
+			updateSlotSelectionHighlight()
+			Net.GetEvent(Net.Events.LearnBlueprintRequest):FireServer(slot)
+		end
+	end)
+	learnBlueprintBtn = learnBtn
+
 	local backpackLabel = Instance.new("TextLabel")
 	backpackLabel.Name = "BackpackLabel"
 	backpackLabel.Position = UDim2.fromOffset(16, 44)
@@ -292,6 +352,25 @@ local function createInventoryGui()
 
 	mainFrame = frame
 	screenGui.Parent = playerGui
+end
+
+function InventoryUIController.RegisterSlotInterceptor(id: string, fn: (slotIndex: number) -> boolean)
+	if slotInterceptors[id] == nil then
+		table.insert(interceptorOrder, id)
+	end
+	slotInterceptors[id] = fn
+end
+
+function InventoryUIController.UnregisterSlotInterceptor(id: string)
+	slotInterceptors[id] = nil
+	local idx = table.find(interceptorOrder, id)
+	if idx ~= nil then
+		table.remove(interceptorOrder, idx)
+	end
+end
+
+function InventoryUIController.HasActiveInterceptor(): boolean
+	return #interceptorOrder > 0
 end
 
 function InventoryUIController.IsOpen(): boolean

@@ -260,3 +260,35 @@
   - `Tier 1`: вход `30 scrap` -> пресетная база приносит `250 wood, 150 stone, 180 scrap, 120 metal_ore, 3 tech_parts, 24 pistol_ammo, 5 cooked_meat`.
   - `Tier 2`: вход `75 scrap + 40 metal_ore` -> пресетная база приносит `320 scrap, 320 metal_ore, 8 tech_parts, 2 satchel_charge, 48 pistol_ammo`.
   - `Tier 3`: вход `140 scrap + 2 tech_parts` -> пресетная база приносит `500 scrap, 75 high_quality_metal, 16 tech_parts, 2 c4_charge, 3 rocket`.
+
+---
+
+## 7. Переработчик (Recycler) и Система чертежей (Blueprints / Research Table)
+
+### Переработчик (`RecyclerService` + `Recycling` + `RecyclerController`)
+- **Конфигурация (`src/shared/configs/Recycling.luau`, `Config.Recycler`):**
+  - Базовая таблица выходов (`~50%` от стоимости крафта) для компонентов (`tech_parts`), оружия, взрывчатки, боеприпасов (с `BatchSize`), ловушек, инструментов и деплойаблов.
+  - Коэффициент эффективности задаётся атрибутом `EfficiencyMultiplier`:
+    - **РТ на `MainMap` (`1.2` -> `60%` выхода):** `Workspace.POI.RadioTower.RT_Recycler_RadioTower` и `Workspace.POI.Warehouse.RT_Recycler_Warehouse`.
+    - **Безопасная зона `PlayerBase` (`0.8` -> `40%` выхода):** `SafeRecycler` внутри динамического `VendorHubZone` (спавнится `VendorService.SpawnBaseVendorHub`).
+- **Серверная очередь (`src/server/Services/RecyclerService.luau`):**
+  - `6` входных слотов (`InputSlots`) -> `6` выходных слотов (`OutputSlots`), переработка по `1` предмету (или `BatchSize`) каждые `3.0` сек (`Config.Recycler.TickInterval`).
+  - Авто-остановка при опустошении входа или заполнении всех слотов выхода (проверка `canFitAllOutputs` до списания).
+  - На РТ переработчик общий для всех игроков; при работе (`IsRunning = true`) активируются `Neon`-индикатор + `PointLight` и пространственный звук (`action_falling.ogg` в цикле, `impact_explosion_03.mp3` на тике завершения).
+- **Клиент (`src/client/Controllers/RecyclerController.luau`):** окно `RecyclerGui` с отображением эффективности (`RT 60% Yield` / `Safe 40% Yield`), перехватом кликов инвентаря (`InventoryUIController.RegisterSlotInterceptor`) для депозита, кнопкой `Turn On / Turn Off` и `Take All Output`.
+
+### Чертежи и Стол исследований (`BlueprintService` + `BlueprintController`)
+- **Профиль и миграция (`Types.luau`, `DataService.luau`):**
+  - `CURRENT_DATA_VERSION` повышен с `4` до `5`; добавлено поле `PlayerData.UnlockedBlueprints: { [string]: boolean }` и шаг миграции `v4 -> v5` (`deserializeBlueprints`).
+- **Рецепты и предметы (`Recipes.luau`, `Items.luau`, `LootTables.luau`):**
+  - В `RecipeConfig` добавлены `RequiresBlueprint: boolean` и `ResearchCost: number`.
+  - Базовые рецепты (Tier 0, `tool_cupboard`, `high_quality_metal`, `workbench_1..3`, `research_table`) открыты по умолчанию (`RequiresBlueprint = false`).
+  - Tier 1 (`75` Scrap), Tier 2 (`250` Scrap) и Tier 3 (`500` Scrap) рецепты требуют изученного чертежа (`RequiresBlueprint = true`).
+  - Физические свитки `bp_<itemId>` (`Type = "Blueprint"`) добавлены в `military_crate`, `elite_crate`, `airdrop`, `npc_rt_guard`, `npc_rt_scientist` и награды пресетных рейдов (`Config.Raid.Tiers`); их можно изучить прямо из инвентаря (`Use / Learn BP`) или с хотбара (`ConsumableController`).
+- **Стол исследований (`research_table`):**
+  - Добавлен как деплойабл в `BuildingConfig.luau` / `BuildingGeometry.luau` (из примитивов `Part`, крафтится на WB Lv.1, регистрируется в `BaseService.luau`) и установлен в безопасной зоне `VendorHubZone` (`SafeResearchTable`).
+  - В `BlueprintService.luau`: `ResearchItemRequest` забирает `1x` оригинал предмета и `ResearchCost` единиц `scrap` (с откатом при сбое), добавляет `recipe.Id` в `UnlockedBlueprints` и синхронизирует клиент через `Net.Events.BlueprintSync`.
+- **Двойная проверка крафта:** `CraftingService.luau` и `CraftingController.luau` одновременно проверяют `WorkbenchTier >= recipe.RequiredWorkbench` (или `Station`) и `BlueprintService.CanCraftRecipe` / `BlueprintController.HasBlueprint`.
+
+### Сцена Studio (`QA_TestArena`)
+- В `Workspace.QA_TestArena.Recycler_Blueprint_Stand` (рядом с `Workbench_Vendor_Stand`) размещены примитивные стенды `QA_RT_Recycler` (`1.2`), `QA_Safe_Recycler` (`0.8`) и `QA_Research_Table`, а также `Workspace.POI.QA_TestArena.QA_Elite_Blueprint_Crate` (`elite_crate` с респавном `10` сек).

@@ -10,6 +10,18 @@ return table.freeze({
 		InteractDistance = 14,
 		MaxTradeQuantity = 10,
 	}),
+	Recycler = table.freeze({
+		InputSlots = 6,
+		OutputSlots = 6,
+		TickInterval = 3.0,
+		InteractDistance = 14,
+		RtEfficiency = 1.2,
+		SafeEfficiency = 0.8,
+		DefaultEfficiency = 1.0,
+	}),
+	Research = table.freeze({
+		InteractDistance = 14,
+	}),
 	Game = table.freeze({
 		Name = "MyRobloxGame",
 		MaxPlayers = 50,
@@ -148,6 +160,7 @@ return table.freeze({
 					table.freeze({ Id = "tech_parts", Count = 3 }),
 					table.freeze({ Id = "pistol_ammo", Count = 24 }),
 					table.freeze({ Id = "cooked_meat", Count = 5 }),
+					table.freeze({ Id = "bp_pipe_pistol", Count = 1 }),
 				}),
 			}),
 			[2] = table.freeze({
@@ -167,6 +180,7 @@ return table.freeze({
 					table.freeze({ Id = "tech_parts", Count = 8 }),
 					table.freeze({ Id = "satchel_charge", Count = 2 }),
 					table.freeze({ Id = "pistol_ammo", Count = 48 }),
+					table.freeze({ Id = "bp_shotgun_trap", Count = 1 }),
 				}),
 			}),
 			[3] = table.freeze({
@@ -186,6 +200,7 @@ return table.freeze({
 					table.freeze({ Id = "tech_parts", Count = 16 }),
 					table.freeze({ Id = "c4_charge", Count = 2 }),
 					table.freeze({ Id = "rocket", Count = 3 }),
+					table.freeze({ Id = "bp_c4_charge", Count = 1 }),
 				}),
 			}),
 		}),

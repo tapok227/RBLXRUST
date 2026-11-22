@@ -185,6 +185,71 @@ local Items: { [string]: ItemConfig } = {
 		Type = "Tool",
 		MaxStack = 2,
 	},
+	research_table = {
+		Name = "Research Table",
+		Type = "Tool",
+		MaxStack = 1,
+	},
+	bp_metal_hatchet = {
+		Name = "Blueprint: Metal Hatchet",
+		Type = "Blueprint",
+		MaxStack = 1,
+	},
+	bp_pipe_pistol = {
+		Name = "Blueprint: Pipe Pistol",
+		Type = "Blueprint",
+		MaxStack = 1,
+	},
+	bp_pistol_ammo = {
+		Name = "Blueprint: Pistol Ammo",
+		Type = "Blueprint",
+		MaxStack = 1,
+	},
+	bp_floor_spikes = {
+		Name = "Blueprint: Floor Spikes",
+		Type = "Blueprint",
+		MaxStack = 1,
+	},
+	bp_satchel_charge = {
+		Name = "Blueprint: Satchel Charge",
+		Type = "Blueprint",
+		MaxStack = 1,
+	},
+	bp_shotgun_shell = {
+		Name = "Blueprint: Shotgun Shell",
+		Type = "Blueprint",
+		MaxStack = 1,
+	},
+	bp_landmine = {
+		Name = "Blueprint: Landmine",
+		Type = "Blueprint",
+		MaxStack = 1,
+	},
+	bp_shotgun_trap = {
+		Name = "Blueprint: Shotgun Trap",
+		Type = "Blueprint",
+		MaxStack = 1,
+	},
+	bp_rocket = {
+		Name = "Blueprint: Rocket",
+		Type = "Blueprint",
+		MaxStack = 1,
+	},
+	bp_c4_charge = {
+		Name = "Blueprint: Timed C4",
+		Type = "Blueprint",
+		MaxStack = 1,
+	},
+	bp_rocket_launcher = {
+		Name = "Blueprint: Rocket Launcher",
+		Type = "Blueprint",
+		MaxStack = 1,
+	},
+	bp_auto_turret = {
+		Name = "Blueprint: Auto Turret",
+		Type = "Blueprint",
+		MaxStack = 1,
+	},
 }
 
 return table.freeze(Items)
