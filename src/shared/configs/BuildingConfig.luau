@@ -115,6 +115,16 @@ local Pieces: { [BuildPieceType]: BuildPieceConfig } = table.freeze({
 		Upgradeable = false,
 		StorageSlots = 18,
 	}),
+	tool_cupboard = table.freeze({
+		Name = "Tool Cupboard",
+		Category = "Deployable",
+		Shape = "Deployable",
+		Cost = table.freeze({ wood = 200 }),
+		BaseHp = 300,
+		Upgradeable = false,
+		StorageSlots = 12,
+		MaxPerBase = 1,
+	}),
 	workbench_1 = table.freeze({
 		Name = "Workbench Lv.1",
 		Category = "Deployable",
@@ -122,6 +132,25 @@ local Pieces: { [BuildPieceType]: BuildPieceConfig } = table.freeze({
 		Cost = table.freeze({ wood = 100, stone = 50 }),
 		BaseHp = 200,
 		Upgradeable = false,
+		RequiredBaseTier = 1,
+	}),
+	workbench_2 = table.freeze({
+		Name = "Workbench Lv.2",
+		Category = "Deployable",
+		Shape = "Deployable",
+		Cost = table.freeze({ wood = 150, metal_ore = 120 }),
+		BaseHp = 350,
+		Upgradeable = false,
+		RequiredBaseTier = 2,
+	}),
+	workbench_3 = table.freeze({
+		Name = "Workbench Lv.3",
+		Category = "Deployable",
+		Shape = "Deployable",
+		Cost = table.freeze({ metal_ore = 150, high_quality_metal = 40 }),
+		BaseHp = 500,
+		Upgradeable = false,
+		RequiredBaseTier = 3,
 	}),
 })
 
@@ -141,7 +170,10 @@ local CanonicalPieceMap: { [string]: BuildPieceType } = table.freeze({
 	triangle_stairs = "triangle_stairs",
 	TriangleStairs = "triangle_stairs",
 	storage_box = "storage_box",
+	tool_cupboard = "tool_cupboard",
 	workbench_1 = "workbench_1",
+	workbench_2 = "workbench_2",
+	workbench_3 = "workbench_3",
 })
 
 local Tiers: { [BuildTier]: BuildTierConfig } = table.freeze({
@@ -213,7 +245,10 @@ local PieceOrder: { BuildPieceType } = table.freeze({
 	"square_stairs",
 	"triangle_stairs",
 	"storage_box",
+	"tool_cupboard",
 	"workbench_1",
+	"workbench_2",
+	"workbench_3",
 })
 
 local TierOrder: { BuildTier } = table.freeze({

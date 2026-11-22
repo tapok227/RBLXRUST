@@ -191,6 +191,8 @@ local function buildRecipeCard(parent: Instance, recipe: RecipeConfig, layoutOrd
 		stationLabel.TextXAlignment = Enum.TextXAlignment.Left
 		stationLabel.Text = if recipe.Station == "workbench_1"
 			then "[Workbench Lv.1]"
+			elseif recipe.Station == "workbench_2" then "[Workbench Lv.2]"
+			elseif recipe.Station == "workbench_3" then "[Workbench Lv.3]"
 			else string.format("[%s]", tostring(recipe.Station))
 		stationLabel.Parent = card
 		yOffset += 16

@@ -46,7 +46,10 @@ export type BuildPieceType =
 	| "square_stairs"
 	| "triangle_stairs"
 	| "storage_box"
+	| "tool_cupboard"
 	| "workbench_1"
+	| "workbench_2"
+	| "workbench_3"
 	| "TriangleFoundation"
 	| "WindowWall"
 	| "TriangleFloor"
@@ -91,8 +94,26 @@ export type SavedBuildPiece = {
 	GridZ: number?,
 }
 
+export type BaseTier = number
+
+export type ToolCupboardStatus = "Protected" | "Decaying"
+
+export type ToolCupboardState = {
+	Uid: string,
+	ContainerId: string,
+	BaseTier: BaseTier,
+	Status: ToolCupboardStatus,
+	HourlyUpkeep: { [string]: number },
+	ProtectedHours: number,
+	PathValid: boolean,
+	PathMessage: string?,
+	Slots: Inventory,
+}
+
 export type BaseData = {
 	Pieces: { SavedBuildPiece },
+	BaseTier: BaseTier,
+	LastUpkeepTimestamp: number,
 }
 
 export type BuildPieceConfig = {
@@ -103,6 +124,8 @@ export type BuildPieceConfig = {
 	BaseHp: number,
 	Upgradeable: boolean,
 	StorageSlots: number?,
+	RequiredBaseTier: number?,
+	MaxPerBase: number?,
 }
 
 export type BuildTierConfig = {
@@ -258,6 +281,7 @@ export type RaidTargetInfo = {
 	UserId: number,
 	DisplayName: string,
 	PieceCount: number,
+	BaseTier: number?,
 }
 
 export type RaidHudState = {
@@ -288,7 +312,7 @@ local Types = {
 	MAX_ATTACK_ORIGIN_OFFSET = 8,
 	MAX_EXPLOSIVE_PLACE_DISTANCE = 14,
 	RAID_DURATION = 300,
-	CURRENT_DATA_VERSION = 2,
+	CURRENT_DATA_VERSION = 3,
 	PING_DISTANCE_TOLERANCE = 2,
 	MAX_BUILD_DISTANCE = 20,
 	MAX_RAID_TERMINAL_DISTANCE = 24,

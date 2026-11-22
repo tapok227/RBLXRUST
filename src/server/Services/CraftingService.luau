@@ -65,6 +65,21 @@ local function scanWorkbenches()
 	end
 end
 
+local WORKBENCH_TIERS: { [string]: number } = table.freeze({
+	workbench_1 = 1,
+	workbench_2 = 2,
+	workbench_3 = 3,
+})
+
+local function doesStationSatisfy(availableStation: string, requiredStation: string): boolean
+	local availTier = WORKBENCH_TIERS[availableStation]
+	local reqTier = WORKBENCH_TIERS[requiredStation]
+	if availTier ~= nil and reqTier ~= nil then
+		return availTier >= reqTier
+	end
+	return availableStation == requiredStation
+end
+
 local function hasNearbyStation(player: Player, stationType: string): boolean
 	local _, hrp = SecurityService.GetAliveCharacterRoot(player)
 	if not hrp then
@@ -74,7 +89,7 @@ local function hasNearbyStation(player: Player, stationType: string): boolean
 	local maxDistance = Types.MAX_STATION_DISTANCE + Types.PING_DISTANCE_TOLERANCE
 
 	for _, entry in stations do
-		if entry.StationType == stationType then
+		if doesStationSatisfy(entry.StationType, stationType) then
 			if (hrp.Position - entry.Position).Magnitude <= maxDistance then
 				return true
 			end
@@ -82,7 +97,7 @@ local function hasNearbyStation(player: Player, stationType: string): boolean
 	end
 
 	for _, entry in dynamicStations do
-		if entry.StationType == stationType then
+		if doesStationSatisfy(entry.StationType, stationType) then
 			if (hrp.Position - entry.Position).Magnitude <= maxDistance then
 				return true
 			end

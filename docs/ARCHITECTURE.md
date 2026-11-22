@@ -12,16 +12,21 @@
 
 ### `Config` (`src/shared/Config.luau`)
 - `Game = { Name: string, MaxPlayers: number }`
-- `Places = { MainMap: number, PlayerBase: number }`
+- `Places = { MainMap, MainMap_Tier1, MainMap_Tier2, MainMap_Tier3, PlayerBase }`
+- `Maps` & `MapOrder` — привязка PvP-карт (`MainMap_Tier1/2/3`) к минимальному требуемому `RequiredBaseTier` (`1 / 2 / 3`).
+- `BaseProgression` — пороги структурных блоков и минимального ранга тира (`Tier1`, `Tier2`, `Tier3`).
+- `Upkeep` — разрешённые ресурсы содержания TC (`wood`, `stone`, `metal_ore`, `high_quality_metal`), расход в час на блок по тиру, `TcStorageSlots = 12`.
+- `Decay` — интервал тика (`60` с), лимит оффлайн-пересчёта (`24` ч), урон гниения в час по тирам и множитель `NoTcMultiplier = 1.5`.
 - `Extraction = { Duration: number, CooldownAfterDamage: number }`
 
 ### `Types` (`src/shared/Types.luau`)
-- Базовые типы: `ItemType`, `ItemConfig`, `Slot`, `Inventory`, `SurvivalStats`, `ConsumableConfig`, `LootContainerState`, `PlayerData` (`DataVersion = 2`), `ItemBatchEntry`, `ToolCategory`, `ToolConfig`, `NodeType`, `NodeConfig`, `NodeClientState`, `Ingredient`, `RecipeConfig`, `CraftingState`, `WeaponCategory`, `WeaponConfig`, `LootDropEntry`, `LootTableConfig`, `WorldEventPayload`, `ExtractionState`, `ExplosiveConfig`, `ProjectileConfig`, `ExplosionParams`, `ExplosionResult`, `RaidTargetInfo`, `RaidHudState`.
+- Базовые типы: `ItemType`, `ItemConfig`, `Slot`, `Inventory`, `SurvivalStats`, `ConsumableConfig`, `LootContainerState`, `PlayerData` (`DataVersion = 3`), `ItemBatchEntry`, `ToolCategory`, `ToolConfig`, `NodeType`, `NodeConfig`, `NodeClientState`, `Ingredient`, `RecipeConfig`, `CraftingState`, `WeaponCategory`, `WeaponConfig`, `LootDropEntry`, `LootTableConfig`, `WorldEventPayload`, `ExtractionState`, `ExplosiveConfig`, `ProjectileConfig`, `ExplosionParams`, `ExplosionResult`, `RaidTargetInfo` (`BaseTier?`), `RaidHudState`, `BaseTier`, `ToolCupboardStatus`, `ToolCupboardState`.
 - Типы строительства:
-  - `BuildPieceType = "foundation" | "triangle_foundation" | "wall" | "doorway" | "window_wall" | "roof" | "triangle_floor" | "square_stairs" | "triangle_stairs" | "storage_box" | "workbench_1" | ...`
+  - `BuildPieceType = "foundation" | "triangle_foundation" | "wall" | "doorway" | "window_wall" | "roof" | "triangle_floor" | "square_stairs" | "triangle_stairs" | "storage_box" | "tool_cupboard" | "workbench_1" | "workbench_2" | "workbench_3" | ...`
   - `BuildTier = "wood" | "stone" | "metal" | "armored"`
+  - `BaseData = { Pieces: { SavedBuildPiece }, BaseTier: BaseTier, LastUpkeepTimestamp: number }`
   - `SavedBuildPiece = { Uid: string, PieceType: BuildPieceType, Tier: BuildTier, PosX: number, PosY: number, PosZ: number, RotY: number, ParentUid: string?, AnchorUid: string?, SocketId: string?, Hp: number, LastDamagedAt: number?, Storage: { [string]: Slot }?, GridX: number?, GridY: number?, GridZ: number? }`
-- Константы: `INVENTORY_SIZE = 30`, `HOTBAR_SIZE = 6`, `MAX_GATHER_DISTANCE_SERVER = 14`, `MAX_GATHER_DISTANCE_CLIENT = 12`, `MAX_STATION_DISTANCE = 14`, `MAX_LOOT_DISTANCE = 14`, `MAX_BUILD_DISTANCE = 20`, `PING_DISTANCE_TOLERANCE = 2`, `CURRENT_DATA_VERSION = 2`.
+- Константы: `INVENTORY_SIZE = 30`, `HOTBAR_SIZE = 6`, `MAX_GATHER_DISTANCE_SERVER = 14`, `MAX_GATHER_DISTANCE_CLIENT = 12`, `MAX_STATION_DISTANCE = 14`, `MAX_LOOT_DISTANCE = 14`, `MAX_BUILD_DISTANCE = 20`, `PING_DISTANCE_TOLERANCE = 2`, `CURRENT_DATA_VERSION = 3`.
 
 ### `Signal` (`src/shared/Signal.luau`) & `Janitor` (`src/shared/Janitor.luau`)
 - `Signal.new<T...>(): Signal<T...>` -> Создание типизированного сигнала (`:Connect`, `:Once`, `:Fire`, `:Destroy`).
@@ -36,13 +41,13 @@
 - `Ballistics.GetActiveCount(): number` -> Количество активных снарядов.
 
 ### `Net` (`src/shared/Net.luau`)
-- `Net.Events`: `InventorySync`, `InventoryMove`, `HotbarSelect`, `HitNode`, `NodeUpdated`, `CraftRequest`, `CraftCancel`, `CraftStateSync`, `UseConsumable`, `OpenContainer`, `CloseContainer`, `LootTakeSlot`, `ContainerDepositSlot`, `AttackRequest`, `AttackEffect`, `WorldEventNotify`, `ExtractionStateSync`, `RequestReturnToMap`, `BuildPlaceRequest`, `BuildUpgradeRequest`, `BuildDemolishRequest`, `BaseStateSync`, `RaidListRequest`, `RaidListSync`, `StartRaidRequest`, `PlaceExplosiveRequest`, `RaidHudSync`, `RaidExtractRequest`, `ProjectileSpawn`, `ExplosionEffect`.
+- `Net.Events`: `InventorySync`, `InventoryMove`, `HotbarSelect`, `HitNode`, `NodeUpdated`, `CraftRequest`, `CraftCancel`, `CraftStateSync`, `UseConsumable`, `OpenContainer`, `CloseContainer`, `LootTakeSlot`, `ContainerDepositSlot`, `AttackRequest`, `AttackEffect`, `WorldEventNotify`, `ExtractionStateSync`, `RequestReturnToMap`, `BuildPlaceRequest`, `BuildUpgradeRequest`, `BuildDemolishRequest`, `BaseStateSync`, `BuildFeedback`, `ToolCupboardSync`, `ToolCupboardAction`, `RaidListRequest`, `RaidListSync`, `StartRaidRequest`, `PlaceExplosiveRequest`, `RaidHudSync`, `RaidExtractRequest`, `ProjectileSpawn`, `ExplosionEffect`.
 - `Net.InitServer()` -> Создаёт папку `Remotes` и кэширует все `RemoteEvent`.
 - `Net.GetEvent(eventName: string): RemoteEvent` -> Возвращает кэшированный `RemoteEvent`.
 
 ### Конфиги (`src/shared/configs/`)
-- `Items.luau`, `Consumables.luau`, `Tools.luau`, `Nodes.luau`, `Recipes.luau`, `Weapons.luau`, `Projectiles.luau`, `Explosives.luau`, `LootTables.luau`.
-- `BuildingConfig.luau`: `GridSize = 12`, `WallHeight = 10`, `WallBodyHeight = 9.2`, `Thickness = 0.8`, `FoundationThickness = 1.0`, `Pieces` (11 модулей), `Tiers` (`wood`, `stone`, `metal`, `armored`).
+- `Items.luau`, `Consumables.luau`, `Tools.luau`, `Nodes.luau`, `Recipes.luau` (включая `craft_tool_cupboard`, `craft_workbench_2`, `craft_workbench_3`), `Weapons.luau`, `Projectiles.luau`, `Explosives.luau`, `LootTables.luau`.
+- `BuildingConfig.luau`: `GridSize = 12`, `WallHeight = 10`, `WallBodyHeight = 9.2`, `Thickness = 0.8`, `FoundationThickness = 1.0`, `Pieces` (14 модулей: структурные блоки, `storage_box`, `tool_cupboard` с `MaxPerBase = 1` и `StorageSlots = 12`, `workbench_1`/`workbench_2`/`workbench_3` с `RequiredBaseTier = 1/2/3`), `Tiers` (`wood`, `stone`, `metal`, `armored`).
 
 ### `BuildingGeometry` (`src/shared/BuildingGeometry.luau`)
 - `BuildingGeometry.CanonicalPieceType(pieceType: string): BuildPieceType` -> Приводит алиасы типа модуля к каноническому `snake_case`.
@@ -73,12 +78,12 @@
 - `SecurityService.Init()` -> Инициализация лимитеров и очистки при выходе игрока.
 
 ### `DataService` (`src/server/Services/DataService.luau`)
-- `DataService.MigrateProfileData(rawData): { [string]: any }` -> Пошаговая миграция профиля `DataVersion 1 -> 2` (`(GridX, GridY, GridZ)` -> `(PosX, PosY, PosZ)`, `ParentUid`, канонические имена модулей).
+- `DataService.MigrateProfileData(rawData): { [string]: any }` -> Пошаговая миграция профиля `DataVersion 1 -> 2 -> 3` (`(GridX, GridY, GridZ)` -> `(PosX, PosY, PosZ)`, `ParentUid`, канонические имена модулей, `BaseTier`, `LastUpkeepTimestamp`).
 - `DataService.GetData(player): PlayerData?` -> Возвращает активный профиль игрока.
 - `DataService.OnDataLoaded(callback): Signal.Connection` -> Подписка на загрузку профиля.
 - `DataService.OnBeforeUnload(callback)` -> Хук перед сохранением/выгрузкой профиля.
 - `DataService.ReleaseForTeleport(player): boolean` / `RestoreAfterFailedTeleport(player): boolean` -> Безопасное освобождение и восстановление сессии `ProfileStore`.
-- `DataService.RegisterRaidableBase(player)` / `GetRaidTargets(excludeUserId, limit)` / `LoadBaseSnapshot(targetUserId)` -> Индексация и загрузка снимков баз для рейдов.
+- `DataService.RegisterRaidableBase(player)` / `GetRaidTargets(excludeUserId, limit)` / `LoadBaseSnapshot(targetUserId)` -> Индексация и загрузка снимков баз для рейдов (включая `BaseTier`).
 - `DataService.Init()` -> Управление жизненным циклом профилей `ProfileStore`.
 
 ### `InventoryService` (`src/server/Services/InventoryService.luau`)
@@ -94,7 +99,7 @@
 - `ResourceService.Init()` -> Обработка добычи `HitNode`, кулдауны, рассылка `NodeUpdated` и респавн нод.
 
 ### `CraftingService` (`src/server/Services/CraftingService.luau`)
-- `CraftingService.RegisterStation(stationId, stationType, position)` / `UnregisterStation(stationId)` -> Учёт динамических верстаков.
+- `CraftingService.RegisterStation(stationId, stationType, position)` / `UnregisterStation(stationId)` -> Учёт динамических верстаков (`workbench_1`, `workbench_2`, `workbench_3` с иерархической совместимостью по тирам).
 - `CraftingService.GetActiveCraft(player): CraftingState?` / `CancelCraftForPlayer(player, syncClient, bypassLock?)` -> Управление очередью крафта игрока.
 - `CraftingService.Init()` -> Обработка `CraftRequest` / `CraftCancel` и возврат ресурсов при выходе/смерти.
 
@@ -120,6 +125,7 @@
 - `CombatService.Init()` -> Обработка `AttackRequest` (хитскан, ближний бой и баллистические снаряды через `Ballistics.Spawn`, урон по постройкам и гуманоидам).
 
 ### `ExtractionService` (`src/server/Services/ExtractionService.luau`)
+- `ExtractionService.CanAccessMap(player, mapKey, playerBaseTier): (boolean, string?)` -> Проверка допуска к PvP-карте (`MainMap_Tier1/2/3`) по `BaseTier` игрока.
 - `ExtractionService.GetExtractionState(player): ExtractionState?` / `IsInCombatCooldown(player): boolean` -> Статус эвакуации игрока.
 - `ExtractionService.RecordDamage(player)` -> Сброс таймера эвакуации при получении урона.
 - `ExtractionService.Init()` -> Проверка зон эвакуации и телепорт на `PlayerBase`.
@@ -130,20 +136,27 @@
 - `BuildingValidator.RegisterOccupationsForRecord(record, playerRecords, occupiedSockets, occupiedWorldKeys)` / `UnregisterSocketsForPiece(uid, occupiedSockets, occupiedWorldKeys)` -> Регистрация и освобождение занятых сокетов (включая смежные грани и квантованные мировые ключи).
 - `BuildingValidator.HasSupportingWallOnEdges(anchorEntry, playerRecords, occupiedSockets): boolean` -> Проверяет наличие несущей стены на гранях перед установкой перекрытия.
 - `BuildingValidator.CheckParallelWallStacking(targetType, targetCF, allRecordsByUid): (boolean, string?)` -> Блокирует установку параллельных стен (угол между нормалями `< 15°`, радиус `6` studs, расстояние `< 3.5` studs).
-- `BuildingValidator.CheckWorldOverlap(pieceType, targetCF, excludeInstances?, isDetachedFoundation?): OverlapCheckResult` -> Проверяет `Workspace:GetPartBoundsInBox` с хитбоксом `0.85` против построек, игроков и запрещённых зон (`POI`, `ExtractionZones`, `AirdropZones`, `ResourceNodes`, `Workbenches`, `RaidTerminal`).
-- `BuildingValidator.ValidatePlacement(input): PlacementValidationResult` -> Полная серверная валидация размещения блока (дистанция `<= 20 + PING_DISTANCE_TOLERANCE`, сокеты, опора, анти-стакинг, коллизии).
+- `BuildingValidator.IsInRaidOutpostZone(pieceType, targetCF): boolean` -> Проверяет попадание постройки в зону рейд-кибитки (`RaidOutpostZone`).
+- `BuildingValidator.CanReachToolCupboard(playerRecords, occupiedSockets, candidatePiece?): (boolean, string?)` -> Лёгкий BFS-поиск по сокетам `BuildingGeometry` от внешнего периметра до блока с `tool_cupboard` (проходимы открытые грани, `doorway`, `window_wall`, лестницы; глухие `wall` блокируют путь).
+- `BuildingValidator.CheckWorldOverlap(pieceType, targetCF, excludeInstances?, isDetachedFoundation?): OverlapCheckResult` -> Проверяет `Workspace:GetPartBoundsInBox` с хитбоксом `0.85` против построек, игроков и запрещённых зон (`POI`, `ExtractionZones`, `AirdropZones`, `ResourceNodes`, `Workbenches`, `RaidTerminal`, `RaidOutpostZone`).
+- `BuildingValidator.ValidatePlacement(input): PlacementValidationResult` -> Полная серверная валидация размещения блока (лимит `MaxPerBase`, проверка `RequiredBaseTier` для верстаков, запрет `RaidOutpostZone`, BFS-доступность TC, дистанция `<= 20 + PING_DISTANCE_TOLERANCE`, сокеты, опора, анти-стакинг, коллизии).
 
 ### `BaseService` (`src/server/Services/BaseService.luau`)
+- `BaseService.ComputeHourlyUpkeep(pieces): { [string]: number }` -> Расчёт часового расхода ресурсов на содержание базы по тирам блоков.
+- `BaseService.ComputeBaseTier(pieces, hasActiveTc): number` -> Серверный расчёт `BaseTier` (`0..3`) по наличию TC и количеству/тиру несущих конструкций.
+- `BaseService.GetPlayerBaseTier(player): number` -> Текущий `BaseTier` игрока.
+- `BaseService.BuildToolCupboardState(player): ToolCupboardState?` -> Сборка состояния шкафа (слоты, статус `Protected`/`Decaying`, `ProtectedHours`, валидность пути BFS).
+- `BaseService.ProcessUpkeepAndDecay(player, elapsedSeconds): boolean` -> Списание ресурсов из TC или нанесение периодического урона гниения по внешним блокам (с оффлайн-пересчётом по `os.time()` при входе и тиком каждые `60` с) с пересчётом `BaseTier`.
 - `BaseService.IsBaseMode(): boolean` / `CanBuild(player): boolean` -> Проверка разрешения на строительство.
-- `BaseService.DamagePiece(uid, rawDamage, damageKind, attacker?): (boolean, boolean)` -> Нанесение урона постройке с записью `LastDamagedAt = os.clock()` и атрибута `LastDamagedAt`.
+- `BaseService.DamagePiece(uid, rawDamage, damageKind, attacker?): (boolean, boolean)` -> Нанесение урона постройке с записью `LastDamagedAt = os.clock()` и пересчётом `BaseTier` при разрушении.
 - `BaseService.GetLivePieceModelsInRadius(origin, radius)` / `GetPlayerPieces(player)` / `GetStorageContainerId(player, uid)` -> Доступ к постройкам игрока.
-- `BaseService.Init()` -> Спавн базы, обработка `BuildPlaceRequest`, `BuildUpgradeRequest` (4 тира `wood -> stone -> metal -> armored`, запрет даунгрейда, рейд-блок `30` с после урона) и `BuildDemolishRequest`.
+- `BaseService.Init()` -> Спавн базы (включая `ProximityPrompt` для TC и регистрацию верстаков `workbench_1/2/3`), обработка `BuildPlaceRequest`, `BuildUpgradeRequest`, `BuildDemolishRequest`, `ToolCupboardAction`, `RequestReturnToMap` (с проверкой `ExtractionService.CanAccessMap`), `BuildFeedback` и фоновый цикл Upkeep/Decay.
 
 ### `RaidService` (`src/server/Services/RaidService.luau`)
 - `RaidService.HasExplosionLineOfSight(blastOrigin, targetModel, excludeInstances?, isCharacterTarget?): boolean` -> Проверка LoS взрыва с окклюзией стенами.
 - `RaidService.TriggerExplosion(params: ExplosionParams): ExplosionResult` -> Расчёт AoE-взрыва с учётом `ExplosionResistance` тира и записью `LastDamagedAt = os.clock()` при любом уроне.
-- `RaidService.EnterStudioMockRaid(player, targetUserId): boolean` / `IsPlayerInRaid(player): boolean` / `GetActiveSessionInfo(player): RaidHudState?` -> Управление рейд-сессией (спавн моделей через `BuildingGeometry.CreateModel` и `ApplyTierVisuals`).
-- `RaidService.Init()` -> Обработка `RaidListRequest`, `StartRaidRequest`, `PlaceExplosiveRequest`, `RaidExtractRequest`.
+- `RaidService.EnterStudioMockRaid(player, targetUserId): boolean` / `IsPlayerInRaid(player): boolean` / `GetActiveSessionInfo(player): RaidHudState?` -> Управление рейд-сессией (спавн моделей через `BuildingGeometry.CreateModel` и `ApplyTierVisuals`, лут из `storage_box` и `tool_cupboard`).
+- `RaidService.Init()` -> Обработка `RaidListRequest`, `StartRaidRequest` (с проверкой `attackerBaseTier >= targetBaseTier` для баз Tier 2/3), `PlaceExplosiveRequest`, `RaidExtractRequest`.
 
 ---
 
@@ -161,5 +174,6 @@
 - `ProjectileController`: `.SpawnLocalProjectile(id, origin, dir, char): string`, `.GetActiveVisualCount(): number`, `.Init()`.
 - `WorldEventController`: `.IsBannerVisible(): boolean`, `.GetActiveBeaconCount(): number`, `.Init()`.
 - `ExtractionController`: `.IsVisible(): boolean`, `.GetState(): ExtractionState?`, `.Init()`.
-- `BuildingController`: `.IsBaseMode(): boolean`, `.CanBuild(): boolean`, `.IsBuildMode(): boolean`, `.SetBuildMode(enabled)`, `.GetPieces()`, `.Init()` — активация по экипировке `building_plan` (превью размещения) или `hammer` (апгрейд/демонтаж по ЛКМ/ПКМ и клавишам) как на `PlayerBase`, так и в разрешённых зонах `MainMap`/Studio; кэшированный `RaycastParams`; фантом через `BuildingGeometry.CreateModel` с подсветкой **зелёный** (сетка) / **синий** (сокет) / **красный** (ошибка/коллизия/`> 20` studs); передача `(pieceType, targetCFrame, parentUid, socketId)` в `BuildPlaceRequest`.
-- `RaidController`: `.IsInRaid(): boolean`, `.IsSelectionOpen(): boolean`, `.GetHudState(): RaidHudState?`, `.OpenTargetList()`, `.CloseTargetList()`, `.Init()`.
+- `BuildingController`: `.IsBaseMode()`, `.CanBuild()`, `.IsBuildMode()`, `.SetBuildMode(enabled)`, `.GetPieces()`, `.Init()` — активация по экипировке `building_plan` (превью размещения) или `hammer` (апгрейд/демонтаж по ЛКМ/ПКМ и клавишам) как на `PlayerBase`, так и в разрешённых зонах `MainMap`/Studio; кэшированный `RaycastParams`; фантом через `BuildingGeometry.CreateModel` с подсветкой **зелёный** (сетка) / **синий** (сокет) / **красный** (ошибка/коллизия/`> 20` studs); панель `BaseActionBar` с индикатором `BaseTier`, выбором карты `MainMap_Tier1/2/3` и уведомлениями `BuildFeedback`.
+- `ToolCupboardController`: `.IsOpen()`, `.Close()`, `.GetState()`, `.Init()` — окно Tool Cupboard (12 слотов содержания, быстрый депозит ресурсов `wood`/`stone`/`metal_ore`/`high_quality_metal`, отображение `BaseTier`, статуса `Protected`/`Decaying`, расхода в час и валидности пути до TC).
+- `RaidController`: `.IsInRaid()`, `.IsSelectionOpen()`, `.GetHudState()`, `.OpenTargetList()`, `.CloseTargetList()`, `.Init()`.

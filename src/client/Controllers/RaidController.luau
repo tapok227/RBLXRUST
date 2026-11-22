@@ -102,7 +102,10 @@ local function createTargetRow(target: RaidTargetInfo)
 	infoLabel.TextSize = 12
 	infoLabel.TextColor3 = Color3.fromRGB(185, 190, 205)
 	infoLabel.TextXAlignment = Enum.TextXAlignment.Left
-	infoLabel.Text = string.format("Structures: %d", target.PieceCount)
+	local tierSuffix = if typeof(target.BaseTier) == "number" and target.BaseTier > 0
+		then string.format(" | Base Tier %d", target.BaseTier)
+		else ""
+	infoLabel.Text = string.format("Structures: %d%s", target.PieceCount, tierSuffix)
 	infoLabel.Parent = row
 
 	local launchBtn = Instance.new("TextButton")

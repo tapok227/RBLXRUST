@@ -283,6 +283,8 @@ local function buildMockRaidBase(): BaseData
 
 	return {
 		Pieces = pieces,
+		BaseTier = 1,
+		LastUpkeepTimestamp = 0,
 	}
 end
 
@@ -536,18 +538,14 @@ local function spawnRaidTargetBase(session: RaidSession, baseData: BaseData)
 		model.Parent = folder
 
 		local containerId: string? = nil
-		if pieceCopy.PieceType == "storage_box" then
+		if pieceCopy.PieceType == "storage_box" or pieceCopy.PieceType == "tool_cupboard" then
 			local storageSlots = pieceConfig.StorageSlots or 18
 			local initialSlots = storageMapToInventory(pieceCopy.Storage, storageSlots)
-			local registeredId = LootService.RegisterStorageContainer(
-				model,
-				string.format("%s's Chest", session.TargetName),
-				nil,
-				storageSlots,
-				initialSlots,
-				nil,
-				false
-			)
+			local containerTitle = if pieceCopy.PieceType == "tool_cupboard"
+				then string.format("%s's Tool Cupboard", session.TargetName)
+				else string.format("%s's Chest", session.TargetName)
+			local registeredId =
+				LootService.RegisterStorageContainer(model, containerTitle, nil, storageSlots, initialSlots, nil, false)
 			if #registeredId > 0 then
 				containerId = registeredId
 			end
@@ -1187,10 +1185,53 @@ local function onStartRaidRequest(player: Player, targetUserIdAny: any)
 		return
 	end
 
+	local targetName = resolveTargetName(targetUserId)
+	local targetBaseTier = 1
+	if targetUserId > 0 then
+		local onlineTarget = Players:GetPlayerByUserId(targetUserId)
+		local onlineData = if onlineTarget ~= nil then DataService.GetData(onlineTarget) else nil
+		if onlineData ~= nil then
+			targetBaseTier = onlineData.Base.BaseTier
+		else
+			local snapshot = DataService.LoadBaseSnapshot(targetUserId)
+			if snapshot ~= nil then
+				local hasTc = false
+				for _, p in snapshot.Pieces do
+					if BuildingGeometry.CanonicalPieceType(p.PieceType) == "tool_cupboard" then
+						hasTc = true
+						break
+					end
+				end
+				targetBaseTier = math.max(snapshot.BaseTier, BaseService.ComputeBaseTier(snapshot.Pieces, hasTc))
+			end
+		end
+	end
+
+	local attackerBaseTier = BaseService.GetPlayerBaseTier(player)
+	if targetBaseTier >= 2 and attackerBaseTier < targetBaseTier then
+		local msg = string.format(
+			"Для рейда на базу Tier %d требуется собственная база Tier %d (сейчас Tier %d)",
+			targetBaseTier,
+			targetBaseTier,
+			attackerBaseTier
+		)
+		Net.GetEvent(Net.Events.BuildFeedback):FireClient(player, {
+			Success = false,
+			Message = msg,
+			BaseTier = attackerBaseTier,
+		})
+		sendRaidHud(player, {
+			Active = false,
+			TargetName = targetName,
+			TimeLeft = 0,
+			StatusText = msg,
+		})
+		return
+	end
+
 	teleportInProgress[player] = true
 	SecurityService.SetTeleportLock(player, true)
 	LootService.CloseContainerForPlayer(player, true)
-	local targetName = resolveTargetName(targetUserId)
 
 	if RunService:IsStudio() then
 		local released = DataService.ReleaseForTeleport(player)
@@ -1495,7 +1536,9 @@ local function onPlayerDataLoaded(player: Player, _data: Types.PlayerData)
 	Workspace:SetAttribute("RaidServerMode", true)
 
 	local snapshot = DataService.LoadBaseSnapshot(targetUserId)
-	local baseData: BaseData = if snapshot ~= nil then snapshot else { Pieces = {} }
+	local baseData: BaseData = if snapshot ~= nil
+		then snapshot
+		else { Pieces = {}, BaseTier = 0, LastUpkeepTimestamp = 0 }
 
 	if activeSessions[player] ~= nil then
 		cleanupSession(activeSessions[player])

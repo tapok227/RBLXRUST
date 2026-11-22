@@ -48,6 +48,16 @@ local Recipes: { [string]: RecipeConfig } = {
 			{ Id = "stone", Count = 25 },
 		},
 	},
+	craft_tool_cupboard = {
+		Id = "craft_tool_cupboard",
+		ResultId = "tool_cupboard",
+		ResultCount = 1,
+		CraftTime = 5,
+		Station = nil,
+		Ingredients = {
+			{ Id = "wood", Count = 200 },
+		},
+	},
 	craft_workbench_1 = {
 		Id = "craft_workbench_1",
 		ResultId = "workbench_1",
@@ -57,6 +67,30 @@ local Recipes: { [string]: RecipeConfig } = {
 		Ingredients = {
 			{ Id = "wood", Count = 100 },
 			{ Id = "stone", Count = 50 },
+		},
+	},
+	craft_workbench_2 = {
+		Id = "craft_workbench_2",
+		ResultId = "workbench_2",
+		ResultCount = 1,
+		CraftTime = 8,
+		Station = "workbench_1",
+		Ingredients = {
+			{ Id = "wood", Count = 150 },
+			{ Id = "metal_ore", Count = 120 },
+			{ Id = "scrap", Count = 80 },
+		},
+	},
+	craft_workbench_3 = {
+		Id = "craft_workbench_3",
+		ResultId = "workbench_3",
+		ResultCount = 1,
+		CraftTime = 12,
+		Station = "workbench_2",
+		Ingredients = {
+			{ Id = "high_quality_metal", Count = 40 },
+			{ Id = "tech_parts", Count = 6 },
+			{ Id = "scrap", Count = 150 },
 		},
 	},
 	craft_spear = {
@@ -141,7 +175,7 @@ local Recipes: { [string]: RecipeConfig } = {
 		ResultId = "c4_charge",
 		ResultCount = 1,
 		CraftTime = 10,
-		Station = "workbench_1",
+		Station = "workbench_2",
 		Ingredients = {
 			{ Id = "tech_parts", Count = 4 },
 			{ Id = "scrap", Count = 60 },
@@ -153,7 +187,7 @@ local Recipes: { [string]: RecipeConfig } = {
 		ResultId = "rocket_launcher",
 		ResultCount = 1,
 		CraftTime = 12,
-		Station = "workbench_1",
+		Station = "workbench_3",
 		Ingredients = {
 			{ Id = "tech_parts", Count = 5 },
 			{ Id = "scrap", Count = 80 },
@@ -165,7 +199,7 @@ local Recipes: { [string]: RecipeConfig } = {
 		ResultId = "rocket",
 		ResultCount = 1,
 		CraftTime = 5,
-		Station = "workbench_1",
+		Station = "workbench_3",
 		Ingredients = {
 			{ Id = "scrap", Count = 20 },
 			{ Id = "metal_ore", Count = 30 },

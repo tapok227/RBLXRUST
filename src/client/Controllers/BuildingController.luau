@@ -16,6 +16,7 @@ local InventoryController = require(script.Parent.InventoryController)
 local InventoryUIController = require(script.Parent.InventoryUIController)
 local CraftingController = require(script.Parent.CraftingController)
 local LootController = require(script.Parent.LootController)
+local ToolCupboardController = require(script.Parent.ToolCupboardController)
 
 type BuildPieceType = Types.BuildPieceType
 type BuildTier = Types.BuildTier
@@ -62,11 +63,16 @@ local previewPlaceable = false
 local previewStatusMessage = ""
 local hammerStatusMessage = ""
 local hammerStatusValid = true
+local selectedMapIndex = 1
+local feedbackToken = 0
 local isInitialized = false
 
 local baseActionBar: Frame? = nil
+local baseTierBadge: TextLabel? = nil
+local mapCycleBtn: TextButton? = nil
 local buildToggleBtn: TextButton? = nil
 local deployToMapBtn: TextButton? = nil
+local feedbackToastLabel: TextLabel? = nil
 local buildMenuFrame: Frame? = nil
 local statusInfoLabel: TextLabel? = nil
 local rotButton: TextButton? = nil
@@ -103,7 +109,21 @@ local function refreshPreviewRaycastFilter()
 end
 
 local function isAnyModalUiOpen(): boolean
-	return InventoryUIController.IsOpen() or CraftingController.IsOpen() or LootController.IsOpen()
+	return InventoryUIController.IsOpen()
+		or CraftingController.IsOpen()
+		or LootController.IsOpen()
+		or ToolCupboardController.IsOpen()
+end
+
+local function getLocalBaseTier(): number
+	local localPlayer = Players.LocalPlayer
+	local attr = if localPlayer ~= nil then localPlayer:GetAttribute("BaseTier") else nil
+	return if typeof(attr) == "number" then math.floor(attr) else 0
+end
+
+local function getSelectedMapKey(): string
+	local order = Config.MapOrder :: { string }
+	return order[selectedMapIndex] or order[1] or "MainMap_Tier1"
 end
 
 local function getSelectedPieceType(): BuildPieceType
@@ -308,6 +328,27 @@ local function updateBuildUiVisuals()
 
 	if baseActionBar then
 		baseActionBar.Visible = canBuild
+	end
+	if baseTierBadge then
+		local tier = getLocalBaseTier()
+		baseTierBadge.Visible = inBase
+		baseTierBadge.Text = string.format("Base: Tier %d", tier)
+		baseTierBadge.BackgroundColor3 = if tier >= 3
+			then Color3.fromRGB(45, 115, 155)
+			elseif tier == 2 then Color3.fromRGB(150, 110, 40)
+			elseif tier == 1 then Color3.fromRGB(52, 125, 72)
+			else Color3.fromRGB(125, 52, 52)
+	end
+	if mapCycleBtn then
+		mapCycleBtn.Visible = inBase
+		local mapKey = getSelectedMapKey()
+		local maps =
+			Config.Maps :: { [string]: { Key: string, Name: string, PlaceId: number, RequiredBaseTier: number } }
+		local mapCfg = maps[mapKey]
+		local reqTier = if mapCfg ~= nil then mapCfg.RequiredBaseTier else 1
+		local unlocked = getLocalBaseTier() >= reqTier
+		mapCycleBtn.Text = string.format("Map: T%d", reqTier)
+		mapCycleBtn.BackgroundColor3 = if unlocked then Color3.fromRGB(48, 86, 125) else Color3.fromRGB(95, 52, 52)
 	end
 	if deployToMapBtn then
 		deployToMapBtn.Visible = inBase
@@ -776,10 +817,27 @@ local function updatePreviewAndHighlight()
 		elseif #savedPieces >= BuildingConfig.MaxPiecesPerBase then
 			hasValidTarget = false
 			reason = "Max pieces limit reached"
+		elseif pieceCfg.RequiredBaseTier ~= nil and getLocalBaseTier() < pieceCfg.RequiredBaseTier then
+			hasValidTarget = false
+			reason = string.format("Requires Base Tier %d", pieceCfg.RequiredBaseTier)
 		elseif not canAffordCost(pieceCfg.Cost) then
 			hasValidTarget = false
 			reason = "Not enough resources"
 		else
+			if pieceCfg.MaxPerBase ~= nil then
+				local existingCount = 0
+				for _, p in savedPieces do
+					if BuildingGeometry.CanonicalPieceType(p.PieceType) == selectedType then
+						existingCount += 1
+					end
+				end
+				if existingCount >= pieceCfg.MaxPerBase then
+					hasValidTarget = false
+					reason = string.format("Max %d %s per base", pieceCfg.MaxPerBase, pieceCfg.Name)
+				end
+			end
+		end
+		if hasValidTarget then
 			local wallOk, wallReason = BuildingGeometry.CheckParallelWallStacking(
 				selectedType,
 				targetCF,
@@ -837,7 +895,7 @@ local function createBuildingGui()
 	actionBar.Name = "BaseActionBar"
 	actionBar.AnchorPoint = Vector2.new(1, 0)
 	actionBar.Position = UDim2.new(1, -16, 0, 16)
-	actionBar.Size = UDim2.fromOffset(304, 40)
+	actionBar.Size = UDim2.fromOffset(520, 40)
 	actionBar.BackgroundTransparency = 1
 	actionBar.Visible = BuildingController.CanBuild()
 	actionBar.Parent = screenGui
@@ -848,6 +906,22 @@ local function createBuildingGui()
 	barLayout.Padding = UDim.new(0, 8)
 	barLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	barLayout.Parent = actionBar
+
+	local tierLbl = Instance.new("TextLabel")
+	tierLbl.Name = "BaseTierBadge"
+	tierLbl.LayoutOrder = 0
+	tierLbl.Size = UDim2.fromOffset(102, 38)
+	tierLbl.BackgroundColor3 = Color3.fromRGB(125, 52, 52)
+	tierLbl.BorderSizePixel = 0
+	tierLbl.Font = Enum.Font.GothamBold
+	tierLbl.TextSize = 13
+	tierLbl.TextColor3 = Color3.new(1, 1, 1)
+	tierLbl.Text = "Base: Tier 0"
+	tierLbl.Visible = BuildingController.IsBaseMode()
+	tierLbl.Parent = actionBar
+	local tierCorner = Instance.new("UICorner")
+	tierCorner.CornerRadius = UDim.new(0, 8)
+	tierCorner.Parent = tierLbl
 
 	local function makeTopBtn(name: string, order: number, w: number, bg: Color3, text: string): TextButton
 		local btn = Instance.new("TextButton")
@@ -867,24 +941,50 @@ local function createBuildingGui()
 		return btn
 	end
 
-	local buildBtn = makeTopBtn("BuildToggleButton", 1, 124, Color3.fromRGB(55, 110, 165), "Build [B]")
+	local buildBtn = makeTopBtn("BuildToggleButton", 1, 114, Color3.fromRGB(55, 110, 165), "Build [B]")
 	buildBtn.Activated:Connect(function()
 		BuildingController.SetBuildMode(not BuildingController.IsBuildMode())
 	end)
 
-	local deployBtn = makeTopBtn("DeployButton", 2, 168, Color3.fromRGB(55, 155, 85), "Deploy to PvP Map")
+	local mapBtn = makeTopBtn("MapCycleButton", 2, 86, Color3.fromRGB(48, 86, 125), "Map: T1")
+	mapBtn.Visible = BuildingController.IsBaseMode()
+	mapBtn.Activated:Connect(function()
+		local order = Config.MapOrder :: { string }
+		selectedMapIndex = (selectedMapIndex % #order) + 1
+		updateBuildUiVisuals()
+	end)
+
+	local deployBtn = makeTopBtn("DeployButton", 3, 156, Color3.fromRGB(55, 155, 85), "Deploy to PvP Map")
 	deployBtn.Visible = BuildingController.IsBaseMode()
 	deployBtn.Activated:Connect(function()
 		if BuildingController.IsBaseMode() then
-			Net.GetEvent(Net.Events.RequestReturnToMap):FireServer()
+			Net.GetEvent(Net.Events.RequestReturnToMap):FireServer(getSelectedMapKey())
 		end
 	end)
+
+	local toast = Instance.new("TextLabel")
+	toast.Name = "BuildFeedbackToast"
+	toast.AnchorPoint = Vector2.new(0.5, 0)
+	toast.Position = UDim2.new(0.5, 0, 0, 20)
+	toast.Size = UDim2.fromOffset(520, 36)
+	toast.BackgroundColor3 = Color3.fromRGB(165, 45, 45)
+	toast.BackgroundTransparency = 0.08
+	toast.BorderSizePixel = 0
+	toast.Font = Enum.Font.GothamBold
+	toast.TextSize = 14
+	toast.TextColor3 = Color3.new(1, 1, 1)
+	toast.Text = ""
+	toast.Visible = false
+	toast.Parent = screenGui
+	local toastCorner = Instance.new("UICorner")
+	toastCorner.CornerRadius = UDim.new(0, 8)
+	toastCorner.Parent = toast
 
 	local menuFrame = Instance.new("Frame")
 	menuFrame.Name = "BuildMenuFrame"
 	menuFrame.AnchorPoint = Vector2.new(0.5, 1)
 	menuFrame.Position = UDim2.new(0.5, 0, 1, -110)
-	menuFrame.Size = UDim2.fromOffset(728, 168)
+	menuFrame.Size = UDim2.fromOffset(760, 168)
 	menuFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
 	menuFrame.BackgroundTransparency = 0.12
 	menuFrame.BorderSizePixel = 0
@@ -907,7 +1007,7 @@ local function createBuildingGui()
 	piecesGridFrame.Parent = menuFrame
 
 	local piecesGrid = Instance.new("UIGridLayout")
-	piecesGrid.CellSize = UDim2.fromOffset(112, 44)
+	piecesGrid.CellSize = UDim2.fromOffset(100, 44)
 	piecesGrid.CellPadding = UDim2.fromOffset(6, 6)
 	piecesGrid.HorizontalAlignment = Enum.HorizontalAlignment.Center
 	piecesGrid.SortOrder = Enum.SortOrder.LayoutOrder
@@ -941,7 +1041,10 @@ local function createBuildingGui()
 		nameLabel.TextSize = 10
 		nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
 		nameLabel.TextColor3 = Color3.fromRGB(240, 240, 246)
-		nameLabel.Text = if pieceCfg then pieceCfg.Name else pieceType
+		local tierTag = if pieceCfg and pieceCfg.RequiredBaseTier ~= nil
+			then string.format(" [T%d]", pieceCfg.RequiredBaseTier)
+			else ""
+		nameLabel.Text = (if pieceCfg then pieceCfg.Name else pieceType) .. tierTag
 		nameLabel.Parent = btn
 
 		local costLabel = Instance.new("TextLabel")
@@ -1056,8 +1159,11 @@ local function createBuildingGui()
 	highlight.Parent = screenGui
 
 	baseActionBar = actionBar
+	baseTierBadge = tierLbl
+	mapCycleBtn = mapBtn
 	buildToggleBtn = buildBtn
 	deployToMapBtn = deployBtn
+	feedbackToastLabel = toast
 	buildMenuFrame = menuFrame
 	statusInfoLabel = statusLabel
 	rotButton = rotBtn
@@ -1203,6 +1309,32 @@ function BuildingController.GetPieces(): { SavedBuildPiece }
 	return table.clone(savedPieces)
 end
 
+local function onBuildFeedback(payloadAny: any)
+	if type(payloadAny) ~= "table" then
+		return
+	end
+	local msg = payloadAny.Message
+	if typeof(msg) ~= "string" or #msg == 0 then
+		return
+	end
+	local success = payloadAny.Success == true
+	if feedbackToastLabel then
+		feedbackToken += 1
+		local myToken = feedbackToken
+		feedbackToastLabel.Text = msg
+		feedbackToastLabel.BackgroundColor3 = if success
+			then Color3.fromRGB(45, 135, 72)
+			else Color3.fromRGB(165, 45, 45)
+		feedbackToastLabel.Visible = true
+		task.delay(3.5, function()
+			if feedbackToken == myToken and feedbackToastLabel then
+				feedbackToastLabel.Visible = false
+			end
+		end)
+	end
+	updateBuildUiVisuals()
+end
+
 function BuildingController.Init()
 	if isInitialized then
 		return
@@ -1214,12 +1346,14 @@ function BuildingController.Init()
 	updateBuildUiVisuals()
 
 	Net.GetEvent(Net.Events.BaseStateSync).OnClientEvent:Connect(onBaseStateSync)
+	Net.GetEvent(Net.Events.BuildFeedback).OnClientEvent:Connect(onBuildFeedback)
 	InventoryController.OnChanged(syncModeFromEquippedTool)
 	HotbarController.SelectionChanged:Connect(syncModeFromEquippedTool)
 
 	local localPlayer = Players.LocalPlayer
 	if localPlayer ~= nil then
 		localPlayer:GetAttributeChangedSignal("InRaid"):Connect(syncModeFromEquippedTool)
+		localPlayer:GetAttributeChangedSignal("BaseTier"):Connect(updateBuildUiVisuals)
 		localPlayer.CharacterAdded:Connect(function()
 			refreshPreviewRaycastFilter()
 		end)

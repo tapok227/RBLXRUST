@@ -55,6 +55,21 @@ local Items: { [string]: ItemConfig } = {
 		Type = "Consumable",
 		MaxStack = 1,
 	},
+	workbench_2 = {
+		Name = "Workbench Lv.2",
+		Type = "Consumable",
+		MaxStack = 1,
+	},
+	workbench_3 = {
+		Name = "Workbench Lv.3",
+		Type = "Consumable",
+		MaxStack = 1,
+	},
+	tool_cupboard = {
+		Name = "Tool Cupboard",
+		Type = "Consumable",
+		MaxStack = 1,
+	},
 	spear = {
 		Name = "Wooden Spear",
 		Type = "Tool",

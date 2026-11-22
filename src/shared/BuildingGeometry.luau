@@ -89,6 +89,7 @@ local NO_BUILD_FOLDERS = {
 	"ResourceNodes",
 	"Workbenches",
 	"RaidTerminal",
+	"RaidOutpostZone",
 }
 
 local BuildingGeometry = {}
@@ -328,6 +329,27 @@ function BuildingGeometry.CreateModel(
 		primaryPart =
 			spawnPrim("Part", model, "ChestBody", Vector3.new(4.0, 2.4, 2.5), worldCF * primaryLocalCF, isGhost)
 		spawnPrim("Part", model, "ChestLid", Vector3.new(4.2, 0.4, 2.7), worldCF * CFrame.new(0, 2.6, 0), isGhost)
+	elseif canonical == "tool_cupboard" then
+		primaryLocalCF = CFrame.new(0, 2.7, 0)
+		primaryPart =
+			spawnPrim("Part", model, "CabinetBody", Vector3.new(3.2, 5.4, 2.2), worldCF * primaryLocalCF, isGhost)
+		spawnPrim(
+			"Part",
+			model,
+			"CabinetDoor",
+			Vector3.new(2.8, 4.8, 0.2),
+			worldCF * CFrame.new(0, 2.6, -1.15),
+			isGhost
+		)
+		spawnPrim("Part", model, "TopTrim", Vector3.new(3.5, 0.35, 2.5), worldCF * CFrame.new(0, 5.55, 0), isGhost)
+		spawnPrim(
+			"Part",
+			model,
+			"LockPlate",
+			Vector3.new(0.5, 0.7, 0.25),
+			worldCF * CFrame.new(1.0, 2.7, -1.25),
+			isGhost
+		)
 	elseif canonical == "workbench_1" then
 		primaryLocalCF = CFrame.new(0, 2.3, 0)
 		primaryPart =
@@ -336,6 +358,28 @@ function BuildingGeometry.CreateModel(
 		spawnPrim("Part", model, "RightLeg", Vector3.new(0.6, 2.0, 2.6), worldCF * CFrame.new(2.0, 1.0, 0), isGhost)
 		if not isGhost then
 			model:SetAttribute("StationType", "workbench_1")
+		end
+	elseif canonical == "workbench_2" then
+		primaryLocalCF = CFrame.new(0, 2.4, 0)
+		primaryPart =
+			spawnPrim("Part", model, "TableTop", Vector3.new(5.4, 0.6, 3.2), worldCF * primaryLocalCF, isGhost)
+		spawnPrim("Part", model, "LeftLeg", Vector3.new(0.7, 2.1, 2.8), worldCF * CFrame.new(-2.2, 1.05, 0), isGhost)
+		spawnPrim("Part", model, "RightLeg", Vector3.new(0.7, 2.1, 2.8), worldCF * CFrame.new(2.2, 1.05, 0), isGhost)
+		spawnPrim("Part", model, "BackPanel", Vector3.new(5.2, 2.2, 0.3), worldCF * CFrame.new(0, 3.8, 1.4), isGhost)
+		spawnPrim("Part", model, "ToolRack", Vector3.new(4.6, 0.4, 0.5), worldCF * CFrame.new(0, 4.7, 1.15), isGhost)
+		if not isGhost then
+			model:SetAttribute("StationType", "workbench_2")
+		end
+	elseif canonical == "workbench_3" then
+		primaryLocalCF = CFrame.new(0, 2.5, 0)
+		primaryPart =
+			spawnPrim("Part", model, "TableTop", Vector3.new(5.8, 0.7, 3.4), worldCF * primaryLocalCF, isGhost)
+		spawnPrim("Part", model, "LeftLeg", Vector3.new(0.8, 2.2, 3.0), worldCF * CFrame.new(-2.35, 1.1, 0), isGhost)
+		spawnPrim("Part", model, "RightLeg", Vector3.new(0.8, 2.2, 3.0), worldCF * CFrame.new(2.35, 1.1, 0), isGhost)
+		spawnPrim("Part", model, "BackPanel", Vector3.new(5.6, 2.6, 0.35), worldCF * CFrame.new(0, 4.15, 1.45), isGhost)
+		spawnPrim("Part", model, "TopLamp", Vector3.new(4.8, 0.35, 0.6), worldCF * CFrame.new(0, 5.55, 1.1), isGhost)
+		if not isGhost then
+			model:SetAttribute("StationType", "workbench_3")
 		end
 	end
 
@@ -358,11 +402,42 @@ function BuildingGeometry.ApplyTierVisuals(model: Model, pieceType: BuildPieceTy
 				child.Color = if child.Name == "ChestLid"
 					then Color3.fromRGB(95, 62, 32)
 					else Color3.fromRGB(130, 88, 48)
+			elseif canonical == "tool_cupboard" then
+				if child.Name == "LockPlate" then
+					child.Material = Enum.Material.Metal
+					child.Color = Color3.fromRGB(205, 165, 70)
+				elseif child.Name == "CabinetDoor" or child.Name == "TopTrim" then
+					child.Material = Enum.Material.WoodPlanks
+					child.Color = Color3.fromRGB(115, 78, 44)
+				else
+					child.Material = Enum.Material.WoodPlanks
+					child.Color = Color3.fromRGB(148, 102, 58)
+				end
 			elseif canonical == "workbench_1" then
 				child.Material = if child.Name == "TableTop" then Enum.Material.WoodPlanks else Enum.Material.Metal
 				child.Color = if child.Name == "TableTop"
 					then Color3.fromRGB(150, 105, 65)
 					else Color3.fromRGB(70, 74, 80)
+			elseif canonical == "workbench_2" then
+				if child.Name == "ToolRack" then
+					child.Material = Enum.Material.WoodPlanks
+					child.Color = Color3.fromRGB(165, 118, 72)
+				else
+					child.Material = Enum.Material.Metal
+					child.Color = if child.Name == "TableTop"
+						then Color3.fromRGB(96, 112, 130)
+						else Color3.fromRGB(62, 70, 80)
+				end
+			elseif canonical == "workbench_3" then
+				if child.Name == "TopLamp" then
+					child.Material = Enum.Material.Neon
+					child.Color = Color3.fromRGB(80, 215, 255)
+				else
+					child.Material = Enum.Material.DiamondPlate
+					child.Color = if child.Name == "TableTop"
+						then Color3.fromRGB(68, 78, 92)
+						else Color3.fromRGB(45, 52, 62)
+				end
 			else
 				child.Material = tierCfg.Material
 				child.Color = tierCfg.Color
@@ -619,8 +694,14 @@ function BuildingGeometry.GetOverlapBoxes(
 		})
 	elseif canonical == "storage_box" then
 		table.insert(boxes, { CFrame = worldCF * CFrame.new(0, 1.4, 0), Size = Vector3.new(3.4, 2.2, 2.1) })
+	elseif canonical == "tool_cupboard" then
+		table.insert(boxes, { CFrame = worldCF * CFrame.new(0, 2.75, 0), Size = Vector3.new(2.8, 5.0, 2.0) })
 	elseif canonical == "workbench_1" then
 		table.insert(boxes, { CFrame = worldCF * CFrame.new(0, 1.3, 0), Size = Vector3.new(4.2, 2.2, 2.5) })
+	elseif canonical == "workbench_2" then
+		table.insert(boxes, { CFrame = worldCF * CFrame.new(0, 1.8, 0), Size = Vector3.new(4.6, 3.2, 2.7) })
+	elseif canonical == "workbench_3" then
+		table.insert(boxes, { CFrame = worldCF * CFrame.new(0, 2.0, 0), Size = Vector3.new(5.0, 3.6, 2.9) })
 	end
 	return boxes
 end

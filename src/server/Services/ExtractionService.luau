@@ -456,6 +456,24 @@ local function stepExtractionLoop()
 	end
 end
 
+function ExtractionService.CanAccessMap(_player: Player, mapKey: string, playerBaseTier: number): (boolean, string?)
+	local maps = Config.Maps :: { [string]: { Key: string, Name: string, PlaceId: number, RequiredBaseTier: number } }
+	local mapCfg = maps[mapKey]
+	if mapCfg == nil then
+		return false, "Неизвестная PvP-карта"
+	end
+	if playerBaseTier < mapCfg.RequiredBaseTier then
+		return false,
+			string.format(
+				"Требуется База Tier %d для входа на %s (текущий Tier %d)",
+				mapCfg.RequiredBaseTier,
+				mapCfg.Name,
+				playerBaseTier
+			)
+	end
+	return true, nil
+end
+
 function ExtractionService.GetExtractionState(player: Player): ExtractionState?
 	local active = activeExtractions[player]
 	if active == nil then

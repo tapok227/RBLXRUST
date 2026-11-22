@@ -40,6 +40,8 @@ local DATA_TEMPLATE = {
 	},
 	Base = {
 		Pieces = {},
+		BaseTier = 0,
+		LastUpkeepTimestamp = 0,
 	},
 }
 
@@ -209,8 +211,29 @@ end
 
 local function deserializeBase(rawBase: any): BaseData
 	local pieces: { SavedBuildPiece } = {}
-	if type(rawBase) ~= "table" or type(rawBase.Pieces) ~= "table" then
-		return { Pieces = pieces }
+	if type(rawBase) ~= "table" then
+		return {
+			Pieces = pieces,
+			BaseTier = 0,
+			LastUpkeepTimestamp = 0,
+		}
+	end
+
+	local rawBaseTier = rawBase.BaseTier
+	local baseTier = if isValidFiniteInteger(rawBaseTier)
+		then math.clamp(math.floor(rawBaseTier :: number), 0, 3)
+		else 0
+	local rawTimestamp = rawBase.LastUpkeepTimestamp
+	local lastUpkeepTimestamp = if isValidFiniteInteger(rawTimestamp) and (rawTimestamp :: number) >= 0
+		then math.floor(rawTimestamp :: number)
+		else 0
+
+	if type(rawBase.Pieces) ~= "table" then
+		return {
+			Pieces = pieces,
+			BaseTier = baseTier,
+			LastUpkeepTimestamp = lastUpkeepTimestamp,
+		}
 	end
 
 	local seenUids: { [string]: boolean } = {}
@@ -346,14 +369,28 @@ local function deserializeBase(rawBase: any): BaseData
 
 	return {
 		Pieces = pieces,
+		BaseTier = baseTier,
+		LastUpkeepTimestamp = lastUpkeepTimestamp,
 	}
 end
 
 local function serializeBase(baseData: BaseData): BaseData
 	local pieces: { SavedBuildPiece } = {}
 	if type(baseData) ~= "table" or type(baseData.Pieces) ~= "table" then
-		return { Pieces = pieces }
+		return {
+			Pieces = pieces,
+			BaseTier = 0,
+			LastUpkeepTimestamp = 0,
+		}
 	end
+
+	local baseTier = if isValidFiniteInteger(baseData.BaseTier)
+		then math.clamp(math.floor(baseData.BaseTier), 0, 3)
+		else 0
+	local lastUpkeepTimestamp = if isValidFiniteInteger(baseData.LastUpkeepTimestamp)
+			and baseData.LastUpkeepTimestamp >= 0
+		then math.floor(baseData.LastUpkeepTimestamp)
+		else 0
 
 	for _, piece in baseData.Pieces do
 		local canonicalType = BuildingGeometry.CanonicalPieceType(piece.PieceType)
@@ -385,6 +422,8 @@ local function serializeBase(baseData: BaseData): BaseData
 
 	return {
 		Pieces = pieces,
+		BaseTier = baseTier,
+		LastUpkeepTimestamp = lastUpkeepTimestamp,
 	}
 end
 
@@ -437,7 +476,7 @@ function DataService.MigrateProfileData(rawData: { [string]: any }): { [string]:
 			end
 		end
 		if type(data.Base) ~= "table" then
-			data.Base = { Pieces = {} }
+			data.Base = { Pieces = {}, BaseTier = 0, LastUpkeepTimestamp = 0 }
 		elseif type(data.Base.Pieces) ~= "table" then
 			data.Base.Pieces = {}
 		end
@@ -487,6 +526,29 @@ function DataService.MigrateProfileData(rawData: { [string]: any }): { [string]:
 			end
 		end
 		data.DataVersion = 2
+	end
+
+	-- Step 3: add BaseTier and LastUpkeepTimestamp for Tool Cupboard & Decay (v2 -> v3)
+	if Types.CURRENT_DATA_VERSION >= 3 and data.DataVersion < 3 then
+		if type(data.Base) ~= "table" then
+			data.Base = { Pieces = {}, BaseTier = 0, LastUpkeepTimestamp = os.time() }
+		else
+			if type(data.Base.Pieces) ~= "table" then
+				data.Base.Pieces = {}
+			end
+			if not isValidFiniteInteger(data.Base.BaseTier) then
+				data.Base.BaseTier = 0
+			else
+				data.Base.BaseTier = math.clamp(math.floor(data.Base.BaseTier :: number), 0, 3)
+			end
+			if
+				not isValidFiniteInteger(data.Base.LastUpkeepTimestamp)
+				or (data.Base.LastUpkeepTimestamp :: number) < 0
+			then
+				data.Base.LastUpkeepTimestamp = os.time()
+			end
+		end
+		data.DataVersion = 3
 	end
 
 	data.Version = data.DataVersion
@@ -816,10 +878,14 @@ function DataService.GetRaidTargets(excludeUserId: number, limit: number): { Rai
 					and pieceCount > 0
 				then
 					local intUserId = math.floor(userId)
+					local onlineTarget = Players:GetPlayerByUserId(intUserId)
+					local onlineData = if onlineTarget ~= nil then RuntimeData[onlineTarget] else nil
+					local targetTier = if onlineData ~= nil then onlineData.Base.BaseTier else 1
 					table.insert(targets, {
 						UserId = intUserId,
 						DisplayName = resolveDisplayName(intUserId),
 						PieceCount = math.floor(pieceCount),
+						BaseTier = targetTier,
 					})
 				end
 			end
@@ -831,6 +897,7 @@ function DataService.GetRaidTargets(excludeUserId: number, limit: number): { Rai
 			UserId = MOCK_RAID_TARGET_USER_ID,
 			DisplayName = MOCK_RAID_TARGET_NAME,
 			PieceCount = MOCK_RAID_TARGET_PIECE_COUNT,
+			BaseTier = 1,
 		})
 	end
 
