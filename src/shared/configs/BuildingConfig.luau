@@ -152,6 +152,24 @@ local Pieces: { [BuildPieceType]: BuildPieceConfig } = table.freeze({
 		Upgradeable = false,
 		RequiredBaseTier = 3,
 	}),
+	assault_ladder = table.freeze({
+		Name = "Assault Ladder",
+		Category = "Deployable",
+		Shape = "Deployable",
+		Cost = table.freeze({ wood = 40 }),
+		BaseHp = 120,
+		Upgradeable = false,
+		AssaultDeployable = true,
+	}),
+	barricade = table.freeze({
+		Name = "Assault Barricade",
+		Category = "Deployable",
+		Shape = "Deployable",
+		Cost = table.freeze({ wood = 50, stone = 20 }),
+		BaseHp = 220,
+		Upgradeable = false,
+		AssaultDeployable = true,
+	}),
 })
 
 local CanonicalPieceMap: { [string]: BuildPieceType } = table.freeze({
@@ -174,6 +192,8 @@ local CanonicalPieceMap: { [string]: BuildPieceType } = table.freeze({
 	workbench_1 = "workbench_1",
 	workbench_2 = "workbench_2",
 	workbench_3 = "workbench_3",
+	assault_ladder = "assault_ladder",
+	barricade = "barricade",
 })
 
 local Tiers: { [BuildTier]: BuildTierConfig } = table.freeze({
@@ -249,6 +269,8 @@ local PieceOrder: { BuildPieceType } = table.freeze({
 	"workbench_1",
 	"workbench_2",
 	"workbench_3",
+	"assault_ladder",
+	"barricade",
 })
 
 local TierOrder: { BuildTier } = table.freeze({

@@ -33,6 +33,7 @@ export type PlacementValidationInput = {
 	OccupiedWorldKeys: { [string]: string },
 	BasePieces: { SavedBuildPiece },
 	PlayerBaseTier: number?,
+	IsRaidMode: boolean?,
 }
 
 export type CandidatePieceInput = {
@@ -283,7 +284,16 @@ function BuildingValidator.RaycastFoundationGround(pos: Vector3, playerCharacter
 	if playerCharacter ~= nil then
 		table.insert(excludeList, playerCharacter)
 	end
-	for _, folderName in { "PlayerBaseStructures", "RaidTargetStructures", "ResourceNodes", "LootContainers" } do
+	for _, folderName in
+		{
+			"PlayerBaseStructures",
+			"RaidTargetStructures",
+			"RaidOutpostStructures",
+			"RaidOutpostZone",
+			"ResourceNodes",
+			"LootContainers",
+		}
+	do
 		local folder = Workspace:FindFirstChild(folderName)
 		if folder ~= nil then
 			table.insert(excludeList, folder)
@@ -380,9 +390,16 @@ function BuildingValidator.CheckWorldOverlap(
 	pieceType: BuildPieceType,
 	targetCF: CFrame,
 	excludeInstances: { Instance }?,
-	isDetachedFoundation: boolean
+	isDetachedFoundation: boolean,
+	allowRaidOutpostZone: boolean?
 ): BuildingGeometry.OverlapCheckResult
-	return BuildingGeometry.CheckWorldOverlap(pieceType, targetCF, excludeInstances, isDetachedFoundation)
+	return BuildingGeometry.CheckWorldOverlap(
+		pieceType,
+		targetCF,
+		excludeInstances,
+		isDetachedFoundation,
+		allowRaidOutpostZone
+	)
 end
 
 local function collectRaidOutpostParts(): { BasePart }
@@ -736,7 +753,12 @@ function BuildingValidator.ValidatePlacement(input: PlacementValidationInput): P
 		return { Allowed = false, Reason = "Invalid piece type" }
 	end
 
-	if pieceConfig.MaxPerBase ~= nil then
+	local isRaidMode = input.IsRaidMode == true
+	if isRaidMode and pieceType == "tool_cupboard" then
+		return { Allowed = false, Reason = "В рейде нельзя устанавливать Tool Cupboard" }
+	end
+
+	if not isRaidMode and pieceConfig.MaxPerBase ~= nil then
 		local existingCount = 0
 		for _, existing in input.BasePieces do
 			if BuildingGeometry.CanonicalPieceType(existing.PieceType) == pieceType then
@@ -755,7 +777,7 @@ function BuildingValidator.ValidatePlacement(input: PlacementValidationInput): P
 		end
 	end
 
-	if pieceConfig.RequiredBaseTier ~= nil then
+	if not isRaidMode and pieceConfig.RequiredBaseTier ~= nil then
 		local currentTier = input.PlayerBaseTier or 0
 		if currentTier < pieceConfig.RequiredBaseTier then
 			return {
@@ -776,7 +798,7 @@ function BuildingValidator.ValidatePlacement(input: PlacementValidationInput): P
 	local resolvedSlotKey: string? = nil
 
 	if parentUid == nil or socketId == nil then
-		if pieceConfig.Category ~= "Foundation" then
+		if pieceConfig.Category ~= "Foundation" and not pieceConfig.AssaultDeployable then
 			local matchedParent, matchedSocket, matchedStep, matchedCF =
 				findAutoMatchedSocket(pieceType, input.RequestedCFrame, input.PlayerRecords, input.ExplicitRotStep)
 			if matchedParent == nil or matchedSocket == nil or matchedCF == nil then
@@ -843,7 +865,7 @@ function BuildingValidator.ValidatePlacement(input: PlacementValidationInput): P
 		if groundHit == nil or groundHit.Normal.Y < 0.65 then
 			return { Allowed = false, Reason = "Requires flat ground" }
 		end
-		if BuildingGeometry.IsNoBuildInstance(groundHit.Instance) then
+		if BuildingGeometry.IsNoBuildInstance(groundHit.Instance, isRaidMode) then
 			return { Allowed = false, Reason = "Blocked by restricted zone" }
 		end
 
@@ -876,19 +898,29 @@ function BuildingValidator.ValidatePlacement(input: PlacementValidationInput): P
 		return { Allowed = false, Reason = wallReason or "Parallel wall stacking blocked" }
 	end
 
-	if BuildingValidator.IsInRaidOutpostZone(pieceType, authoritativeCF) then
-		return {
-			Allowed = false,
-			Reason = "Строительство в зоне рейд-кибитки (RaidOutpostZone) запрещено",
-		}
+	local inOutpostZone = BuildingValidator.IsInRaidOutpostZone(pieceType, authoritativeCF)
+	if isRaidMode then
+		if not pieceConfig.AssaultDeployable and not inOutpostZone then
+			return {
+				Allowed = false,
+				Reason = "Вне RaidOutpostZone разрешены только штурмовые лестницы и баррикады",
+			}
+		end
+	else
+		if inOutpostZone then
+			return {
+				Allowed = false,
+				Reason = "Строительство в зоне рейд-кибитки (RaidOutpostZone) запрещено",
+			}
+		end
 	end
 
-	local overlap = BuildingValidator.CheckWorldOverlap(pieceType, authoritativeCF, nil, parentUid == nil)
+	local overlap = BuildingValidator.CheckWorldOverlap(pieceType, authoritativeCF, nil, parentUid == nil, isRaidMode)
 	if not overlap.Allowed then
 		return { Allowed = false, Reason = overlap.Reason or "Overlap blocked" }
 	end
 
-	if pieceType == "wall" or pieceType == "tool_cupboard" then
+	if not isRaidMode and (pieceType == "wall" or pieceType == "tool_cupboard") then
 		local reachable, reachReason =
 			BuildingValidator.CanReachToolCupboard(input.PlayerRecords, input.OccupiedSockets, {
 				PieceType = pieceType,

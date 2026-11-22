@@ -89,4 +89,38 @@ return table.freeze({
 		Duration = 8,
 		CooldownAfterDamage = 5,
 	}),
+	Raid = table.freeze({
+		MaxLives = 3,
+		TcHackDuration = 10,
+		TcHackMaxDistance = 14,
+		OutpostRadius = 28,
+		OutpostOffsetZ = 46,
+		ExtractionStashSlots = 18,
+		Tiers = table.freeze({
+			[1] = table.freeze({
+				Tier = 1,
+				RequiredBaseTier = 1,
+				DangerLabel = "Low (Wood/Stone)",
+				RewardLabel = "Scrap, Metal Ore, Basic Gear",
+				LaunchCost = table.freeze({ scrap = 30 }),
+				DefenseBonus = table.freeze({ scrap = 25 }),
+			}),
+			[2] = table.freeze({
+				Tier = 2,
+				RequiredBaseTier = 2,
+				DangerLabel = "Medium (Metal)",
+				RewardLabel = "Metal Ore, Tech Parts, Ammo",
+				LaunchCost = table.freeze({ scrap = 75, metal_ore = 40 }),
+				DefenseBonus = table.freeze({ scrap = 60, metal_ore = 25 }),
+			}),
+			[3] = table.freeze({
+				Tier = 3,
+				RequiredBaseTier = 3,
+				DangerLabel = "High (Armored)",
+				RewardLabel = "HQM, Tech Parts, Explosives",
+				LaunchCost = table.freeze({ scrap = 140, tech_parts = 2 }),
+				DefenseBonus = table.freeze({ scrap = 120, tech_parts = 1 }),
+			}),
+		}),
+	}),
 })

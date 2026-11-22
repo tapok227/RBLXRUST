@@ -381,6 +381,43 @@ function BuildingGeometry.CreateModel(
 		if not isGhost then
 			model:SetAttribute("StationType", "workbench_3")
 		end
+	elseif canonical == "assault_ladder" then
+		primaryLocalCF = CFrame.new(-1.1, 5.0, 0)
+		primaryPart =
+			spawnPrim("Part", model, "LeftRail", Vector3.new(0.28, 10.0, 0.35), worldCF * primaryLocalCF, isGhost)
+		spawnPrim("Part", model, "RightRail", Vector3.new(0.28, 10.0, 0.35), worldCF * CFrame.new(1.1, 5.0, 0), isGhost)
+		for rungIdx = 1, 7 do
+			local rungY = rungIdx * 1.25
+			spawnPrim(
+				"Part",
+				model,
+				string.format("Rung_%d", rungIdx),
+				Vector3.new(2.0, 0.25, 0.3),
+				worldCF * CFrame.new(0, rungY, 0),
+				isGhost
+			)
+		end
+	elseif canonical == "barricade" then
+		primaryLocalCF = CFrame.new(0, 2.1, 0)
+		primaryPart =
+			spawnPrim("Part", model, "MainWall", Vector3.new(8.0, 4.2, 1.4), worldCF * primaryLocalCF, isGhost)
+		spawnPrim("Part", model, "TopCap", Vector3.new(8.2, 0.4, 1.6), worldCF * CFrame.new(0, 4.3, 0), isGhost)
+		spawnPrim(
+			"WedgePart",
+			model,
+			"BraceLeft",
+			Vector3.new(0.7, 3.2, 1.8),
+			worldCF * CFrame.new(-2.8, 1.6, -1.5) * CFrame.Angles(0, math.rad(180), 0),
+			isGhost
+		)
+		spawnPrim(
+			"WedgePart",
+			model,
+			"BraceRight",
+			Vector3.new(0.7, 3.2, 1.8),
+			worldCF * CFrame.new(2.8, 1.6, -1.5) * CFrame.Angles(0, math.rad(180), 0),
+			isGhost
+		)
 	end
 
 	if primaryPart ~= nil then
@@ -437,6 +474,19 @@ function BuildingGeometry.ApplyTierVisuals(model: Model, pieceType: BuildPieceTy
 					child.Color = if child.Name == "TableTop"
 						then Color3.fromRGB(68, 78, 92)
 						else Color3.fromRGB(45, 52, 62)
+				end
+			elseif canonical == "assault_ladder" then
+				child.Material = Enum.Material.WoodPlanks
+				child.Color = if string.sub(child.Name, 1, 4) == "Rung"
+					then Color3.fromRGB(185, 136, 84)
+					else Color3.fromRGB(132, 92, 54)
+			elseif canonical == "barricade" then
+				if child.Name == "MainWall" or child.Name == "TopCap" then
+					child.Material = Enum.Material.WoodPlanks
+					child.Color = Color3.fromRGB(145, 108, 68)
+				else
+					child.Material = Enum.Material.Metal
+					child.Color = Color3.fromRGB(86, 94, 102)
 				end
 			else
 				child.Material = tierCfg.Material
@@ -702,6 +752,10 @@ function BuildingGeometry.GetOverlapBoxes(
 		table.insert(boxes, { CFrame = worldCF * CFrame.new(0, 1.8, 0), Size = Vector3.new(4.6, 3.2, 2.7) })
 	elseif canonical == "workbench_3" then
 		table.insert(boxes, { CFrame = worldCF * CFrame.new(0, 2.0, 0), Size = Vector3.new(5.0, 3.6, 2.9) })
+	elseif canonical == "assault_ladder" then
+		table.insert(boxes, { CFrame = worldCF * CFrame.new(0, 4.8, 0), Size = Vector3.new(2.6, 9.2, 1.2) })
+	elseif canonical == "barricade" then
+		table.insert(boxes, { CFrame = worldCF * CFrame.new(0, 2.0, 0), Size = Vector3.new(7.4, 3.8, 1.8) })
 	end
 	return boxes
 end
@@ -778,14 +832,19 @@ function BuildingGeometry.CheckParallelWallStacking(
 	return true, nil
 end
 
-function BuildingGeometry.IsNoBuildInstance(inst: Instance): boolean
+function BuildingGeometry.IsNoBuildInstance(inst: Instance, allowRaidOutpostZone: boolean?): boolean
 	local current: Instance? = inst
 	while current ~= nil and current ~= Workspace do
+		local isOutpostZone = current.Name == "RaidOutpostZone" or CollectionService:HasTag(current, "RaidOutpostZone")
 		if
 			CollectionService:HasTag(current, "NoBuild")
 			or CollectionService:HasTag(current, "Monument")
 			or current:GetAttribute("NoBuild") == true
-			or (current.Parent == Workspace and table.find(NO_BUILD_FOLDERS, current.Name) ~= nil)
+			or (
+				current.Parent == Workspace
+				and table.find(NO_BUILD_FOLDERS, current.Name) ~= nil
+				and not (allowRaidOutpostZone == true and isOutpostZone)
+			)
 		then
 			return true
 		end
@@ -797,7 +856,12 @@ end
 local function isStructureOrCharacterPart(inst: Instance): (boolean, boolean)
 	local pFolder = Workspace:FindFirstChild("PlayerBaseStructures")
 	local rFolder = Workspace:FindFirstChild("RaidTargetStructures")
-	if (pFolder and inst:IsDescendantOf(pFolder)) or (rFolder and inst:IsDescendantOf(rFolder)) then
+	local oFolder = Workspace:FindFirstChild("RaidOutpostStructures")
+	if
+		(pFolder and inst:IsDescendantOf(pFolder))
+		or (rFolder and inst:IsDescendantOf(rFolder))
+		or (oFolder and inst:IsDescendantOf(oFolder))
+	then
 		return true, false
 	end
 	local cur: Instance? = inst
@@ -816,8 +880,11 @@ local function isPointInsideBox(point: Vector3, boxCF: CFrame, boxSize: Vector3)
 	return math.abs(localPos.X) <= half.X and math.abs(localPos.Y) <= half.Y and math.abs(localPos.Z) <= half.Z
 end
 
-local function checkNoBuildVolumes(boxes: { BuildOverlapBox }): boolean
+local function checkNoBuildVolumes(boxes: { BuildOverlapBox }, allowRaidOutpostZone: boolean?): boolean
 	for _, folderName in NO_BUILD_FOLDERS do
+		if allowRaidOutpostZone == true and folderName == "RaidOutpostZone" then
+			continue
+		end
 		local inst = Workspace:FindFirstChild(folderName)
 		if inst ~= nil then
 			local parts = if inst:IsA("BasePart") then { inst } else inst:GetDescendants()
@@ -876,7 +943,8 @@ function BuildingGeometry.CheckWorldOverlap(
 	pieceType: BuildPieceType,
 	targetCF: CFrame,
 	excludeInstances: { Instance }?,
-	isDetachedFoundation: boolean
+	isDetachedFoundation: boolean,
+	allowRaidOutpostZone: boolean?
 ): OverlapCheckResult
 	local cfg = BuildingConfig.Pieces[pieceType]
 	if cfg == nil then
@@ -884,7 +952,7 @@ function BuildingGeometry.CheckWorldOverlap(
 	end
 
 	local boxes = BuildingGeometry.GetOverlapBoxes(pieceType, targetCF, nil)
-	if checkNoBuildVolumes(boxes) then
+	if checkNoBuildVolumes(boxes, allowRaidOutpostZone) then
 		return { Allowed = false, Reason = "Blocked by restricted zone" }
 	end
 
@@ -895,7 +963,7 @@ function BuildingGeometry.CheckWorldOverlap(
 	for _, box in boxes do
 		local parts = filterExactWedgeHits(box, Workspace:GetPartBoundsInBox(box.CFrame, box.Size, params))
 		for _, part in parts do
-			if BuildingGeometry.IsNoBuildInstance(part) then
+			if BuildingGeometry.IsNoBuildInstance(part, allowRaidOutpostZone) then
 				return { Allowed = false, Reason = "Blocked by restricted zone" }
 			end
 			local isStruct, isChar = isStructureOrCharacterPart(part)
@@ -910,7 +978,7 @@ function BuildingGeometry.CheckWorldOverlap(
 				and part.Name ~= "Ground"
 			then
 				if
-					cfg.Category ~= "Foundation"
+					(cfg.Category ~= "Foundation" and not cfg.AssaultDeployable)
 					or (part.Position.Y + part.Size.Y * 0.5) > (targetCF.Position.Y + 0.35)
 				then
 					return { Allowed = false, Reason = "Blocked by obstacle" }

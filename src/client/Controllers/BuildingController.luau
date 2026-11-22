@@ -1,4 +1,5 @@
 --!strict
+local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -95,6 +96,21 @@ cachedHammerRayParams.FilterType = Enum.RaycastFilterType.Include
 
 local BuildingController = {}
 
+local function isInRaidMode(): boolean
+	if Workspace:GetAttribute("RaidServerMode") == true then
+		return true
+	end
+	local localPlayer = Players.LocalPlayer
+	return localPlayer ~= nil and localPlayer:GetAttribute("InRaid") == true
+end
+
+local function getActiveStructuresFolder(): Instance?
+	if isInRaidMode() then
+		return Workspace:FindFirstChild("RaidOutpostStructures")
+	end
+	return Workspace:FindFirstChild("PlayerBaseStructures")
+end
+
 local function refreshPreviewRaycastFilter()
 	local excludeList: { Instance } = {}
 	local localPlayer = Players.LocalPlayer
@@ -103,6 +119,13 @@ local function refreshPreviewRaycastFilter()
 	end
 	if ghostModel then
 		table.insert(excludeList, ghostModel)
+	end
+	local outpostZone = Workspace:FindFirstChild("RaidOutpostZone")
+	if outpostZone then
+		table.insert(excludeList, outpostZone)
+	end
+	for _, tagged in CollectionService:GetTagged("RaidOutpostZone") do
+		table.insert(excludeList, tagged)
 	end
 	cachedPreviewExcludes = excludeList
 	cachedPreviewRayParams.FilterDescendantsInstances = excludeList
@@ -209,7 +232,7 @@ end
 local function collectPlayerStructureModels(): { Model }
 	local models: { Model } = {}
 	local localPlayer = Players.LocalPlayer
-	local structuresFolder = Workspace:FindFirstChild("PlayerBaseStructures")
+	local structuresFolder = getActiveStructuresFolder()
 	if not localPlayer or not structuresFolder then
 		return models
 	end
@@ -304,7 +327,7 @@ end
 
 local function buildLocalWallCandidates(allModels: { Model }): { BuildingGeometry.ParallelWallCandidate }
 	local candidates: { BuildingGeometry.ParallelWallCandidate } = {}
-	local folder = Workspace:FindFirstChild("PlayerBaseStructures")
+	local folder = getActiveStructuresFolder()
 	local sourceList = if folder then folder:GetChildren() else allModels
 	for _, child in sourceList do
 		if child:IsA("Model") then
@@ -419,7 +442,7 @@ local function updateBuildUiVisuals()
 end
 
 local function raycastStructureUnderCursor(): (Model?, string?, BuildPieceType?, BuildTier?)
-	local structuresFolder = Workspace:FindFirstChild("PlayerBaseStructures")
+	local structuresFolder = getActiveStructuresFolder()
 	local camera = Workspace.CurrentCamera
 	if not structuresFolder or not camera then
 		return nil, nil, nil, nil
@@ -630,6 +653,46 @@ local function updateHammerHover()
 	updateBuildUiVisuals()
 end
 
+local function isTargetInRaidOutpostZone(pieceType: BuildPieceType, targetCF: CFrame): boolean
+	local zoneParts: { BasePart } = {}
+	local seen: { [BasePart]: boolean } = {}
+	local function addZoneInst(inst: Instance?)
+		if inst == nil then
+			return
+		end
+		if inst:IsA("BasePart") then
+			if not seen[inst] then
+				seen[inst] = true
+				table.insert(zoneParts, inst)
+			end
+		else
+			for _, desc in inst:GetDescendants() do
+				if desc:IsA("BasePart") and not seen[desc] then
+					seen[desc] = true
+					table.insert(zoneParts, desc)
+				end
+			end
+		end
+	end
+	addZoneInst(Workspace:FindFirstChild("RaidOutpostZone"))
+	for _, tagged in CollectionService:GetTagged("RaidOutpostZone") do
+		addZoneInst(tagged)
+	end
+	if #zoneParts == 0 then
+		return false
+	end
+	local params = OverlapParams.new()
+	params.FilterType = Enum.RaycastFilterType.Include
+	params.FilterDescendantsInstances = zoneParts
+	for _, box in BuildingGeometry.GetOverlapBoxes(pieceType, targetCF, 0.25) do
+		local hits = Workspace:GetPartBoundsInBox(box.CFrame, box.Size, params)
+		if #hits > 0 then
+			return true
+		end
+	end
+	return false
+end
+
 local function updatePreviewAndHighlight()
 	if not BuildingController.IsBuildMode() or isAnyModalUiOpen() then
 		previewCFrame = nil
@@ -678,8 +741,9 @@ local function updatePreviewAndHighlight()
 		then result.Position
 		else (unitRay.Origin + unitRay.Direction * BuildingConfig.MaxBuildDistance)
 
+	local inRaid = isInRaidMode()
 	local hitStructureModel: Model? = nil
-	local structuresFolder = Workspace:FindFirstChild("PlayerBaseStructures")
+	local structuresFolder = getActiveStructuresFolder()
 	if result and structuresFolder and result.Instance:IsDescendantOf(structuresFolder) then
 		local cur: Instance? = result.Instance
 		while cur ~= nil and cur.Parent ~= structuresFolder do
@@ -692,6 +756,7 @@ local function updatePreviewAndHighlight()
 
 	local playerModels = collectPlayerStructureModels()
 	local isFoundation = (pieceCfg.Category == "Foundation")
+	local isAssaultDeployable = (pieceCfg.AssaultDeployable == true)
 	local bestScore = if isFoundation then SOCKET_SEARCH_RADIUS_FOUNDATION else SOCKET_SEARCH_RADIUS_OTHER
 
 	local bestCF: CFrame? = nil
@@ -783,7 +848,7 @@ local function updatePreviewAndHighlight()
 			hasValidTarget = false
 			reason = "Max build height reached"
 		end
-	elseif isFoundation then
+	elseif isFoundation or isAssaultDeployable then
 		local groundResult = result
 		if groundResult == nil or hitStructureModel ~= nil then
 			local downOrigin = Vector3.new(aimPos.X, aimPos.Y + 4.0, aimPos.Z)
@@ -793,12 +858,17 @@ local function updatePreviewAndHighlight()
 		if
 			groundResult ~= nil
 			and groundResult.Normal.Y >= 0.65
-			and not BuildingGeometry.IsNoBuildInstance(groundResult.Instance)
+			and not BuildingGeometry.IsNoBuildInstance(groundResult.Instance, inRaid)
 		then
-			local gridStep = BuildingConfig.GridSize
-			local snapX = math.round(groundResult.Position.X / gridStep) * gridStep
-			local snapZ = math.round(groundResult.Position.Z / gridStep) * gridStep
-			targetCF = CFrame.new(snapX, groundResult.Position.Y, snapZ) * CFrame.Angles(0, math.rad(currentYawDeg), 0)
+			if isAssaultDeployable then
+				targetCF = CFrame.new(groundResult.Position) * CFrame.Angles(0, math.rad(currentYawDeg), 0)
+			else
+				local gridStep = BuildingConfig.GridSize
+				local snapX = math.round(groundResult.Position.X / gridStep) * gridStep
+				local snapZ = math.round(groundResult.Position.Z / gridStep) * gridStep
+				targetCF = CFrame.new(snapX, groundResult.Position.Y, snapZ)
+					* CFrame.Angles(0, math.rad(currentYawDeg), 0)
+			end
 		else
 			targetCF = CFrame.new(aimPos.X, aimPos.Y, aimPos.Z) * CFrame.Angles(0, math.rad(currentYawDeg), 0)
 			hasValidTarget = false
@@ -811,20 +881,26 @@ local function updatePreviewAndHighlight()
 	end
 
 	if hasValidTarget then
-		if (hrp.Position - targetCF.Position).Magnitude > BuildingConfig.MaxBuildDistance then
+		if inRaid and selectedType == "tool_cupboard" then
+			hasValidTarget = false
+			reason = "Tool Cupboard disabled in raid"
+		elseif inRaid and not isAssaultDeployable and not isTargetInRaidOutpostZone(selectedType, targetCF) then
+			hasValidTarget = false
+			reason = "Outpost zone only (use ladder/barricade outside)"
+		elseif (hrp.Position - targetCF.Position).Magnitude > BuildingConfig.MaxBuildDistance then
 			hasValidTarget = false
 			reason = string.format("Too far (>%d studs)", BuildingConfig.MaxBuildDistance)
-		elseif #savedPieces >= BuildingConfig.MaxPiecesPerBase then
+		elseif not inRaid and #savedPieces >= BuildingConfig.MaxPiecesPerBase then
 			hasValidTarget = false
 			reason = "Max pieces limit reached"
-		elseif pieceCfg.RequiredBaseTier ~= nil and getLocalBaseTier() < pieceCfg.RequiredBaseTier then
+		elseif not inRaid and pieceCfg.RequiredBaseTier ~= nil and getLocalBaseTier() < pieceCfg.RequiredBaseTier then
 			hasValidTarget = false
 			reason = string.format("Requires Base Tier %d", pieceCfg.RequiredBaseTier)
 		elseif not canAffordCost(pieceCfg.Cost) then
 			hasValidTarget = false
 			reason = "Not enough resources"
 		else
-			if pieceCfg.MaxPerBase ~= nil then
+			if not inRaid and pieceCfg.MaxPerBase ~= nil then
 				local existingCount = 0
 				for _, p in savedPieces do
 					if BuildingGeometry.CanonicalPieceType(p.PieceType) == selectedType then
@@ -847,8 +923,13 @@ local function updatePreviewAndHighlight()
 				hasValidTarget = false
 				reason = wallReason or "Anti-stacking: too close to wall"
 			else
-				local overlap =
-					BuildingGeometry.CheckWorldOverlap(selectedType, targetCF, cachedPreviewExcludes, parentUid == nil)
+				local overlap = BuildingGeometry.CheckWorldOverlap(
+					selectedType,
+					targetCF,
+					cachedPreviewExcludes,
+					parentUid == nil,
+					inRaid
+				)
 				if not overlap.Allowed then
 					hasValidTarget = false
 					reason = overlap.Reason or "Blocked"
@@ -984,7 +1065,7 @@ local function createBuildingGui()
 	menuFrame.Name = "BuildMenuFrame"
 	menuFrame.AnchorPoint = Vector2.new(0.5, 1)
 	menuFrame.Position = UDim2.new(0.5, 0, 1, -110)
-	menuFrame.Size = UDim2.fromOffset(760, 168)
+	menuFrame.Size = UDim2.fromOffset(860, 168)
 	menuFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
 	menuFrame.BackgroundTransparency = 0.12
 	menuFrame.BorderSizePixel = 0
@@ -1007,7 +1088,7 @@ local function createBuildingGui()
 	piecesGridFrame.Parent = menuFrame
 
 	local piecesGrid = Instance.new("UIGridLayout")
-	piecesGrid.CellSize = UDim2.fromOffset(100, 44)
+	piecesGrid.CellSize = UDim2.fromOffset(98, 44)
 	piecesGrid.CellPadding = UDim2.fromOffset(6, 6)
 	piecesGrid.HorizontalAlignment = Enum.HorizontalAlignment.Center
 	piecesGrid.SortOrder = Enum.SortOrder.LayoutOrder
@@ -1264,13 +1345,6 @@ function BuildingController.IsBaseMode(): boolean
 end
 
 function BuildingController.CanBuild(): boolean
-	if Workspace:GetAttribute("RaidServerMode") == true then
-		return false
-	end
-	local localPlayer = Players.LocalPlayer
-	if localPlayer ~= nil and localPlayer:GetAttribute("InRaid") == true then
-		return false
-	end
 	return true
 end
 
@@ -1352,7 +1426,10 @@ function BuildingController.Init()
 
 	local localPlayer = Players.LocalPlayer
 	if localPlayer ~= nil then
-		localPlayer:GetAttributeChangedSignal("InRaid"):Connect(syncModeFromEquippedTool)
+		localPlayer:GetAttributeChangedSignal("InRaid"):Connect(function()
+			refreshPreviewRaycastFilter()
+			syncModeFromEquippedTool()
+		end)
 		localPlayer:GetAttributeChangedSignal("BaseTier"):Connect(updateBuildUiVisuals)
 		localPlayer.CharacterAdded:Connect(function()
 			refreshPreviewRaycastFilter()
@@ -1361,7 +1438,15 @@ function BuildingController.Init()
 			refreshPreviewRaycastFilter()
 		end)
 	end
-	Workspace:GetAttributeChangedSignal("RaidServerMode"):Connect(syncModeFromEquippedTool)
+	Workspace.ChildAdded:Connect(function(child: Instance)
+		if child.Name == "RaidOutpostZone" then
+			refreshPreviewRaycastFilter()
+		end
+	end)
+	Workspace:GetAttributeChangedSignal("RaidServerMode"):Connect(function()
+		refreshPreviewRaycastFilter()
+		syncModeFromEquippedTool()
+	end)
 	if RunService:IsStudio() then
 		Workspace:GetAttributeChangedSignal("ForceBaseMode"):Connect(updateBuildUiVisuals)
 	end

@@ -488,6 +488,9 @@ local function onBuildPlaceRequest(
 	socketIdAny: any,
 	rotStepAny: any
 )
+	if player:GetAttribute("InRaid") == true then
+		return
+	end
 	if not SecurityService.CheckRateLimit(player, Net.Events.BuildPlaceRequest) then
 		return
 	end
@@ -1356,6 +1359,102 @@ function BaseService.GetStorageContainerId(player: Player, uid: string): string?
 	local playerRecords = spawnedByPlayer[player]
 	local record = if playerRecords ~= nil then playerRecords[uid] else nil
 	return if record ~= nil then record.ContainerId else nil
+end
+
+local function depositIntoSavedPieceStorage(
+	piece: SavedBuildPiece,
+	itemId: string,
+	count: number,
+	maxSlots: number
+): number
+	local itemCfg = Items[itemId]
+	if itemCfg == nil or count <= 0 then
+		return 0
+	end
+	if type(piece.Storage) ~= "table" then
+		piece.Storage = {}
+	end
+	local storage = piece.Storage :: { [string]: Slot }
+	local maxStack = itemCfg.MaxStack
+	local remaining = count
+
+	for i = 1, maxSlots do
+		if remaining <= 0 then
+			break
+		end
+		local key = tostring(i)
+		local existing = storage[key]
+		if existing ~= nil and existing.Id == itemId and existing.Count < maxStack then
+			local addAmt = math.min(remaining, maxStack - existing.Count)
+			if addAmt > 0 then
+				existing.Count += addAmt
+				remaining -= addAmt
+			end
+		end
+	end
+
+	for i = 1, maxSlots do
+		if remaining <= 0 then
+			break
+		end
+		local key = tostring(i)
+		if storage[key] == nil then
+			local addAmt = math.min(remaining, maxStack)
+			storage[key] = { Id = itemId, Count = addAmt }
+			remaining -= addAmt
+		end
+	end
+
+	return count - remaining
+end
+
+function BaseService.DepositItemsToPlayerBase(player: Player, items: { ItemBatchEntry }): (number, number)
+	local data = DataService.GetData(player)
+	if data == nil or #items == 0 then
+		return 0, 0
+	end
+
+	local addedInvTotal = 0
+	local addedStorageTotal = 0
+	local playerRecords = spawnedByPlayer[player]
+
+	for _, entry in items do
+		if entry.Count <= 0 or Items[entry.Id] == nil then
+			continue
+		end
+		local addedInv = InventoryService.AddItem(player, entry.Id, entry.Count)
+		addedInvTotal += addedInv
+		local remaining = entry.Count - addedInv
+		if remaining <= 0 then
+			continue
+		end
+
+		for _, piece in data.Base.Pieces do
+			if remaining <= 0 then
+				break
+			end
+			if BuildingGeometry.CanonicalPieceType(piece.PieceType) == "storage_box" then
+				local liveRecord = if playerRecords ~= nil then playerRecords[piece.Uid] else nil
+				if liveRecord ~= nil and liveRecord.ContainerId ~= nil then
+					local deposited = LootService.DepositToStorageContainer(liveRecord.ContainerId, entry.Id, remaining)
+					remaining -= deposited
+					addedStorageTotal += deposited
+				else
+					local boxCfg = BuildingConfig.Pieces.storage_box
+					local slotsLimit = if boxCfg and boxCfg.StorageSlots then boxCfg.StorageSlots else 18
+					local deposited = depositIntoSavedPieceStorage(piece, entry.Id, remaining, slotsLimit)
+					remaining -= deposited
+					addedStorageTotal += deposited
+				end
+			end
+		end
+	end
+
+	if addedStorageTotal > 0 then
+		syncBaseState(player)
+	end
+
+	return addedInvTotal, addedStorageTotal
 end
 
 function BaseService.Init()

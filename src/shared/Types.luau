@@ -50,6 +50,8 @@ export type BuildPieceType =
 	| "workbench_1"
 	| "workbench_2"
 	| "workbench_3"
+	| "assault_ladder"
+	| "barricade"
 	| "TriangleFoundation"
 	| "WindowWall"
 	| "TriangleFloor"
@@ -126,6 +128,7 @@ export type BuildPieceConfig = {
 	StorageSlots: number?,
 	RequiredBaseTier: number?,
 	MaxPerBase: number?,
+	AssaultDeployable: boolean?,
 }
 
 export type BuildTierConfig = {
@@ -282,13 +285,34 @@ export type RaidTargetInfo = {
 	DisplayName: string,
 	PieceCount: number,
 	BaseTier: number?,
+	DangerLabel: string?,
+	RewardLabel: string?,
+	LaunchCost: { [string]: number }?,
+	IsPreset: boolean?,
 }
 
 export type RaidHudState = {
 	Active: boolean,
 	TargetName: string,
+	TargetBaseTier: number?,
 	TimeLeft: number,
 	StatusText: string?,
+	TcCaptured: boolean?,
+	TcHackProgress: number?,
+	TcHackActive: boolean?,
+	LivesLeft: number?,
+	MaxLives: number?,
+	StashItemCount: number?,
+	CanExtract: boolean?,
+}
+
+export type RaidDefenseReport = {
+	RaiderName: string,
+	TargetTier: number,
+	Defended: boolean,
+	Timestamp: number,
+	BonusItems: { [string]: number }?,
+	Summary: string,
 }
 
 local Types = {

@@ -73,6 +73,24 @@ local function findBuildPieceUid(inst: Instance): string?
 	return nil
 end
 
+local function findRaidPieceUid(inst: Instance): string?
+	local folder = Workspace:FindFirstChild("RaidTargetStructures")
+	if folder == nil or not inst:IsDescendantOf(folder) then
+		return nil
+	end
+	local current: Instance? = inst
+	while current ~= nil and current.Parent ~= folder do
+		current = current.Parent
+	end
+	if current ~= nil and current:IsA("Model") then
+		local uid = current:GetAttribute("RaidPieceUid")
+		if typeof(uid) == "string" and #uid > 0 then
+			return uid
+		end
+	end
+	return nil
+end
+
 local function performServerRaycast(
 	origin: Vector3,
 	unitDir: Vector3,
@@ -419,6 +437,10 @@ local function onAttackRequest(
 			local finalDamage = weapon.Damage * multiplier
 			targetModel:SetAttribute("LastAttackerUserId", player.UserId)
 			targetHumanoid:TakeDamage(finalDamage)
+			local targetPlayer = Players:GetPlayerFromCharacter(targetModel)
+			if targetPlayer ~= nil then
+				RaidService.NotifyRaiderDamaged(targetPlayer)
+			end
 		else
 			local buildUid = findBuildPieceUid(hitResult.Instance)
 			if buildUid ~= nil then
@@ -426,6 +448,15 @@ local function onAttackRequest(
 				local hitPiece = BaseService.DamagePiece(buildUid, weapon.Damage, damageKind, player)
 				if hitPiece then
 					didHit = true
+				end
+			else
+				local raidUid = findRaidPieceUid(hitResult.Instance)
+				if raidUid ~= nil then
+					local damageKind: BaseService.DamageKind = if weapon.Category == "Melee" then "Tool" else "Bullet"
+					local hitRaidPiece = RaidService.DamageRaidPiece(raidUid, weapon.Damage, damageKind, player)
+					if hitRaidPiece then
+						didHit = true
+					end
 				end
 			end
 		end

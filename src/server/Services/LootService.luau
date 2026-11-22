@@ -1087,6 +1087,23 @@ function LootService.GetContainerState(containerId: string): LootContainerState?
 	}
 end
 
+function LootService.DepositToStorageContainer(containerId: string, itemId: string, count: number): number
+	local container = containers[containerId]
+	if container == nil or container.Kind ~= "Storage" or count <= 0 then
+		return 0
+	end
+	local toAdd = math.floor(count)
+	local leftover = addItemToSlots(container.Slots, container.MaxSlots, itemId, toAdd)
+	local deposited = toAdd - leftover
+	if deposited > 0 then
+		if container.OnChanged then
+			container.OnChanged(container.Slots)
+		end
+		notifyContainerViewers(container)
+	end
+	return deposited
+end
+
 function LootService.IsContainerDepleted(containerId: string): boolean
 	local container = containers[containerId]
 	if not container then

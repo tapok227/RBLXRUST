@@ -6,6 +6,7 @@ local RunService = game:GetService("RunService")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local Types = require(ReplicatedStorage.Shared.Types)
+local Config = require(ReplicatedStorage.Shared.Config)
 local Signal = require(ReplicatedStorage.Shared.Signal)
 local BuildingConfig = require(ReplicatedStorage.Shared.configs.BuildingConfig)
 local BuildingGeometry = require(ReplicatedStorage.Shared.BuildingGeometry)
@@ -20,14 +21,36 @@ type BuildTier = Types.BuildTier
 type SavedBuildPiece = Types.SavedBuildPiece
 type BaseData = Types.BaseData
 type RaidTargetInfo = Types.RaidTargetInfo
+type RaidDefenseReport = Types.RaidDefenseReport
 
 local PROFILE_STORE_NAME = "PlayerData_v1"
 local RAIDABLE_BASES_STORE_NAME = "RaidableBases_v1"
+local DEFENSE_REPORTS_STORE_NAME = "RaidDefenseReports_v1"
 local TELEPORT_RELEASE_TIMEOUT = 8
 local MOCK_RAID_TARGET_USER_ID = -1001
-local MOCK_RAID_TARGET_NAME = "MockRaidTarget"
-local MOCK_RAID_TARGET_PIECE_COUNT = 12
 local MAX_NAME_CACHE_ENTRIES = 256
+local MAX_SAVED_DEFENSE_REPORTS = 5
+
+local PRESET_RAID_TARGETS: { { UserId: number, DisplayName: string, PieceCount: number, BaseTier: number } } = {
+	{
+		UserId = MOCK_RAID_TARGET_USER_ID,
+		DisplayName = "Outpost Alpha (Tier 1)",
+		PieceCount = 13,
+		BaseTier = 1,
+	},
+	{
+		UserId = -1002,
+		DisplayName = "Steel Bunker (Tier 2)",
+		PieceCount = 18,
+		BaseTier = 2,
+	},
+	{
+		UserId = -1003,
+		DisplayName = "Armored Citadel (Tier 3)",
+		PieceCount = 22,
+		BaseTier = 3,
+	},
+}
 
 local DATA_TEMPLATE = {
 	DataVersion = Types.CURRENT_DATA_VERSION,
@@ -57,6 +80,8 @@ local nameCacheCount = 0
 local lastRegisteredPieceCount: { [number]: number } = {}
 local registerInFlight: { [number]: boolean } = {}
 local raidableBasesStore: OrderedDataStore? = nil
+local defenseReportsStore: DataStore? = nil
+local pendingDefenseReports: { [number]: { RaidDefenseReport } } = {}
 local dataLoadedSignal: Signal.Signal<Player, PlayerData> = Signal.new()
 local isInitialized = false
 
@@ -849,9 +874,115 @@ function DataService.RegisterRaidableBase(player: Player)
 	registerRaidableBaseByUserId(player.UserId, #data.Base.Pieces)
 end
 
+function DataService.GetPresetTier(targetUserId: number): number?
+	for _, preset in PRESET_RAID_TARGETS do
+		if preset.UserId == targetUserId then
+			return preset.BaseTier
+		end
+	end
+	return nil
+end
+
+local function buildPresetTargetInfo(
+	preset: { UserId: number, DisplayName: string, PieceCount: number, BaseTier: number }
+): RaidTargetInfo
+	local tierCfg = Config.Raid.Tiers[preset.BaseTier]
+	return {
+		UserId = preset.UserId,
+		DisplayName = preset.DisplayName,
+		PieceCount = preset.PieceCount,
+		BaseTier = preset.BaseTier,
+		DangerLabel = if tierCfg ~= nil then tierCfg.DangerLabel else "Unknown",
+		RewardLabel = if tierCfg ~= nil then tierCfg.RewardLabel else "Loot",
+		LaunchCost = if tierCfg ~= nil then tierCfg.LaunchCost else nil,
+		IsPreset = true,
+	}
+end
+
+local function getDefenseReportsStore(): DataStore?
+	if defenseReportsStore ~= nil then
+		return defenseReportsStore
+	end
+	local ok, store = pcall(function()
+		return DataStoreService:GetDataStore(DEFENSE_REPORTS_STORE_NAME)
+	end)
+	if ok and store ~= nil then
+		defenseReportsStore = store
+		return store
+	end
+	return nil
+end
+
+function DataService.RecordRaidDefenseReport(targetUserId: number, report: RaidDefenseReport)
+	if not isValidFiniteInteger(targetUserId) then
+		return
+	end
+	local list = pendingDefenseReports[targetUserId]
+	if list == nil then
+		list = {}
+		pendingDefenseReports[targetUserId] = list
+	end
+	table.insert(list, report)
+	while #list > MAX_SAVED_DEFENSE_REPORTS do
+		table.remove(list, 1)
+	end
+
+	if targetUserId > 0 and not RunService:IsStudio() then
+		local store = getDefenseReportsStore()
+		if store ~= nil then
+			local key = string.format("Reports_%d", math.floor(targetUserId))
+			pcall(function()
+				store:UpdateAsync(key, function(currentAny: any)
+					local current: { any } = if type(currentAny) == "table" then currentAny else {}
+					table.insert(current, report)
+					while #current > MAX_SAVED_DEFENSE_REPORTS do
+						table.remove(current, 1)
+					end
+					return current
+				end)
+			end)
+		end
+	end
+end
+
+function DataService.ConsumeDefenseReports(player: Player): { RaidDefenseReport }
+	local userId = player.UserId
+	local collected: { RaidDefenseReport } = {}
+	local memList = pendingDefenseReports[userId]
+	if memList ~= nil then
+		for _, r in memList do
+			table.insert(collected, r)
+		end
+		pendingDefenseReports[userId] = nil
+	end
+
+	if userId > 0 and not RunService:IsStudio() then
+		local store = getDefenseReportsStore()
+		if store ~= nil then
+			local key = string.format("Reports_%d", userId)
+			local ok, storedAny = pcall(function()
+				return store:GetAsync(key)
+			end)
+			if ok and type(storedAny) == "table" and #storedAny > 0 then
+				for _, entry in storedAny do
+					if type(entry) == "table" and type(entry.RaiderName) == "string" then
+						table.insert(collected, entry :: RaidDefenseReport)
+					end
+				end
+				pcall(function()
+					store:RemoveAsync(key)
+				end)
+			end
+		end
+	end
+
+	return collected
+end
+
 function DataService.GetRaidTargets(excludeUserId: number, limit: number): { RaidTargetInfo }
 	local clampedLimit = if isValidFiniteInteger(limit) then math.clamp(math.floor(limit), 1, 20) else 10
 	local targets: { RaidTargetInfo } = {}
+	local tierCovered: { [number]: boolean } = {}
 
 	local store = getRaidableBasesStore()
 	if store ~= nil then
@@ -880,25 +1011,38 @@ function DataService.GetRaidTargets(excludeUserId: number, limit: number): { Rai
 					local intUserId = math.floor(userId)
 					local onlineTarget = Players:GetPlayerByUserId(intUserId)
 					local onlineData = if onlineTarget ~= nil then RuntimeData[onlineTarget] else nil
-					local targetTier = if onlineData ~= nil then onlineData.Base.BaseTier else 1
+					local rawTier = if onlineData ~= nil then onlineData.Base.BaseTier else 1
+					if onlineData == nil then
+						local snap = DataService.LoadBaseSnapshot(intUserId)
+						if snap ~= nil and snap.BaseTier > 0 then
+							rawTier = snap.BaseTier
+						end
+					end
+					local targetTier = math.clamp(math.floor(rawTier), 1, 3)
+					local tierCfg = Config.Raid.Tiers[targetTier]
+					tierCovered[targetTier] = true
 					table.insert(targets, {
 						UserId = intUserId,
 						DisplayName = resolveDisplayName(intUserId),
 						PieceCount = math.floor(pieceCount),
 						BaseTier = targetTier,
+						DangerLabel = if tierCfg ~= nil then tierCfg.DangerLabel else "Unknown",
+						RewardLabel = if tierCfg ~= nil then tierCfg.RewardLabel else "Loot",
+						LaunchCost = if tierCfg ~= nil then tierCfg.LaunchCost else nil,
+						IsPreset = false,
 					})
 				end
 			end
 		end
 	end
 
-	if RunService:IsStudio() and #targets == 0 then
-		table.insert(targets, {
-			UserId = MOCK_RAID_TARGET_USER_ID,
-			DisplayName = MOCK_RAID_TARGET_NAME,
-			PieceCount = MOCK_RAID_TARGET_PIECE_COUNT,
-			BaseTier = 1,
-		})
+	for _, preset in PRESET_RAID_TARGETS do
+		if #targets >= clampedLimit then
+			break
+		end
+		if RunService:IsStudio() or not tierCovered[preset.BaseTier] then
+			table.insert(targets, buildPresetTargetInfo(preset))
+		end
 	end
 
 	return targets
