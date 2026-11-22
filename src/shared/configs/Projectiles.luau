@@ -32,6 +32,30 @@ local Projectiles: { [string]: ProjectileConfig } = {
 		HeadshotMultiplier = 2.0,
 		MinFalloffMultiplier = 1.0,
 	}),
+	emp_grenade = table.freeze({
+		Id = "emp_grenade",
+		ImpactKind = "Emp" :: "Emp",
+		Speed = 68,
+		Gravity = 52,
+		MaxLifetime = 5,
+		BlastRadius = 18,
+		StructureDamage = 0,
+		PlayerDamage = 0,
+		MinFalloffMultiplier = 1.0,
+		EffectDuration = 10,
+	}),
+	smoke_grenade = table.freeze({
+		Id = "smoke_grenade",
+		ImpactKind = "Smoke" :: "Smoke",
+		Speed = 68,
+		Gravity = 52,
+		MaxLifetime = 5,
+		BlastRadius = 11,
+		StructureDamage = 0,
+		PlayerDamage = 0,
+		MinFalloffMultiplier = 1.0,
+		EffectDuration = 15,
+	}),
 }
 
 return table.freeze(Projectiles)

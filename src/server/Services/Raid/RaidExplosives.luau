@@ -1,4 +1,6 @@
 --!strict
+local CollectionService = game:GetService("CollectionService")
+local Debris = game:GetService("Debris")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
@@ -37,8 +39,22 @@ export type ExplosionDeps = {
 local EXPLOSION_EFFECT_BROADCAST_RADIUS = 350
 local MAX_OCCLUSION_RAY_PASSES = 8
 local DEFAULT_MIN_FALLOFF_MULTIPLIER = 0.25
+local SMOKE_FOLDER_NAME = "TacticalSmokeClouds"
+
+local nextSmokeSeq = 0
 
 local RaidExplosives = {}
+
+local function getOrCreateSmokeFolder(): Folder
+	local existing = Workspace:FindFirstChild(SMOKE_FOLDER_NAME)
+	if existing and existing:IsA("Folder") then
+		return existing
+	end
+	local folder = Instance.new("Folder")
+	folder.Name = SMOKE_FOLDER_NAME
+	folder.Parent = Workspace
+	return folder
+end
 
 function RaidExplosives.CreateExplosiveVisual(position: Vector3, itemId: string, folder: Folder): (Part, TextLabel)
 	local part = Instance.new("Part")
@@ -566,6 +582,152 @@ function RaidExplosives.DetonateExplosive(
 		SourceId = itemId,
 		ExcludeInstances = excludePart,
 	}, deps)
+end
+
+local function broadcastEmpSparksAt(position: Vector3)
+	local evt = Net.GetEvent(Net.Events.DefenseEffect)
+	for _, plr in Players:GetPlayers() do
+		local char = plr.Character
+		local hrp = if char then char:FindFirstChild("HumanoidRootPart") else nil
+		if hrp and hrp:IsA("BasePart") and (hrp.Position - position).Magnitude <= EXPLOSION_EFFECT_BROADCAST_RADIUS then
+			evt:FireClient(plr, "TurretEmp", position, {})
+		end
+	end
+end
+
+local function setDoorIndicatorColor(doorModel: Model, color: Color3)
+	local indicator = doorModel:FindFirstChild("DoorIndicator")
+	if indicator and indicator:IsA("BasePart") then
+		indicator.Color = color
+	end
+end
+
+function RaidExplosives.TriggerEmpPulse(
+	origin: Vector3,
+	radius: number,
+	duration: number,
+	attacker: Player?,
+	projectileId: string?
+): number
+	if not SecurityService.IsValidVector3(origin) then
+		return 0
+	end
+	local safeRadius = if SecurityService.IsFiniteNumber(radius) and radius > 0 then radius else Config.Raid.EmpRadius
+	local safeDuration = if SecurityService.IsFiniteNumber(duration) and duration > 0
+		then duration
+		else Config.Raid.EmpDisableDuration
+
+	local affectedCount = DefenseService.DisableTurretsInRadius(origin, safeRadius, safeDuration)
+	local untilTime = os.clock() + safeDuration
+
+	local containerNames = { "RaidTargetStructures", "PlayerBaseStructures", "QA_TestArena" }
+	for _, containerName in containerNames do
+		local container = Workspace:FindFirstChild(containerName)
+		if container == nil then
+			continue
+		end
+		for _, inst in container:GetDescendants() do
+			if not inst:IsA("Model") then
+				continue
+			end
+			if inst:GetAttribute("HasDoor") ~= true and inst:GetAttribute("IsSmartDoor") ~= true then
+				continue
+			end
+			local doorPos = if inst.PrimaryPart then inst.PrimaryPart.Position else inst:GetPivot().Position
+			if (doorPos - origin).Magnitude <= safeRadius then
+				local prevOpen = inst:GetAttribute("DoorOpen") == true
+				if inst:GetAttribute("EmpSavedDoorOpen") == nil then
+					inst:SetAttribute("EmpSavedDoorOpen", prevOpen)
+				end
+				inst:SetAttribute("DisabledUntil", untilTime)
+				inst:SetAttribute("EmpDisabled", true)
+				BuildingGeometry.SetDoorOpen(inst, true)
+				setDoorIndicatorColor(inst, Color3.fromRGB(60, 185, 255))
+				broadcastEmpSparksAt(doorPos + Vector3.new(0, 3.5, 0))
+				affectedCount += 1
+
+				task.delay(safeDuration + 0.05, function()
+					if inst.Parent == nil then
+						return
+					end
+					local latestUntil = inst:GetAttribute("DisabledUntil")
+					if typeof(latestUntil) == "number" and os.clock() + 0.02 < latestUntil then
+						return
+					end
+					inst:SetAttribute("EmpDisabled", false)
+					local savedOpen = inst:GetAttribute("EmpSavedDoorOpen")
+					inst:SetAttribute("EmpSavedDoorOpen", nil)
+					if savedOpen == false then
+						BuildingGeometry.SetDoorOpen(inst, false)
+						setDoorIndicatorColor(inst, Color3.fromRGB(220, 65, 65))
+					else
+						setDoorIndicatorColor(inst, Color3.fromRGB(65, 220, 110))
+					end
+				end)
+			end
+		end
+	end
+
+	broadcastExplosionEffect(origin, safeRadius, "emp_grenade", projectileId, attacker)
+	return affectedCount
+end
+
+function RaidExplosives.TriggerSmokeCloud(
+	origin: Vector3,
+	duration: number,
+	attacker: Player?,
+	projectileId: string?
+): Model?
+	if not SecurityService.IsValidVector3(origin) then
+		return nil
+	end
+	local safeDuration = if SecurityService.IsFiniteNumber(duration) and duration > 0
+		then duration
+		else Config.Raid.SmokeDuration
+
+	nextSmokeSeq += 1
+	local cloudModel = Instance.new("Model")
+	cloudModel.Name = string.format("SmokeCloud_%d", nextSmokeSeq)
+	cloudModel:SetAttribute("SmokeVolume", true)
+	cloudModel:SetAttribute("ExpiresAt", os.clock() + safeDuration)
+
+	local puffs: { { Offset: Vector3, Size: Vector3, Transparency: number } } = {
+		{ Offset = Vector3.new(0, 3.8, 0), Size = Vector3.new(9.5, 8.5, 9.5), Transparency = 0.28 },
+		{ Offset = Vector3.new(4.2, 3.2, 1.5), Size = Vector3.new(8.2, 7.2, 8.2), Transparency = 0.34 },
+		{ Offset = Vector3.new(-4.2, 3.4, -1.5), Size = Vector3.new(8.2, 7.2, 8.2), Transparency = 0.34 },
+		{ Offset = Vector3.new(1.5, 3.2, -4.4), Size = Vector3.new(8.0, 7.0, 8.0), Transparency = 0.34 },
+		{ Offset = Vector3.new(-1.8, 3.3, 4.3), Size = Vector3.new(8.0, 7.0, 8.0), Transparency = 0.34 },
+		{ Offset = Vector3.new(3.8, 5.4, -3.2), Size = Vector3.new(7.2, 6.5, 7.2), Transparency = 0.40 },
+		{ Offset = Vector3.new(-3.6, 5.5, 3.2), Size = Vector3.new(7.2, 6.5, 7.2), Transparency = 0.40 },
+		{ Offset = Vector3.new(0, 6.4, 0), Size = Vector3.new(7.6, 6.5, 7.6), Transparency = 0.42 },
+	}
+
+	for idx, puff in puffs do
+		local sphere = Instance.new("Part")
+		sphere.Name = string.format("SmokePuff_%d", idx)
+		sphere.Shape = Enum.PartType.Ball
+		sphere.Size = puff.Size
+		sphere.CFrame = CFrame.new(origin + puff.Offset)
+		sphere.Anchored = true
+		sphere.CanCollide = false
+		sphere.CanQuery = true
+		sphere.CanTouch = false
+		sphere.CastShadow = false
+		sphere.Material = Enum.Material.SmoothPlastic
+		sphere.Color = Color3.fromRGB(195, 202, 210)
+		sphere.Transparency = puff.Transparency
+		sphere:SetAttribute("SmokeVolume", true)
+		CollectionService:AddTag(sphere, "SmokeVolume")
+		sphere.Parent = cloudModel
+		if idx == 1 then
+			cloudModel.PrimaryPart = sphere
+		end
+	end
+
+	cloudModel.Parent = getOrCreateSmokeFolder()
+	Debris:AddItem(cloudModel, safeDuration)
+	broadcastExplosionEffect(origin, Config.Raid.SmokeCloudRadius, "smoke_grenade", projectileId, attacker)
+	return cloudModel
 end
 
 return RaidExplosives

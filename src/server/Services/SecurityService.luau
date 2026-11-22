@@ -67,6 +67,7 @@ local RATE_LIMIT_RULES: { [string]: RateLimitRule } = table.freeze({
 	[Net.Events.RaidExtractRequest] = table.freeze({ Capacity = 2, RefillPerSec = 0.5, Category = "UI" }),
 	[Net.Events.RaidTcHackRequest] = table.freeze({ Capacity = 3, RefillPerSec = 1, Category = "UI" }),
 	[Net.Events.RaidAbandonRequest] = table.freeze({ Capacity = 2, RefillPerSec = 0.5, Category = "UI" }),
+	[Net.Events.RaidAlarmResponse] = table.freeze({ Capacity = 3, RefillPerSec = 1, Category = "UI" }),
 	[Net.Events.RequestReturnToMap] = table.freeze({ Capacity = 2, RefillPerSec = 0.5, Category = "UI" }),
 	[Net.Events.ToolCupboardAction] = table.freeze({ Capacity = 10, RefillPerSec = 6, Category = "UI" }),
 	[Net.Events.DefenseAction] = table.freeze({ Capacity = 10, RefillPerSec = 6, Category = "UI" }),

@@ -165,6 +165,16 @@ local Items: { [string]: ItemConfig } = {
 		Type = "Resource",
 		MaxStack = 10,
 	},
+	emp_grenade = {
+		Name = "EMP Grenade",
+		Type = "Tool",
+		MaxStack = 5,
+	},
+	smoke_grenade = {
+		Name = "Smoke Grenade",
+		Type = "Tool",
+		MaxStack = 5,
+	},
 	building_plan = {
 		Name = "Building Plan",
 		Type = "Tool",

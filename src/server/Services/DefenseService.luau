@@ -1,4 +1,5 @@
 --!strict
+local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -65,6 +66,7 @@ type ActiveDefenseRecord = {
 	Hp: number,
 	MaxHp: number,
 	LastFireTime: number,
+	DisabledUntil: number,
 	Triggered: boolean,
 	LockTarget: Model?,
 	LockStartTime: number,
@@ -442,6 +444,11 @@ local function hasLineOfSight(origin: Vector3, targetPart: BasePart, targetModel
 		if hit.Instance:IsDescendantOf(targetModel) then
 			return true
 		end
+		if
+			hit.Instance:GetAttribute("SmokeVolume") == true or CollectionService:HasTag(hit.Instance, "SmokeVolume")
+		then
+			return false
+		end
 		if hit.Instance.CanCollide == false and not hit.Instance:IsA("Terrain") then
 			table.insert(excludeList, hit.Instance)
 			params.FilterDescendantsInstances = excludeList
@@ -469,6 +476,11 @@ local function isSegmentClear(fromPos: Vector3, toPos: Vector3, defenseModel: Mo
 		local hit = Workspace:Raycast(fromPos, delta, params)
 		if hit == nil then
 			return true
+		end
+		if
+			hit.Instance:GetAttribute("SmokeVolume") == true or CollectionService:HasTag(hit.Instance, "SmokeVolume")
+		then
+			return false
 		end
 		if hit.Instance.CanCollide == false and not hit.Instance:IsA("Terrain") then
 			table.insert(excludeList, hit.Instance)
@@ -814,6 +826,18 @@ end
 
 local function tickAutoTurret(record: ActiveDefenseRecord, now: number)
 	local cfg = record.Config
+	if now < record.DisabledUntil then
+		record.LockTarget = nil
+		record.BurstRemaining = 0
+		record.Model:SetAttribute("EmpDisabled", true)
+		local pulse = math.floor(now * 6) % 2 == 0
+		setSensorColor(record, if pulse then Color3.fromRGB(60, 185, 255) else Color3.fromRGB(25, 75, 130))
+		return
+	end
+	if record.Model:GetAttribute("EmpDisabled") == true then
+		record.Model:SetAttribute("EmpDisabled", false)
+	end
+
 	if countStorageAmmo(record) < 1 then
 		record.LockTarget = nil
 		record.BurstRemaining = 0
@@ -1185,6 +1209,7 @@ function DefenseService.RegisterDefense(options: RegisterDefenseOptions)
 		Hp = options.Hp or defCfg.BaseHp,
 		MaxHp = options.MaxHp or defCfg.BaseHp,
 		LastFireTime = 0,
+		DisabledUntil = 0,
 		Triggered = false,
 		LockTarget = nil,
 		LockStartTime = 0,
@@ -1243,6 +1268,31 @@ function DefenseService.GetActiveCount(): number
 		count += 1
 	end
 	return count
+end
+
+function DefenseService.DisableTurretsInRadius(origin: Vector3, radius: number, duration: number): number
+	local now = os.clock()
+	local untilTime = now + math.max(0.1, duration)
+	local affected = 0
+	for _, record in defensesByUid do
+		if record.Model.Parent == nil or record.PieceType ~= "auto_turret" then
+			continue
+		end
+		local pos = getDefenseOriginPosition(record)
+		if (pos - origin).Magnitude <= radius then
+			if untilTime > record.DisabledUntil then
+				record.DisabledUntil = untilTime
+			end
+			record.LockTarget = nil
+			record.BurstRemaining = 0
+			record.Model:SetAttribute("DisabledUntil", record.DisabledUntil)
+			record.Model:SetAttribute("EmpDisabled", true)
+			setSensorColor(record, Color3.fromRGB(60, 185, 255))
+			broadcastDefenseEffect("TurretEmp", pos, {})
+			affected += 1
+		end
+	end
+	return affected
 end
 
 function DefenseService.Init()

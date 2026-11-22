@@ -80,8 +80,10 @@ function BaseGhosts.SpawnSessionDeathGhosts(player: Player): number
 			logEntry.GhostsShown = true
 			for idx, point in logEntry.DeathPoints do
 				local worldPos = Vector3.new(point.PosX, point.PosY, point.PosZ)
+				local isRouteGhost = point.Cause == "Extraction Route"
 				if
-					not BuildingValidator.IsPointInRaidOutpostOrBuffer(
+					isRouteGhost
+					or not BuildingValidator.IsPointInRaidOutpostOrBuffer(
 						worldPos,
 						Config.Raid.OutpostGhostBufferMargin,
 						outpostOrigin
@@ -93,7 +95,12 @@ function BaseGhosts.SpawnSessionDeathGhosts(player: Player): number
 					end
 
 					local ghostModel = Instance.new("Model")
-					ghostModel.Name = string.format("DeathGhost_%d_%d", player.UserId, idx)
+					ghostModel.Name = string.format(
+						"%s_%d_%d",
+						if isRouteGhost then "RouteGhost" else "DeathGhost",
+						player.UserId,
+						idx
+					)
 
 					createGhostPrimitive(
 						ghostModel,
@@ -101,7 +108,7 @@ function BaseGhosts.SpawnSessionDeathGhosts(player: Player): number
 						Vector3.new(2.6, 0.2, 2.6),
 						CFrame.new(worldPos + Vector3.new(0, 0.12, 0)),
 						Enum.Material.Neon,
-						Color3.fromRGB(255, 85, 85),
+						if isRouteGhost then Color3.fromRGB(255, 195, 45) else Color3.fromRGB(255, 85, 85),
 						0.35,
 						nil
 					)
@@ -111,7 +118,7 @@ function BaseGhosts.SpawnSessionDeathGhosts(player: Player): number
 						Vector3.new(1.5, 3.4, 1.0),
 						CFrame.new(worldPos + Vector3.new(0, 2.0, 0)),
 						Enum.Material.ForceField,
-						Color3.fromRGB(110, 225, 255),
+						if isRouteGhost then Color3.fromRGB(255, 220, 105) else Color3.fromRGB(110, 225, 255),
 						0.3,
 						nil
 					)
@@ -121,7 +128,7 @@ function BaseGhosts.SpawnSessionDeathGhosts(player: Player): number
 						Vector3.new(1.3, 1.3, 1.3),
 						CFrame.new(worldPos + Vector3.new(0, 4.5, 0)),
 						Enum.Material.ForceField,
-						Color3.fromRGB(255, 115, 125),
+						if isRouteGhost then Color3.fromRGB(255, 175, 55) else Color3.fromRGB(255, 115, 125),
 						0.2,
 						Enum.PartType.Ball
 					)
@@ -165,7 +172,9 @@ function BaseGhosts.SpawnSessionDeathGhosts(player: Player): number
 					causeLbl.BackgroundTransparency = 1
 					causeLbl.Font = Enum.Font.Gotham
 					causeLbl.TextSize = 11
-					causeLbl.TextColor3 = Color3.fromRGB(255, 145, 145)
+					causeLbl.TextColor3 = if isRouteGhost
+						then Color3.fromRGB(255, 215, 115)
+						else Color3.fromRGB(255, 145, 145)
 					causeLbl.Text = point.Cause
 					causeLbl.Parent = bg
 

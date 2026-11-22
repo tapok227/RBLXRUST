@@ -1,6 +1,7 @@
 --!strict
 local CollectionService = game:GetService("CollectionService")
 local HttpService = game:GetService("HttpService")
+local MessagingService = game:GetService("MessagingService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -85,6 +86,7 @@ type RaidSession = {
 	OutpostWorkbenchId: string?,
 	ExtractionStashContainerId: string?,
 	ExtractionStashModel: Model?,
+	StashExtractPrompt: ProximityPrompt?,
 	SupplyCrateContainerId: string?,
 	SupplyCrateModel: Model?,
 	ExtractionTerminalModel: Model?,
@@ -106,9 +108,20 @@ type RaidSession = {
 	DeathPoints: { DeathGhostPoint },
 	LastDamagedAt: number,
 	Extracting: boolean,
+	ExtractionCountdownActive: boolean,
+	ExtractionCountdownStart: number,
+	ExtractionTotalDuration: number,
+	ExtractionSirenSound: Sound?,
+	ExtractionBeaconPart: BasePart?,
 	StashExtracted: boolean,
 	PendingReturnOnRespawn: boolean,
 	ReturnPosition: Vector3?,
+	RaidId: string,
+	ReservedAccessCode: string?,
+	AlarmTriggered: boolean,
+	Defender: Player?,
+	DefenderReturnPos: Vector3?,
+	DefenderJanitor: Janitor.Janitor?,
 	Janitor: Janitor.Janitor,
 }
 
@@ -116,20 +129,39 @@ type PendingTeleport = {
 	TargetPlaceId: number,
 	Options: TeleportOptions,
 	IsReturningToMap: boolean,
+	IsDefenderTeleport: boolean?,
 	TargetName: string,
 	LaunchCostBatch: { ItemBatchEntry }?,
+}
+
+type PendingDefenseAlarm = {
+	RaidId: string,
+	TargetUserId: number,
+	TargetName: string,
+	RaiderName: string,
+	TargetBaseTier: number,
+	ReservedAccessCode: string,
+	IsStudioMock: boolean,
+	PromptExpiresAt: number,
+	Accepted: boolean,
+	PrepEndsAt: number,
 }
 
 local RAID_STRUCTURES_FOLDER_NAME = "RaidTargetStructures"
 local RAID_OUTPOST_STRUCTURES_FOLDER_NAME = "RaidOutpostStructures"
 local LOOT_CONTAINERS_FOLDER_NAME = "LootContainers"
 local STUDIO_MOCK_RAID_ORIGIN = Vector3.new(300, 0, 300)
+local RAID_ALARM_TOPIC = "MyRobloxGame_RaidAlarm"
+local EXTRACTION_SIREN_SOUND_ID = "rbxasset://sounds/action_falling.ogg"
 local RAID_DURATION = Types.RAID_DURATION
 local LIST_COOLDOWN = 1.0
 local EXPLOSIVE_PLACE_COOLDOWN = 0.5
 local MAX_HIT_SURFACE_OFFSET = 4.0
 
 local activeSessions: { [Player]: RaidSession } = {}
+local activeSessionByRaidId: { [string]: RaidSession } = {}
+local activeSessionByTargetUserId: { [number]: RaidSession } = {}
+local pendingDefenseAlarms: { [Player]: PendingDefenseAlarm } = {}
 local lastListRequest: { [Player]: number } = {}
 local lastExplosivePlaceTime: { [Player]: number } = {}
 local teleportInProgress: { [Player]: boolean } = {}
@@ -140,6 +172,8 @@ local isInitialized = false
 local RaidService = {}
 local getExplosionDeps: () -> RaidExplosives.ExplosionDeps
 local getOutpostDeps: () -> RaidOutpost.OutpostDeps
+local triggerActiveRaidAlarm: (session: RaidSession) -> ()
+local returnDefenderAfterRaid: (session: RaidSession, statusText: string?) -> ()
 
 local function getTerminalPosition(inst: Instance): Vector3?
 	if inst:IsA("Model") then
@@ -374,19 +408,34 @@ local function buildRaidHudState(session: RaidSession, statusText: string?): Rai
 	elseif session.TcHackActive then
 		hackProgress = math.clamp((os.clock() - session.TcHackStartTime) / Config.Raid.TcHackDuration, 0, 1)
 	end
+	local extActive = session.ExtractionCountdownActive == true
+	local extTotal = if session.ExtractionTotalDuration > 0
+		then session.ExtractionTotalDuration
+		else Config.Raid.StashExtractionDuration
+	local extLeft = 0
+	if extActive then
+		extLeft = math.max(0, math.ceil(extTotal - (os.clock() - session.ExtractionCountdownStart)))
+	end
+	local finalStatus = statusText
+	if finalStatus == nil and extActive then
+		finalStatus = string.format("STASH EXTRACTION: %ds (SIREEN ACTIVE)", extLeft)
+	end
 	return {
 		Active = true,
 		TargetName = session.TargetName,
 		TargetBaseTier = session.TargetBaseTier,
 		TimeLeft = timeLeft,
-		StatusText = statusText,
+		StatusText = finalStatus,
 		TcCaptured = session.TcCaptured,
 		TcHackProgress = hackProgress,
 		TcHackActive = session.TcHackActive,
 		LivesLeft = session.LivesLeft,
 		MaxLives = session.MaxLives,
 		StashItemCount = RaidOutpost.CountStashItems(session),
-		CanExtract = session.TcCaptured,
+		CanExtract = session.TcCaptured and not extActive,
+		ExtractionActive = extActive,
+		ExtractionTimeLeft = extLeft,
+		ExtractionTotalTime = extTotal,
 	}
 end
 
@@ -463,10 +512,38 @@ local function recordDefenseReport(session: RaidSession, defended: boolean, summ
 	local tierCfg = Config.Raid.Tiers[session.TargetBaseTier]
 	local bonus = if defended and tierCfg ~= nil then tierCfg.DefenseBonus else nil
 	local rewardScrap = 0
+	local mergedBonus: { [string]: number }? = nil
 	if defended then
 		local ratioReward = math.floor(session.RaiderSpentScrapValue * Config.Raid.DefenseRewardRatio + 0.5)
 		local tierScrap = if bonus ~= nil and bonus.scrap ~= nil then bonus.scrap else 0
 		rewardScrap = math.max(tierScrap, ratioReward)
+
+		if bonus ~= nil then
+			local copy: { [string]: number } = {}
+			for itemId, count in bonus do
+				if count > 0 then
+					copy[itemId] = count
+				end
+			end
+			mergedBonus = copy
+		end
+
+		if not session.StashExtracted then
+			local stashBatch, stashTotal = RaidOutpost.CollectStashBatch(session)
+			if stashTotal > 0 then
+				local targetBonus = mergedBonus or {}
+				for _, entry in stashBatch do
+					if entry.Count > 0 then
+						if entry.Id == "scrap" then
+							rewardScrap += entry.Count
+						else
+							targetBonus[entry.Id] = (targetBonus[entry.Id] or 0) + entry.Count
+						end
+					end
+				end
+				mergedBonus = targetBonus
+			end
+		end
 	end
 	local deathPointsCopy: { DeathGhostPoint } = {}
 	for _, pt in session.DeathPoints do
@@ -488,7 +565,7 @@ local function recordDefenseReport(session: RaidSession, defended: boolean, summ
 		RewardScrap = rewardScrap,
 		DeathPoints = deathPointsCopy,
 		Timestamp = os.time(),
-		BonusItems = bonus,
+		BonusItems = mergedBonus,
 		Summary = summaryText,
 	}
 	DataService.RecordRaidDefenseReport(session.TargetUserId, report)
@@ -684,8 +761,40 @@ local function destroyRaidPiece(session: RaidSession, uid: string, dropStorageLo
 	end
 end
 
+local function stopExtractionSiren(session: RaidSession)
+	if session.ExtractionSirenSound ~= nil then
+		if session.ExtractionSirenSound.Parent ~= nil then
+			session.ExtractionSirenSound:Stop()
+			session.ExtractionSirenSound:Destroy()
+		end
+		session.ExtractionSirenSound = nil
+	end
+	if session.ExtractionBeaconPart ~= nil then
+		if session.ExtractionBeaconPart.Parent ~= nil then
+			session.ExtractionBeaconPart:Destroy()
+		end
+		session.ExtractionBeaconPart = nil
+	end
+end
+
 local function cleanupSession(session: RaidSession)
+	session.ExtractionCountdownActive = false
+	stopExtractionSiren(session)
 	session.Janitor:Destroy()
+	if session.DefenderJanitor ~= nil then
+		session.DefenderJanitor:Destroy()
+		session.DefenderJanitor = nil
+	end
+	if session.Defender ~= nil and session.Defender.Parent == Players then
+		session.Defender:SetAttribute("DefendingRaid", false)
+	end
+	session.Defender = nil
+	if activeSessionByRaidId[session.RaidId] == session then
+		activeSessionByRaidId[session.RaidId] = nil
+	end
+	if activeSessionByTargetUserId[session.TargetUserId] == session then
+		activeSessionByTargetUserId[session.TargetUserId] = nil
+	end
 
 	for _, explosive in session.ActiveExplosives do
 		explosive.CancelFlag = true
@@ -948,6 +1057,7 @@ local function completeStudioReturn(player: Player, session: RaidSession, status
 		finishSelfRaidReturn(player, session, statusText)
 		return
 	end
+	returnDefenderAfterRaid(session, statusText)
 	DataService.ReleaseForTeleport(player)
 	DataService.RestoreAfterFailedTeleport(player)
 
@@ -974,6 +1084,8 @@ local function finishRaidSession(player: Player, statusText: string?, delayForRe
 		return
 	end
 	session.Extracting = true
+	session.ExtractionCountdownActive = false
+	stopExtractionSiren(session)
 	cancelTcHack(session, nil)
 	for uid in session.Pieces do
 		DefenseService.UnregisterDefense(uid)
@@ -1008,6 +1120,8 @@ local function finishRaidSession(player: Player, statusText: string?, delayForRe
 		completeStudioReturn(player, session, statusText)
 		return
 	end
+
+	returnDefenderAfterRaid(session, statusText)
 
 	if teleportInProgress[player] then
 		session.Extracting = false
@@ -1084,9 +1198,44 @@ local function failRaidSession(player: Player, reason: string, delayForRespawn: 
 	finishRaidSession(player, reason, delayForRespawn)
 end
 
-local function tryExtractFromRaid(player: Player)
-	local session = activeSessions[player]
-	if session == nil or session.Extracting then
+local function cancelStashExtraction(session: RaidSession, reason: string?)
+	if not session.ExtractionCountdownActive then
+		return
+	end
+	session.ExtractionCountdownActive = false
+	stopExtractionSiren(session)
+
+	if session.ExtractionTerminalPrompt ~= nil and session.ExtractionTerminalPrompt.Parent ~= nil then
+		session.ExtractionTerminalPrompt.Enabled = true
+	end
+	if session.StashExtractPrompt ~= nil and session.StashExtractPrompt.Parent ~= nil then
+		session.StashExtractPrompt.Enabled = true
+	end
+	if session.ExtractionTerminalIndicator ~= nil and session.ExtractionTerminalIndicator.Parent ~= nil then
+		session.ExtractionTerminalIndicator.Color = if session.TcCaptured
+			then Color3.fromRGB(60, 225, 110)
+			else Color3.fromRGB(220, 140, 45)
+	end
+
+	if reason ~= nil and #reason > 0 then
+		sendBuildFeedback(session.Raider, false, reason)
+		syncSessionHud(session, reason)
+	else
+		syncSessionHud(session, nil)
+	end
+end
+
+local function completeStashExtraction(session: RaidSession)
+	local player = session.Raider
+	if activeSessions[player] ~= session or session.Extracting then
+		return
+	end
+	local _, hrp, hum = getAliveCharacterParts(player)
+	if hrp == nil or hum == nil then
+		cancelStashExtraction(
+			session,
+			"Экстракция прервана: рейдер погиб! Лут остался в ExtractionStash"
+		)
 		return
 	end
 	if
@@ -1094,31 +1243,16 @@ local function tryExtractFromRaid(player: Player)
 		or SecurityService.IsTeleportLocked(player)
 		or SecurityService.IsTransactionLocked(player)
 	then
+		cancelStashExtraction(session, nil)
 		return
 	end
-	if DataService.GetData(player) == nil then
+	if DataService.GetData(player) == nil or not session.TcCaptured then
+		cancelStashExtraction(session, nil)
 		return
 	end
-	local _, hrp = getAliveCharacterParts(player)
-	if hrp == nil then
-		return
-	end
-	if not session.TcCaptured then
-		sendBuildFeedback(
-			player,
-			false,
-			"Сначала захватите или уничтожьте вражеский TC!"
-		)
-		return
-	end
-	if not RaidOutpost.IsRaiderInExtractionZone(session, hrp) then
-		sendBuildFeedback(
-			player,
-			false,
-			"Вернитесь к терминалу эвакуации в рейд-кибитке!"
-		)
-		return
-	end
+
+	session.ExtractionCountdownActive = false
+	stopExtractionSiren(session)
 
 	local totalCount = 0
 	local extractedItems: { ItemBatchEntry } = {}
@@ -1162,6 +1296,161 @@ local function tryExtractFromRaid(player: Player)
 		string.format("Extracted to PlayerBase! Saved %d items from ExtractionStash", totalCount),
 		false
 	)
+end
+
+local function startStashExtraction(session: RaidSession)
+	if session.ExtractionCountdownActive or session.Extracting then
+		return
+	end
+	local totalDuration = Config.Raid.StashExtractionDuration
+	session.ExtractionCountdownActive = true
+	session.ExtractionCountdownStart = os.clock()
+	session.ExtractionTotalDuration = totalDuration
+
+	if session.ExtractionTerminalPrompt ~= nil and session.ExtractionTerminalPrompt.Parent ~= nil then
+		session.ExtractionTerminalPrompt.Enabled = false
+	end
+	if session.StashExtractPrompt ~= nil and session.StashExtractPrompt.Parent ~= nil then
+		session.StashExtractPrompt.Enabled = false
+	end
+	if session.ExtractionTerminalIndicator ~= nil and session.ExtractionTerminalIndicator.Parent ~= nil then
+		session.ExtractionTerminalIndicator.Color = Color3.fromRGB(255, 55, 55)
+	end
+
+	stopExtractionSiren(session)
+	local anchorPart: BasePart? = nil
+	if session.ExtractionStashModel ~= nil and session.ExtractionStashModel.PrimaryPart ~= nil then
+		anchorPart = session.ExtractionStashModel.PrimaryPart
+	elseif session.ExtractionTerminalIndicator ~= nil and session.ExtractionTerminalIndicator.Parent ~= nil then
+		anchorPart = session.ExtractionTerminalIndicator
+	end
+	if anchorPart ~= nil then
+		local siren = Instance.new("Sound")
+		siren.Name = "ExtractionAlarmSiren"
+		siren.SoundId = EXTRACTION_SIREN_SOUND_ID
+		siren.Looped = true
+		siren.Volume = 0.85
+		siren.PlaybackSpeed = 1.15
+		siren.RollOffMinDistance = 20
+		siren.RollOffMaxDistance = 500
+		siren.Parent = anchorPart
+		siren:Play()
+		session.ExtractionSirenSound = siren
+
+		local beacon = Instance.new("Part")
+		beacon.Name = "ExtractionSirenBeacon"
+		beacon.Shape = Enum.PartType.Ball
+		beacon.Size = Vector3.new(1.5, 1.5, 1.5)
+		beacon.CFrame = CFrame.new(anchorPart.Position + Vector3.new(0, 3.8, 0))
+		beacon.Anchored = true
+		beacon.CanCollide = false
+		beacon.CanQuery = false
+		beacon.CanTouch = false
+		beacon.CastShadow = false
+		beacon.Material = Enum.Material.Neon
+		beacon.Color = Color3.fromRGB(255, 55, 55)
+		beacon.Transparency = 0.1
+		beacon.Parent = anchorPart.Parent
+		session.ExtractionBeaconPart = beacon
+	end
+
+	local startMsg = string.format(
+		"Экстракция Stash запущена (%d сек) — сирена активна, оставайтесь в живых!",
+		totalDuration
+	)
+	sendBuildFeedback(session.Raider, true, startMsg)
+	syncSessionHud(session, string.format("STASH EXTRACTION: %ds", totalDuration))
+
+	local startedAt = session.ExtractionCountdownStart
+	local nextRouteLogAt = startedAt
+	local loggedRoutePoints = 0
+	task.spawn(function()
+		while
+			activeSessions[session.Raider] == session
+			and session.ExtractionCountdownActive
+			and session.ExtractionCountdownStart == startedAt
+			and not session.Extracting
+		do
+			local _, curHrp, curHum = getAliveCharacterParts(session.Raider)
+			if curHrp == nil or curHum == nil then
+				cancelStashExtraction(
+					session,
+					"Экстракция прервана: рейдер погиб! Лут остался в ExtractionStash"
+				)
+				break
+			end
+
+			local now = os.clock()
+			if not session.IsSelfRaid and now >= nextRouteLogAt and loggedRoutePoints < 12 then
+				nextRouteLogAt = now + Config.Raid.ExtractionRouteLogInterval
+				loggedRoutePoints += 1
+				local localOffset = curHrp.Position - session.Origin
+				table.insert(session.DeathPoints, {
+					PosX = localOffset.X,
+					PosY = localOffset.Y,
+					PosZ = localOffset.Z,
+					Cause = "Extraction Route",
+					RaiderName = session.Raider.DisplayName,
+				})
+			end
+
+			if session.ExtractionBeaconPart ~= nil and session.ExtractionBeaconPart.Parent ~= nil then
+				local blink = math.floor(now * 4) % 2 == 0
+				session.ExtractionBeaconPart.Color = if blink
+					then Color3.fromRGB(255, 45, 45)
+					else Color3.fromRGB(255, 190, 50)
+				session.ExtractionBeaconPart.Transparency = if blink then 0.05 else 0.55
+			end
+
+			local elapsed = now - startedAt
+			if elapsed >= totalDuration then
+				completeStashExtraction(session)
+				break
+			end
+			local remaining = math.max(1, math.ceil(totalDuration - elapsed))
+			syncSessionHud(session, string.format("STASH EXTRACTION: %ds", remaining))
+			task.wait(0.25)
+		end
+	end)
+end
+
+local function tryExtractFromRaid(player: Player)
+	local session = activeSessions[player]
+	if session == nil or session.Extracting or session.ExtractionCountdownActive then
+		return
+	end
+	if
+		teleportInProgress[player]
+		or SecurityService.IsTeleportLocked(player)
+		or SecurityService.IsTransactionLocked(player)
+	then
+		return
+	end
+	if DataService.GetData(player) == nil then
+		return
+	end
+	local _, hrp = getAliveCharacterParts(player)
+	if hrp == nil then
+		return
+	end
+	if not session.TcCaptured then
+		sendBuildFeedback(
+			player,
+			false,
+			"Сначала захватите или уничтожьте вражеский TC!"
+		)
+		return
+	end
+	if not RaidOutpost.IsRaiderInExtractionZone(session, hrp) then
+		sendBuildFeedback(
+			player,
+			false,
+			"Вернитесь к терминалу эвакуации в рейд-кибитке!"
+		)
+		return
+	end
+
+	startStashExtraction(session)
 end
 
 getExplosionDeps = function(): RaidExplosives.ExplosionDeps
@@ -1224,6 +1513,12 @@ local function bindRaiderCharacter(session: RaidSession, character: Model)
 		end
 		diedHandled = true
 		cancelTcHack(session, nil)
+		if session.ExtractionCountdownActive then
+			cancelStashExtraction(
+				session,
+				"Экстракция прервана: рейдер погиб! Лут остался в ExtractionStash"
+			)
+		end
 		session.LivesSpent += 1
 		if not session.IsSelfRaid then
 			local hrp = character:FindFirstChild("HumanoidRootPart")
@@ -1339,6 +1634,25 @@ function RaidService.TriggerExplosion(params: ExplosionParams): ExplosionResult
 	return RaidExplosives.TriggerExplosion(params, getExplosionDeps())
 end
 
+function RaidService.TriggerEmpPulse(
+	origin: Vector3,
+	radius: number,
+	duration: number,
+	attacker: Player?,
+	projectileId: string?
+): number
+	return RaidExplosives.TriggerEmpPulse(origin, radius, duration, attacker, projectileId)
+end
+
+function RaidService.TriggerSmokeCloud(
+	origin: Vector3,
+	duration: number,
+	attacker: Player?,
+	projectileId: string?
+): Model?
+	return RaidExplosives.TriggerSmokeCloud(origin, duration, attacker, projectileId)
+end
+
 function RaidService.NotifyRaiderDamaged(player: Player)
 	local session = activeSessions[player]
 	if session == nil then
@@ -1361,6 +1675,9 @@ function RaidService.DamageRaidPiece(
 	for _, session in activeSessions do
 		local record = session.Pieces[uid]
 		if record ~= nil and record.Model.Parent ~= nil then
+			if not session.AlarmTriggered and not session.IsSelfRaid and session.TargetUserId > 0 then
+				triggerActiveRaidAlarm(session)
+			end
 			local tierCfg = BuildingConfig.Tiers[record.Piece.Tier] or BuildingConfig.Tiers.wood
 			local finalDamage: number
 			if damageKind == "Explosion" then
@@ -1680,6 +1997,7 @@ local function onStartRaidRequest(player: Player, targetUserIdAny: any)
 			RaiderUserId = player.UserId,
 			TargetName = targetName,
 			LaunchScrapValue = launchScrapValue,
+			ReservedAccessCode = accessCode,
 		}
 		local options = Instance.new("TeleportOptions")
 		options.ReservedServerAccessCode = accessCode
@@ -2050,6 +2368,9 @@ local function onTeleportInitFailed(
 	local session = activeSessions[player]
 	if pending.IsReturningToMap and session ~= nil then
 		session.Extracting = false
+	elseif pending.IsDefenderTeleport then
+		player:SetAttribute("DefendingRaid", false)
+		sendBuildFeedback(player, false, string.format("Teleport failed: %s", errorMessage))
 	else
 		sendRaidHud(player, {
 			Active = false,
@@ -2108,7 +2429,9 @@ local function createRaidSessionRecord(
 	isStudioMock: boolean,
 	returnPos: Vector3?,
 	isSelfRaid: boolean?,
-	initialSpentScrap: number?
+	initialSpentScrap: number?,
+	reservedAccessCode: string?,
+	raidId: string?
 ): RaidSession
 	local outpostOrigin = origin + Vector3.new(0, 0, Config.Raid.OutpostOffsetZ)
 	return {
@@ -2131,6 +2454,7 @@ local function createRaidSessionRecord(
 		OutpostWorkbenchId = nil,
 		ExtractionStashContainerId = nil,
 		ExtractionStashModel = nil,
+		StashExtractPrompt = nil,
 		SupplyCrateContainerId = nil,
 		SupplyCrateModel = nil,
 		ExtractionTerminalModel = nil,
@@ -2152,9 +2476,20 @@ local function createRaidSessionRecord(
 		DeathPoints = {},
 		LastDamagedAt = 0,
 		Extracting = false,
+		ExtractionCountdownActive = false,
+		ExtractionCountdownStart = 0,
+		ExtractionTotalDuration = Config.Raid.StashExtractionDuration,
+		ExtractionSirenSound = nil,
+		ExtractionBeaconPart = nil,
 		StashExtracted = false,
 		PendingReturnOnRespawn = false,
 		ReturnPosition = returnPos,
+		RaidId = raidId or HttpService:GenerateGUID(false),
+		ReservedAccessCode = reservedAccessCode,
+		AlarmTriggered = false,
+		Defender = nil,
+		DefenderReturnPos = nil,
+		DefenderJanitor = nil,
 		Janitor = Janitor.new(),
 	}
 end
@@ -2162,6 +2497,10 @@ end
 local function startRaidSession(session: RaidSession, baseData: BaseData)
 	local player = session.Raider
 	activeSessions[player] = session
+	activeSessionByRaidId[session.RaidId] = session
+	if not session.IsSelfRaid and session.TargetUserId > 0 then
+		activeSessionByTargetUserId[session.TargetUserId] = session
+	end
 	player:SetAttribute("InRaid", true)
 	player:SetAttribute("InSelfRaid", session.IsSelfRaid)
 	spawnRaidTargetBase(session, baseData)
@@ -2173,6 +2512,428 @@ local function startRaidSession(session: RaidSession, baseData: BaseData)
 		then string.format("Self-Raid Test (Tier %d) — No real loot/ammo risk!", session.TargetBaseTier)
 		else string.format("Raid started (Tier %d) — Hack or destroy enemy TC!", session.TargetBaseTier)
 	syncSessionHud(session, startMsg)
+	if not session.IsSelfRaid and session.TargetUserId > 0 then
+		triggerActiveRaidAlarm(session)
+	end
+end
+
+local function findSafeTcSpawnPosition(session: RaidSession): Vector3
+	if session.TcPieceUid ~= nil then
+		local tcRecord = session.Pieces[session.TcPieceUid]
+		if tcRecord ~= nil and tcRecord.Model.Parent ~= nil then
+			local tcPos = if tcRecord.Model.PrimaryPart ~= nil
+				then tcRecord.Model.PrimaryPart.Position
+				else tcRecord.Model:GetPivot().Position
+			return tcPos + Vector3.new(0, 4.0, 0)
+		end
+	end
+	return session.Origin + Vector3.new(0, 5.0, 0)
+end
+
+local function grantDefenderCombatKit(session: RaidSession, defender: Player)
+	if DataService.GetData(defender) == nil then
+		return
+	end
+	local snapshot = InventoryService.GetSnapshot(defender)
+	local owned: { [string]: number } = {}
+	for i = 1, Types.INVENTORY_SIZE do
+		local slot = snapshot[i]
+		if slot ~= nil and slot.Count > 0 then
+			owned[slot.Id] = (owned[slot.Id] or 0) + slot.Count
+		end
+	end
+
+	local hasWeapon = (owned.pipe_pistol or 0) > 0 or (owned.hunting_bow or 0) > 0
+	local addedFromTc: { [string]: number } = {}
+	local kitBatch: { ItemBatchEntry } = {}
+
+	if session.TcPieceUid ~= nil then
+		local tcRecord = session.Pieces[session.TcPieceUid]
+		if tcRecord ~= nil and tcRecord.ContainerId == nil and type(tcRecord.Piece.Storage) == "table" then
+			local desiredMax: { [string]: number } = {
+				pipe_pistol = if hasWeapon then 0 else 1,
+				pistol_ammo = 32,
+				bandage = 3,
+			}
+			for key, slot in tcRecord.Piece.Storage do
+				local wantMax = desiredMax[slot.Id]
+				if wantMax ~= nil and wantMax > 0 and slot.Count > 0 then
+					local cur = (owned[slot.Id] or 0) + (addedFromTc[slot.Id] or 0)
+					if cur < wantMax then
+						local take = math.min(slot.Count, wantMax - cur)
+						if take > 0 then
+							slot.Count -= take
+							if slot.Count <= 0 then
+								tcRecord.Piece.Storage[key] = nil
+							end
+							addedFromTc[slot.Id] = (addedFromTc[slot.Id] or 0) + take
+							table.insert(kitBatch, { Id = slot.Id, Count = take })
+							if slot.Id == "pipe_pistol" then
+								hasWeapon = true
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+
+	for _, fallback in Config.Raid.ActiveDefenseFallbackKit do
+		if fallback.Id == "pipe_pistol" and hasWeapon then
+			continue
+		end
+		local cur = (owned[fallback.Id] or 0) + (addedFromTc[fallback.Id] or 0)
+		if cur < fallback.Count then
+			table.insert(kitBatch, { Id = fallback.Id, Count = fallback.Count - cur })
+		end
+	end
+
+	if #kitBatch > 0 then
+		InventoryService.AddItems(defender, kitBatch)
+	end
+end
+
+local function attachDefenderToSession(session: RaidSession, defender: Player)
+	if defender.Parent ~= Players or session.Extracting then
+		return
+	end
+	if session.Defender ~= nil and session.Defender ~= defender then
+		return
+	end
+	if session.DefenderJanitor ~= nil then
+		session.DefenderJanitor:Destroy()
+	end
+
+	local defJanitor = Janitor.new()
+	session.Defender = defender
+	session.DefenderJanitor = defJanitor
+	defender:SetAttribute("DefendingRaid", true)
+
+	local function spawnAtTc(charModel: Model)
+		if session.Defender ~= defender or session.Extracting then
+			return
+		end
+		local safePos = findSafeTcSpawnPosition(session)
+		applySpawnProtection(charModel)
+		task.spawn(function()
+			local hrp = charModel:WaitForChild("HumanoidRootPart", 2)
+			task.wait()
+			if
+				hrp ~= nil
+				and session.Defender == defender
+				and not session.Extracting
+				and defender.Character == charModel
+			then
+				teleportCharacterToPosition(defender, safePos)
+			end
+		end)
+	end
+
+	if defender.Character ~= nil then
+		spawnAtTc(defender.Character)
+	end
+	defJanitor:Add(defender.CharacterAdded:Connect(function(newChar: Model)
+		spawnAtTc(newChar)
+	end))
+
+	grantDefenderCombatKit(session, defender)
+	sendBuildFeedback(
+		defender,
+		true,
+		"Вы прибыли к TC на оборону базы! Боекомплект выдан."
+	)
+	Net.GetEvent(Net.Events.RaidAlarmNotify):FireClient(defender, {
+		Phase = "Active",
+		RaidId = session.RaidId,
+		RaiderName = session.Raider.DisplayName,
+		TargetName = session.TargetName,
+		TargetBaseTier = session.TargetBaseTier,
+	})
+end
+
+returnDefenderAfterRaid = function(session: RaidSession, statusText: string?)
+	local defender = session.Defender
+	if defender == nil then
+		return
+	end
+	session.Defender = nil
+	if session.DefenderJanitor ~= nil then
+		session.DefenderJanitor:Destroy()
+		session.DefenderJanitor = nil
+	end
+	if defender.Parent ~= Players then
+		return
+	end
+
+	defender:SetAttribute("DefendingRaid", false)
+	Net.GetEvent(Net.Events.RaidAlarmNotify):FireClient(defender, {
+		Phase = "Ended",
+		RaidId = session.RaidId,
+		StatusText = statusText or "Рейд завершён",
+	})
+
+	if session.IsStudioMock then
+		local retPos = session.DefenderReturnPos or getDefaultSpawnPosition()
+		teleportCharacterToPosition(defender, retPos)
+		sendBuildFeedback(
+			defender,
+			true,
+			statusText or "Оборона завершена — возврат на позицию"
+		)
+		return
+	end
+
+	if teleportInProgress[defender] then
+		return
+	end
+	teleportInProgress[defender] = true
+	SecurityService.SetTeleportLock(defender, true)
+
+	local released = DataService.ReleaseForTeleport(defender)
+	if not released then
+		DataService.RestoreAfterFailedTeleport(defender)
+		teleportInProgress[defender] = nil
+		SecurityService.SetTeleportLock(defender, false)
+		return
+	end
+	if defender.Parent ~= Players then
+		teleportInProgress[defender] = nil
+		SecurityService.SetTeleportLock(defender, false)
+		return
+	end
+
+	local options = Instance.new("TeleportOptions")
+	options:SetTeleportData({
+		FromPlaceId = game.PlaceId,
+		OwnerUserId = defender.UserId,
+		Mode = "Base",
+	})
+	pendingTeleports[defender] = {
+		TargetPlaceId = Config.Places.PlayerBase,
+		Options = options,
+		IsReturningToMap = true,
+		IsDefenderTeleport = true,
+		TargetName = session.TargetName,
+	}
+	local ok, err = pcall(function()
+		TeleportService:TeleportAsync(Config.Places.PlayerBase, { defender }, options)
+	end)
+	if not ok then
+		warn(string.format("[RaidService] Defender return teleport error for %s: %s", defender.Name, tostring(err)))
+		pendingTeleports[defender] = nil
+		teleportInProgress[defender] = nil
+		SecurityService.SetTeleportLock(defender, false)
+		DataService.RestoreAfterFailedTeleport(defender)
+	end
+end
+
+local function dispatchAlarmToOnlinePlayer(player: Player, payload: { [string]: any })
+	if player.Parent ~= Players or DataService.GetData(player) == nil then
+		return
+	end
+	if
+		player:GetAttribute("InRaid") == true
+		or player:GetAttribute("InSelfRaid") == true
+		or player:GetAttribute("DefendingRaid") == true
+		or activeSessions[player] ~= nil
+		or pendingDefenseAlarms[player] ~= nil
+	then
+		return
+	end
+
+	local raidId = if type(payload.RaidId) == "string" then payload.RaidId else ""
+	local targetUserId = if type(payload.TargetUserId) == "number" then math.floor(payload.TargetUserId) else 0
+	if #raidId == 0 or targetUserId ~= player.UserId then
+		return
+	end
+
+	local acceptDur = Config.Raid.ActiveDefensePromptDuration
+	local alarm: PendingDefenseAlarm = {
+		RaidId = raidId,
+		TargetUserId = targetUserId,
+		TargetName = if type(payload.TargetName) == "string" then payload.TargetName else player.DisplayName,
+		RaiderName = if type(payload.RaiderName) == "string" then payload.RaiderName else "Raider",
+		TargetBaseTier = if type(payload.TargetBaseTier) == "number" then payload.TargetBaseTier else 1,
+		ReservedAccessCode = if type(payload.ReservedAccessCode) == "string" then payload.ReservedAccessCode else "",
+		IsStudioMock = payload.IsStudioMock == true,
+		PromptExpiresAt = os.clock() + acceptDur,
+		Accepted = false,
+		PrepEndsAt = 0,
+	}
+	pendingDefenseAlarms[player] = alarm
+
+	Net.GetEvent(Net.Events.RaidAlarmNotify):FireClient(player, {
+		Phase = "Prompt",
+		RaidId = alarm.RaidId,
+		RaiderName = alarm.RaiderName,
+		TargetName = alarm.TargetName,
+		TargetBaseTier = alarm.TargetBaseTier,
+		AcceptDuration = acceptDur,
+		PrepDuration = Config.Raid.ActiveDefensePrepDuration,
+	})
+
+	task.delay(acceptDur + 0.5, function()
+		local cur = pendingDefenseAlarms[player]
+		if cur == alarm and not cur.Accepted then
+			pendingDefenseAlarms[player] = nil
+		end
+	end)
+end
+
+triggerActiveRaidAlarm = function(session: RaidSession)
+	if session.AlarmTriggered or session.IsSelfRaid or session.TargetUserId <= 0 then
+		return
+	end
+	session.AlarmTriggered = true
+
+	local payload = {
+		RaidId = session.RaidId,
+		TargetUserId = session.TargetUserId,
+		TargetName = session.TargetName,
+		RaiderName = session.Raider.DisplayName,
+		TargetBaseTier = session.TargetBaseTier,
+		ReservedAccessCode = session.ReservedAccessCode or "",
+		IsStudioMock = session.IsStudioMock,
+	}
+
+	local localOwner = Players:GetPlayerByUserId(session.TargetUserId)
+	if localOwner ~= nil and localOwner ~= session.Raider then
+		dispatchAlarmToOnlinePlayer(localOwner, payload)
+	end
+
+	if not session.IsStudioMock and not RunService:IsStudio() then
+		task.spawn(function()
+			local ok, err = pcall(function()
+				MessagingService:PublishAsync(RAID_ALARM_TOPIC, payload)
+			end)
+			if not ok then
+				warn(string.format("[RaidService] MessagingService PublishAsync failed: %s", tostring(err)))
+			end
+		end)
+	end
+end
+
+local function onRaidAlarmResponse(player: Player, acceptedAny: any, raidIdAny: any)
+	if not SecurityService.CheckRateLimit(player, Net.Events.RaidAlarmResponse) then
+		return
+	end
+	if typeof(acceptedAny) ~= "boolean" then
+		return
+	end
+	local alarm = pendingDefenseAlarms[player]
+	if alarm == nil or alarm.Accepted then
+		return
+	end
+	if typeof(raidIdAny) == "string" and #raidIdAny > 0 and raidIdAny ~= alarm.RaidId then
+		return
+	end
+	if not acceptedAny or os.clock() > alarm.PromptExpiresAt then
+		pendingDefenseAlarms[player] = nil
+		return
+	end
+	if teleportInProgress[player] or DataService.IsTeleporting(player) or SecurityService.IsTeleportLocked(player) then
+		pendingDefenseAlarms[player] = nil
+		return
+	end
+
+	alarm.Accepted = true
+	local prepDuration = Config.Raid.ActiveDefensePrepDuration
+	alarm.PrepEndsAt = os.clock() + prepDuration
+
+	CraftingService.CancelCraftForPlayer(player, true, false)
+	LootService.CloseContainerForPlayer(player, true)
+
+	Net.GetEvent(Net.Events.RaidAlarmNotify):FireClient(player, {
+		Phase = "Prep",
+		RaidId = alarm.RaidId,
+		RaiderName = alarm.RaiderName,
+		TargetName = alarm.TargetName,
+		TargetBaseTier = alarm.TargetBaseTier,
+		PrepDuration = prepDuration,
+	})
+
+	task.delay(prepDuration, function()
+		if pendingDefenseAlarms[player] ~= alarm then
+			return
+		end
+		pendingDefenseAlarms[player] = nil
+		if player.Parent ~= Players or DataService.GetData(player) == nil then
+			return
+		end
+
+		local localSession = activeSessionByRaidId[alarm.RaidId] or activeSessionByTargetUserId[alarm.TargetUserId]
+		if localSession ~= nil and not localSession.Extracting then
+			local _, hrp, _ = getAliveCharacterParts(player)
+			if hrp ~= nil then
+				localSession.DefenderReturnPos = hrp.Position + Vector3.new(0, 1, 0)
+			else
+				localSession.DefenderReturnPos = getDefaultSpawnPosition()
+			end
+			attachDefenderToSession(localSession, player)
+			return
+		end
+
+		if #alarm.ReservedAccessCode == 0 or alarm.IsStudioMock then
+			sendBuildFeedback(player, false, "Рейд-сессия уже завершилась")
+			Net.GetEvent(Net.Events.RaidAlarmNotify):FireClient(player, {
+				Phase = "Ended",
+				RaidId = alarm.RaidId,
+				StatusText = "Рейд завершён",
+			})
+			return
+		end
+
+		if teleportInProgress[player] then
+			return
+		end
+		teleportInProgress[player] = true
+		SecurityService.SetTeleportLock(player, true)
+
+		local released = DataService.ReleaseForTeleport(player)
+		if not released then
+			DataService.RestoreAfterFailedTeleport(player)
+			teleportInProgress[player] = nil
+			SecurityService.SetTeleportLock(player, false)
+			sendBuildFeedback(
+				player,
+				false,
+				"Не удалось подготовить телепорт на оборону"
+			)
+			return
+		end
+		if player.Parent ~= Players then
+			teleportInProgress[player] = nil
+			SecurityService.SetTeleportLock(player, false)
+			return
+		end
+
+		local options = Instance.new("TeleportOptions")
+		options.ReservedServerAccessCode = alarm.ReservedAccessCode
+		options:SetTeleportData({
+			Mode = "RaidDefense",
+			RaidId = alarm.RaidId,
+			TargetUserId = alarm.TargetUserId,
+			ReturnPlaceId = game.PlaceId,
+		})
+		pendingTeleports[player] = {
+			TargetPlaceId = Config.Places.PlayerBase,
+			Options = options,
+			IsReturningToMap = false,
+			IsDefenderTeleport = true,
+			TargetName = alarm.TargetName,
+		}
+		local ok, err = pcall(function()
+			TeleportService:TeleportAsync(Config.Places.PlayerBase, { player }, options)
+		end)
+		if not ok then
+			warn(string.format("[RaidService] Defense TeleportAsync failed for %s: %s", player.Name, tostring(err)))
+			pendingTeleports[player] = nil
+			teleportInProgress[player] = nil
+			SecurityService.SetTeleportLock(player, false)
+			DataService.RestoreAfterFailedTeleport(player)
+			sendBuildFeedback(player, false, "Ошибка телепортации к защите базы")
+		end
+	end)
 end
 
 local function onPlayerDataLoaded(player: Player, _data: Types.PlayerData)
@@ -2184,6 +2945,51 @@ local function onPlayerDataLoaded(player: Player, _data: Types.PlayerData)
 			and type(joinData.TeleportData) == "table"
 		then joinData.TeleportData
 		else nil
+
+	if game.PlaceId == Config.Places.PlayerBase and teleportData ~= nil and teleportData.Mode == "RaidDefense" then
+		local targetUserIdAny = teleportData.TargetUserId
+		local targetUserId = if SecurityService.IsValidInteger(targetUserIdAny)
+			then math.floor(targetUserIdAny :: number)
+			else 0
+		local raidId = if type(teleportData.RaidId) == "string" then teleportData.RaidId else ""
+		local session = if #raidId > 0 then activeSessionByRaidId[raidId] else nil
+		if session == nil and targetUserId > 0 then
+			session = activeSessionByTargetUserId[targetUserId]
+		end
+		if session ~= nil and not session.Extracting and session.TargetUserId == player.UserId then
+			attachDefenderToSession(session, player)
+		else
+			sendBuildFeedback(
+				player,
+				false,
+				"Рейд уже завершён — возвращение на базу"
+			)
+			task.delay(1.5, function()
+				if player.Parent ~= Players or teleportInProgress[player] then
+					return
+				end
+				teleportInProgress[player] = true
+				SecurityService.SetTeleportLock(player, true)
+				if DataService.ReleaseForTeleport(player) then
+					local opts = Instance.new("TeleportOptions")
+					opts:SetTeleportData({
+						FromPlaceId = game.PlaceId,
+						OwnerUserId = player.UserId,
+						Mode = "Base",
+					})
+					pcall(function()
+						TeleportService:TeleportAsync(Config.Places.PlayerBase, { player }, opts)
+					end)
+				else
+					DataService.RestoreAfterFailedTeleport(player)
+					teleportInProgress[player] = nil
+					SecurityService.SetTeleportLock(player, false)
+				end
+			end)
+		end
+		return
+	end
+
 	local isRaidJoin = game.PlaceId == Config.Places.PlayerBase and teleportData ~= nil and teleportData.Mode == "Raid"
 
 	if not isRaidJoin then
@@ -2228,6 +3034,9 @@ local function onPlayerDataLoaded(player: Player, _data: Types.PlayerData)
 	local launchScrap = if SecurityService.IsValidInteger(teleportData.LaunchScrapValue)
 		then math.max(0, math.floor(teleportData.LaunchScrapValue :: number))
 		else 0
+	local reservedCode = if type(teleportData.ReservedAccessCode) == "string"
+		then teleportData.ReservedAccessCode
+		else nil
 	local session = createRaidSessionRecord(
 		player,
 		targetUserId,
@@ -2237,7 +3046,9 @@ local function onPlayerDataLoaded(player: Player, _data: Types.PlayerData)
 		false,
 		nil,
 		false,
-		launchScrap
+		launchScrap,
+		reservedCode,
+		nil
 	)
 	startRaidSession(session, baseData :: BaseData)
 end
@@ -2387,7 +3198,32 @@ function RaidService.Init()
 	Net.GetEvent(Net.Events.RaidExtractRequest).OnServerEvent:Connect(onRaidExtractRequest)
 	Net.GetEvent(Net.Events.RaidTcHackRequest).OnServerEvent:Connect(onRaidTcHackRequest)
 	Net.GetEvent(Net.Events.RaidAbandonRequest).OnServerEvent:Connect(onRaidAbandonRequest)
+	Net.GetEvent(Net.Events.RaidAlarmResponse).OnServerEvent:Connect(onRaidAlarmResponse)
 	TeleportService.TeleportInitFailed:Connect(onTeleportInitFailed)
+
+	if not RunService:IsStudio() then
+		task.spawn(function()
+			local ok, err = pcall(function()
+				MessagingService:SubscribeAsync(RAID_ALARM_TOPIC, function(message: any)
+					if type(message) ~= "table" or type(message.Data) ~= "table" then
+						return
+					end
+					local data = message.Data :: { [string]: any }
+					local targetIdAny = data.TargetUserId
+					if type(targetIdAny) ~= "number" then
+						return
+					end
+					local targetPlayer = Players:GetPlayerByUserId(math.floor(targetIdAny))
+					if targetPlayer ~= nil then
+						dispatchAlarmToOnlinePlayer(targetPlayer, data)
+					end
+				end)
+			end)
+			if not ok then
+				warn(string.format("[RaidService] MessagingService SubscribeAsync failed: %s", tostring(err)))
+			end
+		end)
+	end
 
 	DataService.OnBeforeUnload(function(player: Player, data: Types.PlayerData)
 		local session = activeSessions[player]
@@ -2421,6 +3257,16 @@ function RaidService.Init()
 			cleanupSession(session)
 		end
 		RaidIntel.ClearPlayerState(player)
+		pendingDefenseAlarms[player] = nil
+		for _, activeSess in activeSessions do
+			if activeSess.Defender == player then
+				activeSess.Defender = nil
+				if activeSess.DefenderJanitor ~= nil then
+					activeSess.DefenderJanitor:Destroy()
+					activeSess.DefenderJanitor = nil
+				end
+			end
+		end
 		lastListRequest[player] = nil
 		lastExplosivePlaceTime[player] = nil
 		teleportInProgress[player] = nil

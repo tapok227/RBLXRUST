@@ -412,7 +412,7 @@ export type ExplosiveConfig = {
 
 export type ProjectileConfig = {
 	Id: string,
-	ImpactKind: ("Explosive" | "Direct")?,
+	ImpactKind: ("Explosive" | "Direct" | "Emp" | "Smoke")?,
 	Speed: number,
 	MinSpeed: number?,
 	MaxSpeed: number?,
@@ -425,6 +425,7 @@ export type ProjectileConfig = {
 	MinDamage: number?,
 	HeadshotMultiplier: number?,
 	MinFalloffMultiplier: number,
+	EffectDuration: number?,
 }
 
 export type ExplosionParams = {
@@ -484,6 +485,9 @@ export type RaidHudState = {
 	MaxLives: number?,
 	StashItemCount: number?,
 	CanExtract: boolean?,
+	ExtractionActive: boolean?,
+	ExtractionTimeLeft: number?,
+	ExtractionTotalTime: number?,
 }
 
 export type RaidDefenseReport = {

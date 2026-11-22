@@ -94,6 +94,24 @@ local Weapons: { [string]: WeaponConfig } = {
 		AirSpreadDeg = 2.2,
 		CrouchSpreadMultiplier = 0.6,
 	}),
+	emp_grenade = table.freeze({
+		Category = "Ranged" :: Types.WeaponCategory,
+		Damage = 0,
+		HeadshotMultiplier = 1.0,
+		Range = 80,
+		Cooldown = 1.2,
+		AmmoId = "emp_grenade",
+		ProjectileId = "emp_grenade",
+	}),
+	smoke_grenade = table.freeze({
+		Category = "Ranged" :: Types.WeaponCategory,
+		Damage = 0,
+		HeadshotMultiplier = 1.0,
+		Range = 80,
+		Cooldown = 1.2,
+		AmmoId = "smoke_grenade",
+		ProjectileId = "smoke_grenade",
+	}),
 	FISTS = FISTS,
 }
 

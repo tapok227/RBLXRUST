@@ -1396,7 +1396,7 @@ function BaseService.Init()
 			ok
 			and type(joinData) == "table"
 			and type(joinData.TeleportData) == "table"
-			and joinData.TeleportData.Mode == "Raid"
+			and (joinData.TeleportData.Mode == "Raid" or joinData.TeleportData.Mode == "RaidDefense")
 		then
 			isRaidJoin = true
 		end

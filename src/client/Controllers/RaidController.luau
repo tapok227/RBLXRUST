@@ -3,6 +3,7 @@ local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local SoundService = game:GetService("SoundService")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 
@@ -59,6 +60,15 @@ local hudMetaLabel: TextLabel? = nil
 local extractButton: TextButton? = nil
 local abandonButton: TextButton? = nil
 local reportToastLabel: TextLabel? = nil
+local alarmFrame: Frame? = nil
+local alarmBodyLabel: TextLabel? = nil
+local alarmTimerLabel: TextLabel? = nil
+local prepOverlayFrame: Frame? = nil
+local prepTimerLabel: TextLabel? = nil
+
+local activeAlarmRaidId: string? = nil
+local activeAlarmExpiresAt = 0
+local activePrepEndsAt = 0
 
 local RaidController = {}
 
@@ -646,6 +656,173 @@ local function createRaidGui()
 	paidRefreshButton = paidBtn
 	targetListContainer = scroller
 
+	-- 4. Active Raid Defense Alarm prompt (15s)
+	local aFrame = Instance.new("Frame")
+	aFrame.Name = "RaidAlarmFrame"
+	aFrame.AnchorPoint = Vector2.new(0.5, 0)
+	aFrame.Position = UDim2.new(0.5, 0, 0, 86)
+	aFrame.Size = UDim2.fromOffset(470, 148)
+	aFrame.BackgroundColor3 = Color3.fromRGB(34, 16, 20)
+	aFrame.BackgroundTransparency = 0.05
+	aFrame.BorderSizePixel = 0
+	aFrame.Visible = false
+	aFrame.Parent = screenGui
+
+	local aCorner = Instance.new("UICorner")
+	aCorner.CornerRadius = UDim.new(0, 10)
+	aCorner.Parent = aFrame
+
+	local aStroke = Instance.new("UIStroke")
+	aStroke.Color = Color3.fromRGB(245, 75, 75)
+	aStroke.Thickness = 2
+	aStroke.Parent = aFrame
+
+	local aTitle = Instance.new("TextLabel")
+	aTitle.Name = "AlarmTitle"
+	aTitle.Position = UDim2.fromOffset(16, 10)
+	aTitle.Size = UDim2.new(1, -32, 0, 24)
+	aTitle.BackgroundTransparency = 1
+	aTitle.Font = Enum.Font.GothamBold
+	aTitle.TextSize = 16
+	aTitle.TextColor3 = Color3.fromRGB(255, 110, 110)
+	aTitle.TextXAlignment = Enum.TextXAlignment.Left
+	aTitle.Text = "ТРЕВОГА: БАЗА ПОД АТАКОЙ!"
+	aTitle.Parent = aFrame
+
+	local aBody = Instance.new("TextLabel")
+	aBody.Name = "AlarmBody"
+	aBody.Position = UDim2.fromOffset(16, 36)
+	aBody.Size = UDim2.new(1, -32, 0, 38)
+	aBody.BackgroundTransparency = 1
+	aBody.Font = Enum.Font.GothamMedium
+	aBody.TextSize = 13
+	aBody.TextColor3 = Color3.fromRGB(245, 245, 250)
+	aBody.TextWrapped = true
+	aBody.TextXAlignment = Enum.TextXAlignment.Left
+	aBody.Text = "Вашу базу штурмуют! Вернуться к обороне?"
+	aBody.Parent = aFrame
+
+	local aTimer = Instance.new("TextLabel")
+	aTimer.Name = "AlarmTimer"
+	aTimer.Position = UDim2.fromOffset(16, 76)
+	aTimer.Size = UDim2.new(1, -32, 0, 20)
+	aTimer.BackgroundTransparency = 1
+	aTimer.Font = Enum.Font.GothamBold
+	aTimer.TextSize = 12
+	aTimer.TextColor3 = Color3.fromRGB(255, 210, 105)
+	aTimer.TextXAlignment = Enum.TextXAlignment.Left
+	aTimer.Text = "Осталось времени: 15с"
+	aTimer.Parent = aFrame
+
+	local acceptBtn = Instance.new("TextButton")
+	acceptBtn.Name = "AcceptDefenseButton"
+	acceptBtn.Position = UDim2.fromOffset(16, 102)
+	acceptBtn.Size = UDim2.fromOffset(210, 34)
+	acceptBtn.BackgroundColor3 = Color3.fromRGB(40, 155, 82)
+	acceptBtn.BorderSizePixel = 0
+	acceptBtn.Font = Enum.Font.GothamBold
+	acceptBtn.TextSize = 13
+	acceptBtn.TextColor3 = Color3.new(1, 1, 1)
+	acceptBtn.Text = "Защищать базу"
+	acceptBtn.Parent = aFrame
+	local accCorner = Instance.new("UICorner")
+	accCorner.CornerRadius = UDim.new(0, 6)
+	accCorner.Parent = acceptBtn
+	acceptBtn.MouseButton1Click:Connect(function()
+		if activeAlarmRaidId ~= nil then
+			local rid = activeAlarmRaidId
+			activeAlarmRaidId = nil
+			activeAlarmExpiresAt = 0
+			aFrame.Visible = false
+			Net.GetEvent(Net.Events.RaidAlarmResponse):FireServer(true, rid)
+		end
+	end)
+
+	local declineBtn = Instance.new("TextButton")
+	declineBtn.Name = "DeclineDefenseButton"
+	declineBtn.Position = UDim2.fromOffset(244, 102)
+	declineBtn.Size = UDim2.fromOffset(210, 34)
+	declineBtn.BackgroundColor3 = Color3.fromRGB(78, 82, 92)
+	declineBtn.BorderSizePixel = 0
+	declineBtn.Font = Enum.Font.GothamBold
+	declineBtn.TextSize = 13
+	declineBtn.TextColor3 = Color3.new(1, 1, 1)
+	declineBtn.Text = "Игнорировать"
+	declineBtn.Parent = aFrame
+	local decCorner = Instance.new("UICorner")
+	decCorner.CornerRadius = UDim.new(0, 6)
+	decCorner.Parent = declineBtn
+	declineBtn.MouseButton1Click:Connect(function()
+		local rid = activeAlarmRaidId
+		activeAlarmRaidId = nil
+		activeAlarmExpiresAt = 0
+		aFrame.Visible = false
+		if rid ~= nil then
+			Net.GetEvent(Net.Events.RaidAlarmResponse):FireServer(false, rid)
+		end
+	end)
+
+	-- 5. Active Raid Defense 6s Prep screen
+	local pFrame = Instance.new("Frame")
+	pFrame.Name = "DefensePrepOverlay"
+	pFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+	pFrame.Position = UDim2.fromScale(0.5, 0.42)
+	pFrame.Size = UDim2.fromOffset(440, 140)
+	pFrame.BackgroundColor3 = Color3.fromRGB(16, 22, 34)
+	pFrame.BackgroundTransparency = 0.06
+	pFrame.BorderSizePixel = 0
+	pFrame.Visible = false
+	pFrame.Parent = screenGui
+
+	local pCorner = Instance.new("UICorner")
+	pCorner.CornerRadius = UDim.new(0, 12)
+	pCorner.Parent = pFrame
+
+	local pStroke = Instance.new("UIStroke")
+	pStroke.Color = Color3.fromRGB(85, 195, 255)
+	pStroke.Thickness = 2
+	pStroke.Parent = pFrame
+
+	local pTitle = Instance.new("TextLabel")
+	pTitle.Name = "PrepTitle"
+	pTitle.Position = UDim2.fromOffset(16, 16)
+	pTitle.Size = UDim2.new(1, -32, 0, 28)
+	pTitle.BackgroundTransparency = 1
+	pTitle.Font = Enum.Font.GothamBold
+	pTitle.TextSize = 18
+	pTitle.TextColor3 = Color3.fromRGB(120, 220, 255)
+	pTitle.Text = "ПОДГОТОВКА К ОБОРОНЕ"
+	pTitle.Parent = pFrame
+
+	local pTimer = Instance.new("TextLabel")
+	pTimer.Name = "PrepTimer"
+	pTimer.Position = UDim2.fromOffset(16, 52)
+	pTimer.Size = UDim2.new(1, -32, 0, 32)
+	pTimer.BackgroundTransparency = 1
+	pTimer.Font = Enum.Font.GothamBold
+	pTimer.TextSize = 22
+	pTimer.TextColor3 = Color3.new(1, 1, 1)
+	pTimer.Text = "Телепортация к TC через 6с..."
+	pTimer.Parent = pFrame
+
+	local pSub = Instance.new("TextLabel")
+	pSub.Name = "PrepSub"
+	pSub.Position = UDim2.fromOffset(16, 92)
+	pSub.Size = UDim2.new(1, -32, 0, 30)
+	pSub.BackgroundTransparency = 1
+	pSub.Font = Enum.Font.Gotham
+	pSub.TextSize = 12
+	pSub.TextColor3 = Color3.fromRGB(190, 210, 230)
+	pSub.TextWrapped = true
+	pSub.Text = "Подготовка боекомплекта из хранилища TC и инвентаря"
+	pSub.Parent = pFrame
+
+	alarmFrame = aFrame
+	alarmBodyLabel = aBody
+	alarmTimerLabel = aTimer
+	prepOverlayFrame = pFrame
+	prepTimerLabel = pTimer
+
 	screenGui.Parent = playerGui
 end
 
@@ -733,6 +910,13 @@ local function onRaidHudSync(stateAny: any)
 	local maxLives = if typeof(stateAny.MaxLives) == "number" then stateAny.MaxLives else Config.Raid.MaxLives
 	local stashCount = if typeof(stateAny.StashItemCount) == "number" then stateAny.StashItemCount else 0
 	local canExtract = stateAny.CanExtract == true
+	local extractionActive = stateAny.ExtractionActive == true
+	local extractionTimeLeft = if typeof(stateAny.ExtractionTimeLeft) == "number"
+		then stateAny.ExtractionTimeLeft
+		else 0
+	local extractionTotalTime = if typeof(stateAny.ExtractionTotalTime) == "number"
+		then stateAny.ExtractionTotalTime
+		else Config.Raid.StashExtractionDuration
 
 	if not stateAny.Active then
 		currentHudState = nil
@@ -755,12 +939,18 @@ local function onRaidHudSync(stateAny: any)
 		MaxLives = maxLives,
 		StashItemCount = stashCount,
 		CanExtract = canExtract,
+		ExtractionActive = extractionActive,
+		ExtractionTimeLeft = extractionTimeLeft,
+		ExtractionTotalTime = extractionTotalTime,
 	}
 	currentHudState = state
 
 	if hudFrame and hudStatusLabel then
 		local tierTag = if targetTier ~= nil then string.format(" [T%d]", targetTier) else ""
-		if statusText ~= nil then
+		if extractionActive then
+			hudStatusLabel.Text =
+				string.format("STASH EXTRACTION (%ds) | %s%s", extractionTimeLeft, targetName, tierTag)
+		elseif statusText ~= nil then
 			hudStatusLabel.Text = string.format("RAIDING %s%s | %s", targetName, tierTag, statusText)
 		else
 			hudStatusLabel.Text =
@@ -768,23 +958,34 @@ local function onRaidHudSync(stateAny: any)
 		end
 
 		if hudMetaLabel then
-			local tcText = if tcCaptured
-				then "TC Captured — Extract Available"
+			local tcText = if extractionActive
+				then string.format(
+					"Сирена активна! Выжить %ds/%ds",
+					extractionTimeLeft,
+					extractionTotalTime
+				)
+				elseif tcCaptured then "TC Captured — Extract Available"
 				elseif tcHackActive then string.format("Hacking TC: %d%%", math.floor(tcHackProgress * 100 + 0.5))
 				else "TC: Active (Hack or Destroy)"
 			hudMetaLabel.Text =
 				string.format("Lives: %d/%d  |  Stash: %d  |  %s", livesLeft, maxLives, stashCount, tcText)
-			hudMetaLabel.TextColor3 = if tcCaptured
-				then Color3.fromRGB(130, 245, 165)
+			hudMetaLabel.TextColor3 = if extractionActive
+				then Color3.fromRGB(255, 225, 110)
+				elseif tcCaptured then Color3.fromRGB(130, 245, 165)
 				elseif tcHackActive then Color3.fromRGB(255, 220, 115)
 				else Color3.fromRGB(255, 210, 195)
 		end
 
 		if extractButton then
-			extractButton.BackgroundColor3 = if canExtract
-				then Color3.fromRGB(36, 155, 82)
-				else Color3.fromRGB(70, 74, 82)
-			extractButton.Text = if canExtract then "Extract (Outpost)" else "TC Required"
+			if extractionActive then
+				extractButton.BackgroundColor3 = Color3.fromRGB(205, 65, 55)
+				extractButton.Text = string.format("Extracting %ds", extractionTimeLeft)
+			else
+				extractButton.BackgroundColor3 = if canExtract
+					then Color3.fromRGB(36, 155, 82)
+					else Color3.fromRGB(70, 74, 82)
+				extractButton.Text = if canExtract then "Extract (18s)" else "TC Required"
+			end
 		end
 		if abandonButton then
 			abandonButton.Visible = true
@@ -822,6 +1023,80 @@ local function onRaidReportNotify(reportAny: any)
 			reportToastLabel.Visible = false
 		end
 	end)
+end
+
+local function onRaidAlarmNotify(payloadAny: any)
+	if type(payloadAny) ~= "table" then
+		return
+	end
+	local phase = if typeof(payloadAny.Phase) == "string" then payloadAny.Phase else "Prompt"
+	local raidId = if typeof(payloadAny.RaidId) == "string" then payloadAny.RaidId else ""
+
+	if phase == "Prompt" then
+		local raiderName = if typeof(payloadAny.RaiderName) == "string" then payloadAny.RaiderName else "Raider"
+		local tier = if typeof(payloadAny.TargetBaseTier) == "number" then payloadAny.TargetBaseTier else 1
+		local acceptDur = if typeof(payloadAny.AcceptDuration) == "number"
+			then payloadAny.AcceptDuration
+			else Config.Raid.ActiveDefensePromptDuration
+		activeAlarmRaidId = raidId
+		activeAlarmExpiresAt = os.clock() + acceptDur
+		if alarmBodyLabel then
+			alarmBodyLabel.Text = string.format(
+				"Вашу базу (Tier %d) штурмует %s! Вернуться к обороне?",
+				tier,
+				raiderName
+			)
+		end
+		if alarmTimerLabel then
+			alarmTimerLabel.Text = string.format("Осталось времени: %dс", math.ceil(acceptDur))
+		end
+		if alarmFrame then
+			alarmFrame.Visible = true
+		end
+		if prepOverlayFrame then
+			prepOverlayFrame.Visible = false
+		end
+		local alarmSound = Instance.new("Sound")
+		alarmSound.SoundId = "rbxasset://sounds/action_falling.ogg"
+		alarmSound.Volume = 0.7
+		alarmSound.PlaybackSpeed = 1.6
+		alarmSound.Parent = SoundService
+		alarmSound:Play()
+		alarmSound.Ended:Once(function()
+			alarmSound:Destroy()
+		end)
+		task.delay(2.5, function()
+			if alarmSound.Parent then
+				alarmSound:Destroy()
+			end
+		end)
+	elseif phase == "Prep" then
+		local prepDur = if typeof(payloadAny.PrepDuration) == "number"
+			then payloadAny.PrepDuration
+			else Config.Raid.ActiveDefensePrepDuration
+		activeAlarmRaidId = nil
+		activeAlarmExpiresAt = 0
+		activePrepEndsAt = os.clock() + prepDur
+		if alarmFrame then
+			alarmFrame.Visible = false
+		end
+		if prepTimerLabel then
+			prepTimerLabel.Text = string.format("Телепортация к TC через %dс...", math.ceil(prepDur))
+		end
+		if prepOverlayFrame then
+			prepOverlayFrame.Visible = true
+		end
+	elseif phase == "Active" or phase == "Ended" then
+		activeAlarmRaidId = nil
+		activeAlarmExpiresAt = 0
+		activePrepEndsAt = 0
+		if alarmFrame then
+			alarmFrame.Visible = false
+		end
+		if prepOverlayFrame then
+			prepOverlayFrame.Visible = false
+		end
+	end
 end
 
 local function findRaidPieceFromInstance(inst: Instance?): (Model?, string?)
@@ -1042,6 +1317,7 @@ function RaidController.Init()
 	Net.GetEvent(Net.Events.RaidListSync).OnClientEvent:Connect(onRaidListSync)
 	Net.GetEvent(Net.Events.RaidHudSync).OnClientEvent:Connect(onRaidHudSync)
 	Net.GetEvent(Net.Events.RaidReportNotify).OnClientEvent:Connect(onRaidReportNotify)
+	Net.GetEvent(Net.Events.RaidAlarmNotify).OnClientEvent:Connect(onRaidAlarmNotify)
 
 	UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessedEvent: boolean)
 		if UserInputService:GetFocusedTextBox() ~= nil then
@@ -1061,11 +1337,33 @@ function RaidController.Init()
 
 	local lastTimerTick = 0
 	RunService.Heartbeat:Connect(function()
+		local now = os.clock()
+		if activeAlarmRaidId ~= nil and alarmFrame and alarmFrame.Visible then
+			local rem = activeAlarmExpiresAt - now
+			if rem <= 0 then
+				activeAlarmRaidId = nil
+				activeAlarmExpiresAt = 0
+				alarmFrame.Visible = false
+			elseif alarmTimerLabel then
+				alarmTimerLabel.Text = string.format("Осталось времени: %dс", math.ceil(rem))
+			end
+		end
+		if activePrepEndsAt > 0 and prepOverlayFrame and prepOverlayFrame.Visible then
+			local prepRem = activePrepEndsAt - now
+			if prepRem <= 0 then
+				activePrepEndsAt = 0
+				prepOverlayFrame.Visible = false
+			elseif prepTimerLabel then
+				prepTimerLabel.Text =
+					string.format("Телепортация к TC через %dс...", math.ceil(prepRem))
+			end
+		end
+
 		if not isSelectionOpen then
 			return
 		end
-		if (os.clock() - lastTimerTick) >= 1.0 then
-			lastTimerTick = os.clock()
+		if (now - lastTimerTick) >= 1.0 then
+			lastTimerTick = now
 			updateRefreshButtonsVisual()
 		end
 		local localPlayer = Players.LocalPlayer

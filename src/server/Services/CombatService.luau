@@ -492,6 +492,20 @@ local function launchServerProjectile(
 			end
 
 			local blastOrigin = hitResult.Position + hitResult.Normal * 0.25
+			if projCfg.ImpactKind == "Emp" then
+				RaidService.TriggerEmpPulse(
+					blastOrigin,
+					projCfg.BlastRadius,
+					projCfg.EffectDuration or 10,
+					player,
+					projectileId
+				)
+				return
+			elseif projCfg.ImpactKind == "Smoke" then
+				RaidService.TriggerSmokeCloud(blastOrigin, projCfg.EffectDuration or 15, player, projectileId)
+				return
+			end
+
 			RaidService.TriggerExplosion({
 				Origin = blastOrigin,
 				Radius = projCfg.BlastRadius,

@@ -418,6 +418,13 @@ local function onDefenseEffect(effectKindAny: any, originAny: any, targetPositio
 		spawnWorldSound(origin, SOUND_BEEP, 0.4, 2.0)
 	elseif effectKind == "MineArm" then
 		spawnWorldSound(origin, SOUND_BEEP, 0.55, 2.4)
+	elseif effectKind == "TurretEmp" then
+		spawnWorldSound(origin, SOUND_SHOT, 0.7, 2.6)
+		for i = 1, 6 do
+			local angle = (i / 6) * math.pi * 2
+			local sparkOffset = Vector3.new(math.cos(angle) * 2.2, 0.6 + (i % 2) * 0.9, math.sin(angle) * 2.2)
+			spawnBeamPart(origin, origin + sparkOffset, 0.14, Color3.fromRGB(65, 205, 255), 0.35)
+		end
 	end
 end
 

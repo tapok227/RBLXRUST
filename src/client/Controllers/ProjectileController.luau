@@ -324,6 +324,43 @@ local function buildFallbackArrow(): Model
 	return arrow
 end
 
+local function buildFallbackGrenade(isEmp: boolean): Model
+	local grenade = Instance.new("Model")
+	grenade.Name = if isEmp then "FallbackEmpGrenade" else "FallbackSmokeGrenade"
+
+	local body = Instance.new("Part")
+	body.Name = "Body"
+	body.Shape = Enum.PartType.Cylinder
+	body.Size = Vector3.new(0.85, 0.55, 0.55)
+	body.CFrame = CFrame.Angles(0, 0, math.rad(90))
+	body.Material = Enum.Material.Metal
+	body.Color = if isEmp then Color3.fromRGB(36, 62, 94) else Color3.fromRGB(85, 92, 98)
+	body.Anchored = true
+	body.CanCollide = false
+	body.CanQuery = false
+	body.CanTouch = false
+	body.Massless = true
+	body.Parent = grenade
+
+	local band = Instance.new("Part")
+	band.Name = "Band"
+	band.Shape = Enum.PartType.Cylinder
+	band.Size = Vector3.new(0.2, 0.6, 0.6)
+	band.CFrame = CFrame.Angles(0, 0, math.rad(90))
+	band.Material = Enum.Material.Neon
+	band.Color = if isEmp then Color3.fromRGB(65, 200, 255) else Color3.fromRGB(210, 215, 220)
+	band.Anchored = true
+	band.CanCollide = false
+	band.CanQuery = false
+	band.CanTouch = false
+	band.Massless = true
+	band.Parent = grenade
+
+	grenade.PrimaryPart = body
+	grenade.WorldPivot = body.CFrame
+	return grenade
+end
+
 local function cloneLauncherTemplate(): Model
 	local assets = ReplicatedStorage:FindFirstChild("Assets")
 	local weapons = if assets then assets:FindFirstChild("Weapons") else nil
@@ -343,6 +380,11 @@ local function cloneLauncherTemplate(): Model
 end
 
 local function cloneProjectileTemplate(projectileConfigId: string): Model
+	if projectileConfigId == "emp_grenade" then
+		return buildFallbackGrenade(true)
+	elseif projectileConfigId == "smoke_grenade" then
+		return buildFallbackGrenade(false)
+	end
 	local isArrow = projectileConfigId == "arrow"
 	local assetName = if isArrow then "Arrow" else "Rocket"
 	local assets = ReplicatedStorage:FindFirstChild("Assets")
@@ -365,7 +407,13 @@ local function cloneProjectileTemplate(projectileConfigId: string): Model
 	return model
 end
 
-local function playSoundAtPosition(position: Vector3, playbackSpeed: number, volume: number, maxDist: number)
+local function playSoundAtPosition(
+	position: Vector3,
+	playbackSpeed: number,
+	volume: number,
+	maxDist: number,
+	soundIdOverride: string?
+)
 	local anchor = Instance.new("Part")
 	anchor.Name = "ProjectileSoundAnchor"
 	anchor.Size = Vector3.new(0.2, 0.2, 0.2)
@@ -379,7 +427,7 @@ local function playSoundAtPosition(position: Vector3, playbackSpeed: number, vol
 	anchor.Parent = getVfxFolder()
 
 	local sound = Instance.new("Sound")
-	sound.SoundId = EXPLOSION_SOUND_ID
+	sound.SoundId = soundIdOverride or EXPLOSION_SOUND_ID
 	sound.Volume = volume
 	sound.PlaybackSpeed = playbackSpeed
 	sound.RollOffMaxDistance = maxDist
@@ -700,11 +748,11 @@ local function onProjectileSpawn(
 
 	spawnVisualBallistic(projectileId, projectileConfigIdAny, origin, velocity, gravity, maxLifetime, excludes)
 	if projectileConfigIdAny ~= "arrow" then
-		playSoundAtPosition(origin, 1.85, 0.55, 180)
+		playSoundAtPosition(origin, 1.85, 0.55, 180, nil)
 	end
 end
 
-local function onExplosionEffect(originAny: any, radiusAny: any, _sourceIdAny: any, projectileIdAny: any)
+local function onExplosionEffect(originAny: any, radiusAny: any, sourceIdAny: any, projectileIdAny: any)
 	if typeof(originAny) ~= "Vector3" or typeof(radiusAny) ~= "number" then
 		return
 	end
@@ -721,6 +769,66 @@ local function onExplosionEffect(originAny: any, radiusAny: any, _sourceIdAny: a
 	end
 
 	local folder = getVfxFolder()
+
+	if sourceIdAny == "emp_grenade" then
+		local pulseSphere = Instance.new("Part")
+		pulseSphere.Name = "EmpPulseSphere"
+		pulseSphere.Shape = Enum.PartType.Ball
+		pulseSphere.Size = Vector3.new(2, 2, 2)
+		pulseSphere.Position = origin
+		pulseSphere.Material = Enum.Material.Neon
+		pulseSphere.Color = Color3.fromRGB(65, 200, 255)
+		pulseSphere.Transparency = 0.25
+		pulseSphere.Anchored = true
+		pulseSphere.CanCollide = false
+		pulseSphere.CanQuery = false
+		pulseSphere.CanTouch = false
+		pulseSphere.CastShadow = false
+		pulseSphere.Parent = folder
+
+		local empTween = TweenService:Create(
+			pulseSphere,
+			TweenInfo.new(0.45, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+			{ Size = Vector3.new(radius * 2, radius * 2, radius * 2), Transparency = 1 }
+		)
+		empTween:Play()
+		task.delay(0.48, function()
+			if pulseSphere.Parent then
+				pulseSphere:Destroy()
+			end
+		end)
+		playSoundAtPosition(origin, 2.2, 0.9, 240, nil)
+		return
+	elseif sourceIdAny == "smoke_grenade" then
+		local puff = Instance.new("Part")
+		puff.Name = "SmokeBurstVisual"
+		puff.Shape = Enum.PartType.Ball
+		puff.Size = Vector3.new(3, 3, 3)
+		puff.Position = origin + Vector3.new(0, 1.5, 0)
+		puff.Material = Enum.Material.SmoothPlastic
+		puff.Color = Color3.fromRGB(195, 202, 210)
+		puff.Transparency = 0.35
+		puff.Anchored = true
+		puff.CanCollide = false
+		puff.CanQuery = false
+		puff.CanTouch = false
+		puff.CastShadow = false
+		puff.Parent = folder
+
+		local smokeTween = TweenService:Create(
+			puff,
+			TweenInfo.new(0.55, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+			{ Size = Vector3.new(radius * 1.4, radius * 1.0, radius * 1.4), Transparency = 1 }
+		)
+		smokeTween:Play()
+		task.delay(0.58, function()
+			if puff.Parent then
+				puff:Destroy()
+			end
+		end)
+		playSoundAtPosition(origin, 0.75, 0.75, 200, "rbxasset://sounds/action_falling.ogg")
+		return
+	end
 
 	local explosion = Instance.new("Explosion")
 	explosion.Position = origin
@@ -765,7 +873,7 @@ local function onExplosionEffect(originAny: any, radiusAny: any, _sourceIdAny: a
 		end
 	end)
 
-	playSoundAtPosition(origin, 1.0, 1.0, 320)
+	playSoundAtPosition(origin, 1.0, 1.0, 320, nil)
 end
 
 function ProjectileController.SpawnLocalProjectile(

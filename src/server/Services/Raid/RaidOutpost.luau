@@ -392,6 +392,23 @@ function RaidOutpost.SpawnRaidOutpost(session: any, deps: OutpostDeps)
 		stashLbl.TextColor3 = Color3.fromRGB(125, 245, 195)
 		stashLbl.Text = "EXTRACTION STASH"
 		stashLbl.Parent = stashGui
+
+		local stashExtractPrompt = Instance.new("ProximityPrompt")
+		stashExtractPrompt.Name = "StashExtractPrompt"
+		stashExtractPrompt.ActionText =
+			string.format("Start Stash Extraction (%ds)", Config.Raid.StashExtractionDuration)
+		stashExtractPrompt.ObjectText = "Extraction Stash"
+		stashExtractPrompt.HoldDuration = 0.4
+		stashExtractPrompt.MaxActivationDistance = 10
+		stashExtractPrompt.RequiresLineOfSight = false
+		stashExtractPrompt.KeyboardKeyCode = Enum.KeyCode.F
+		stashExtractPrompt.Parent = stashModel.PrimaryPart
+		session.StashExtractPrompt = stashExtractPrompt
+		session.Janitor:Add(stashExtractPrompt.Triggered:Connect(function(triggerPlayer: Player)
+			if triggerPlayer == session.Raider then
+				deps.TryExtractFromRaid(triggerPlayer)
+			end
+		end))
 	end
 
 	local stashId = LootService.RegisterStorageContainer(
