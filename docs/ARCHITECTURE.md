@@ -24,7 +24,7 @@
 - `DefenseCapacity` — лимит очков защиты по тирам базы (`MaxByBaseTier`: `[0]=30`, `[1]=60`, `[2]=100`, `[3]=150`) и стоимость защитных установок (`Costs`: `floor_spikes = 5`, `landmine = 10`, `shotgun_trap = 15`, `auto_turret = 25`).
 
 ### `Types` (`src/shared/Types.luau`)
-- Базовые типы: `ItemType`, `ItemConfig`, `Slot`, `Inventory`, `SurvivalStats`, `ConsumableConfig`, `LootContainerState`, `PlayerData` (`DataVersion = 4`), `ItemBatchEntry`, `ToolCategory`, `ToolConfig`, `NodeType`, `NodeConfig`, `NodeClientState`, `Ingredient`, `RecipeConfig` (`RequiredWorkbench: number`, `Station: string?`), `CraftingState`, `VendorId` (`"recycler" | "weaponsmith" | "quartermaster"`), `VendorOfferMode`, `VendorOffer`, `VendorConfig`, `VendorTradeFeedback`, `WeaponCategory`, `WeaponConfig`, `LootDropEntry`, `LootTableConfig`, `WorldEventPayload`, `ExtractionState`, `ExplosiveConfig`, `ProjectileConfig`, `ExplosionParams`, `ExplosionResult`, `RaidTargetInfo` (`BaseTier?`, `DangerLabel?`, `RewardLabel?`, `LaunchCost?`, `IsPreset?`), `RaidHudState` (`TargetBaseTier?`, `TcCaptured?`, `TcHackProgress?`, `TcHackActive?`, `LivesLeft?`, `MaxLives?`, `StashItemCount?`, `CanExtract?`), `RaidDefenseReport`, `BaseTier`, `ToolCupboardStatus`, `ToolCupboardState` (`DefenseUsed?`, `DefenseMax?`), `DefenseMountSurface`, `DefenseAllowedMount`, `DefenseConfig`, `DefenseUiState`.
+- Базовые типы: `ItemType`, `ItemConfig`, `Slot`, `Inventory`, `SurvivalStats`, `ConsumableConfig`, `LootContainerState`, `PlayerData` (`DataVersion = 4`), `ItemBatchEntry`, `ToolCategory`, `ToolConfig`, `NodeType`, `NodeConfig`, `NodeClientState`, `Ingredient`, `RecipeConfig` (`RequiredWorkbench: number`, `Station: string?`), `CraftingState`, `VendorId` (`"recycler" | "weaponsmith" | "quartermaster"`), `VendorOfferMode`, `VendorOffer`, `VendorConfig`, `VendorTradeFeedback`, `WeaponCategory`, `WeaponConfig`, `LootDropEntry`, `LootTableConfig`, `WorldEventPayload`, `ExtractionState`, `ExplosiveConfig`, `ProjectileConfig`, `ExplosionParams`, `ExplosionResult`, `RaidTargetInfo` (`BaseTier?`, `DangerLabel?`, `RewardLabel?`, `LaunchCost?`, `IsPreset?`), `RaidHudState` (`TargetBaseTier?`, `TcCaptured?`, `TcHackProgress?`, `TcHackActive?`, `LivesLeft?`, `MaxLives?`, `StashItemCount?`, `CanExtract?`), `RaidDefenseReport`, `BaseTier`, `ToolCupboardStatus`, `ToolCupboardState` (`DefenseUsed?`, `DefenseMax?`), `DefenseMountSurface`, `DefenseAllowedMount`, `DefenseConfig`, `DefenseUiState`, `NPCKind`, `NPCBehavior`, `NPCState`, `NPCConfig`.
 - Типы строительства:
   - `BuildPieceType = "foundation" | "triangle_foundation" | "wall" | "doorway" | "window_wall" | "roof" | "triangle_floor" | "square_stairs" | "triangle_stairs" | "storage_box" | "tool_cupboard" | "workbench_1" | "workbench_2" | "workbench_3" | "assault_ladder" | "barricade" | "floor_spikes" | "landmine" | "shotgun_trap" | "auto_turret" | ...`
   - `BuildTier = "wood" | "stone" | "metal" | "armored"`
@@ -50,7 +50,8 @@
 - `Net.GetEvent(eventName: string): RemoteEvent` -> Возвращает кэшированный `RemoteEvent`.
 
 ### Конфиги (`src/shared/configs/`)
-- `Items.luau`, `Consumables.luau`, `Tools.luau`, `Nodes.luau`, `Recipes.luau` (все 26 рецептов распределены по `RequiredWorkbench = 0..3`: Tier 0 — базовые инструменты/лук/стрелы/WB1; Tier 1 — TC/пистолет/патроны/шипы/HQM/WB2; Tier 2 — дробь/сачель/мина/`shotgun_trap`/WB3; Tier 3 — C4/ракетница/ракеты/`auto_turret`), `Vendors.luau` (3 торговца Safe Hub: `recycler`, `weaponsmith`, `quartermaster` с офферами обмена за `scrap`), `Weapons.luau`, `Projectiles.luau`, `Explosives.luau`, `LootTables.luau`.
+- `Items.luau`, `Consumables.luau`, `Tools.luau`, `Nodes.luau`, `Recipes.luau` (27 рецептов: Tier 0 — базовые инструменты/лук/стрелы/WB1 + `cook_meat` на станции `"campfire"` из `raw_meat` и `wood`; Tier 1 — TC/пистолет/патроны/шипы/HQM/WB2; Tier 2 — дробь/сачель/мина/`shotgun_trap`/WB3; Tier 3 — C4/ракетница/ракеты/`auto_turret`), `Vendors.luau` (3 торговца Safe Hub: `recycler`, `weaponsmith`, `quartermaster` с офферами обмена за `scrap`), `Weapons.luau`, `Projectiles.luau`, `Explosives.luau`, `LootTables.luau` (включая таблицы дропа `npc_rt_guard`, `npc_rt_scientist`, `animal_deer`, `animal_boar`, `animal_wolf`, `animal_bear` с `raw_meat`, `animal_fat`, `cloth`, `bone`, патронами, медикаментами, `scrap` и `tech_parts`).
+- `NPCs.luau`: конфиги боевых NPC РТ и диких животных (`rt_guard`, `rt_scientist`, `deer`, `boar`, `wolf`, `bear` — здоровье, скорости, радиусы обнаружения `45`/`25` и преследования `75`/`55..60`, параметры очередей/разброса/кровотечения, палитры, `LootTableId`, дефолтные `DefaultPatrolRadius` и `DefaultRespawnTime`).
 - `Defenses.luau`: параметры защит (`floor_spikes`, `landmine`, `shotgun_trap`, `auto_turret` — стоимость в очках, поверхность крепления, радиус, урон, время наведения, кулдаун, боеприпасы, `Defenses.Get`, `Defenses.GetCapacityLimit`).
 - `BuildingConfig.luau`: `GridSize = 12`, `WallHeight = 10`, `WallBodyHeight = 9.2`, `Thickness = 0.8`, `FoundationThickness = 1.0`, `Pieces` (20 модулей: структурные блоки, `storage_box`, `tool_cupboard` с `MaxPerBase = 1` и `StorageSlots = 12`, `workbench_1`/`workbench_2`/`workbench_3` с `RequiredBaseTier = 1/2/3`, штурмовые `assault_ladder`/`barricade` с `AssaultDeployable = true`, защитные `floor_spikes`/`landmine`/`shotgun_trap`/`auto_turret` с `IsDefense = true`), `Tiers` (`wood`, `stone`, `metal`, `armored`).
 
@@ -106,10 +107,10 @@
 - `ResourceService.Init()` -> Обработка добычи `HitNode`, кулдауны, рассылка `NodeUpdated` и респавн нод.
 
 ### `CraftingService` (`src/server/Services/CraftingService.luau`)
-- `CraftingService.RegisterStation(stationId, stationType, position, ownerUserId?)` / `UnregisterStation(stationId)` -> Учёт динамических и статических верстаков (`workbench_1`, `workbench_2`, `workbench_3` с иерархической совместимостью по тирам и проверкой владельца `OwnerUserId`).
+- `CraftingService.RegisterStation(stationId, stationType, position, ownerUserId?)` / `UnregisterStation(stationId)` -> Учёт динамических и статических верстаков (`workbench_1`, `workbench_2`, `workbench_3` с иерархической совместимостью по тирам и проверкой владельца `OwnerUserId`) и костров (`campfire` из `Workspace.Campfires` и `QA_TestArena`).
 - `CraftingService.GetPlayerWorkbenchTier(player, includePingTolerance?): number` -> Вычисляет максимальный уровень доступного игроку верстака в радиусе `Config.WORKBENCH_RADIUS` (`16` studs).
 - `CraftingService.GetActiveCraft(player): CraftingState?` / `CancelCraftForPlayer(player, syncClient, bypassLock?)` -> Управление очередью крафта игрока.
-- `CraftingService.Init()` -> Обработка `CraftRequest` (авторитетная проверка `GetPlayerWorkbenchTier(player, true) >= recipe.RequiredWorkbench`) / `CraftCancel`, возврат ресурсов при выходе/смерти и фоновая синхронизация атрибута `WorkbenchTier` игрока.
+- `CraftingService.Init()` -> Обработка `CraftRequest` (авторитетная проверка `GetPlayerWorkbenchTier(player, true) >= recipe.RequiredWorkbench` и близости к `Station`, включая `"campfire"`) / `CraftCancel`, возврат ресурсов при выходе/смерти и фоновая синхронизация атрибутов `WorkbenchTier` и `NearCampfire` игрока.
 
 ### `VendorService` (`src/server/Services/VendorService.luau`)
 - `VendorService.SpawnBaseVendorHub()` / `DespawnBaseVendorHub()` -> Процедурный спавн безопасной зоны `VendorHubZone` (примитивы `Part`/`WedgePart`, теги `NoBuild` + `VendorHubZone`, 3 NPC-торговца с `ProximityPrompt`) в режиме `PlayerBase` (`BaseService.IsBaseMode()`) и скрытие/удаление при активном рейде (`RaidServerMode`).
@@ -118,7 +119,8 @@
 
 ### `SurvivalService` (`src/server/Services/SurvivalService.luau`)
 - `SurvivalService.GetStats(player): SurvivalStats?` / `GetContainerState(containerId): LootContainerState?` -> Чтение статов выживания.
-- `SurvivalService.Init()` -> Тик голода/жажды/регена (`2.0` с), обработка `UseConsumable` и спавн рюкзака лута при смерти.
+- `SurvivalService.ApplyBleeding(player, duration, dps)` / `ClearBleeding(player)` -> Наложение и снятие статуса кровотечения (периодический урон в цикле выживания, атрибут `Bleeding`, снятие бинтом `bandage` и при респавне).
+- `SurvivalService.Init()` -> Тик голода/жажды/регена/кровотечения (`2.0` с), обработка `UseConsumable` и спавн рюкзака лута при смерти.
 
 ### `LootService` (`src/server/Services/LootService.luau`)
 - `LootService.RollLootTable(tableId): Inventory` -> Генерация лута по весам.
@@ -136,6 +138,12 @@
 ### `CombatService` (`src/server/Services/CombatService.luau`)
 - `CombatService.GetEquippedWeapon(player): (string, WeaponConfig)` -> Активное оружие игрока.
 - `CombatService.Init()` -> Обработка `AttackRequest` (хитскан, ближний бой и баллистические снаряды через `Ballistics.Spawn`, урон по постройкам `BaseService`/`RaidService.DamageRaidPiece`, оповещение `RaidService.NotifyRaiderDamaged` и урон по гуманоидам).
+
+### `NPCService` (`src/server/Services/NPCService.luau`)
+- `NPCService.GetActiveCount(): number` -> Количество активных NPC и животных на карте.
+- `NPCService.SpawnFromMarker(marker: BasePart): Model?` -> Спавн примитивной (`Part`/`WedgePart`) модели NPC/животного с `Humanoid`, `Janitor` и скрытой до первого урона полоской HP (`HpBillboard`) по маркеру из `Workspace.NPCSpawns`.
+- `NPCService.DespawnAll()` -> Принудительная очистка всех активных NPC и таймеров респавна (вызывается автоматически при выходе последнего игрока).
+- `NPCService.Init()` -> Работает только на `MainMap` при наличии активных игроков; управляет ИИ охранников/учёных РТ (`Patrol` -> `Alert` -> `Combat` со стрельбой очередями через `Ballistics.Spawn` и трассерами `AttackEffect`, стрейфом и возвратом `Return`), мирных животных (`deer`, `boar`: `Patrol` -> `Flee`) и хищников (`wolf`, `bear`: `Patrol` -> `Chase` с ближней атакой и `SurvivalService.ApplyBleeding`), а также спавном лут-мешка через `LootService.RegisterSlotsContainer` и респавном по `RespawnTime`.
 
 ### `ExtractionService` (`src/server/Services/ExtractionService.luau`)
 - `ExtractionService.CanAccessMap(player, mapKey, playerBaseTier): (boolean, string?)` -> Проверка допуска к PvP-карте (`MainMap_Tier1/2/3`) по `BaseTier` игрока.
@@ -186,10 +194,10 @@
 - `InventoryController`: `.Changed`, `.GetInventory()`, `.GetSlot(slotIndex)`, `.OnChanged(cb)`, `.RequestMove(from, to)`, `.Init()`.
 - `HotbarController`: `.SelectionChanged`, `.SelectSlot(slotIndex)`, `.GetSelectedSlot()`, `.Init()`.
 - `InventoryUIController`: `.OpenChanged`, `.IsOpen()`, `.SetOpen(open)`, `.Toggle()`, `.Init()`.
-- `CraftingController`: `.OpenChanged`, `.IsOpen()`, `.SetOpen(open)`, `.Toggle()`, `.GetActiveCraft()`, `.GetWorkbenchTier()`, `.Init()` — отслеживает атрибут `WorkbenchTier` игрока, отображает HUD-плашку `Workbench Level 1 / 2 / 3` при нахождении в радиусе верстака, фильтрует рецепты (`All`, `Avail`, `T0..T3`) и блокирует недоступные крафты (`WB X`).
+- `CraftingController`: `.OpenChanged`, `.IsOpen()`, `.SetOpen(open)`, `.Toggle()`, `.GetActiveCraft()`, `.GetWorkbenchTier()`, `.Init()` — отслеживает атрибуты `WorkbenchTier` и `NearCampfire` игрока, отображает HUD-плашку `Workbench Level 1 / 2 / 3`, фильтрует рецепты (`All`, `Avail`, `T0..T3`), поддерживает рецепты со станцией `"campfire"` (`[Requires Campfire]`) и блокирует недоступные крафты (`WB X` / `Campfire`).
 - `VendorController`: `.OpenChanged`, `.IsOpen()`, `.GetActiveVendorId()`, `.SetOpen(open)`, `.Init()` — окно торговли `VendorGui` по `VendorOpen` (отображение баланса `Scrap`, офферов `BUY`/`SELL` с кнопками `x1`/`x5`, баннер `VendorTradeFeedback`, автозакрытие при отходе или открытии других меню).
 - `GatheringController`: `.GetNodeState(nodeId)`, `.IsCursorOnActiveNode()`, `.Init()`.
-- `SurvivalHudController`: `.Init()`.
+- `SurvivalHudController`: `.Init()` — отображает полосы HP/голода/жажды и пульсирующий бейдж кровотечения (`BLEEDING - Use Bandage`) по атрибуту `Bleeding`.
 - `ConsumableController`: `.Init()`.
 - `LootController`: `.OpenChanged`, `.IsOpen()`, `.GetActiveContainerId()`, `.CanDeposit()`, `.RequestDeposit(playerSlot)`, `.Close()`, `.Init()`.
 - `CombatController`: `.Init()`.
@@ -207,3 +215,6 @@
 - `Workbench_Vendor_Stand` — стенд проверки радиуса верстаков (`16` studs) и безопасной зоны торговцев (`Part`/`WedgePart`):
   - `Workspace.Workbenches`: `QA_WB_Tier1` (`workbench_1`), `QA_WB_Tier2` (`workbench_2`), `QA_WB_Tier3` (`workbench_3`), разнесённые на 35 studs друг от друга с визуальными неоновыми кольцами радиуса `16` studs.
   - `QA_VendorHubZone` (теги `NoBuild` + `VendorHubZone`): 3 примитивных NPC-торговца (`Vendor_recycler`, `Vendor_weaponsmith`, `Vendor_quartermaster`) с `ProximityPrompt`.
+- `Workspace.NPCSpawns`, `Workspace.Campfires` и `Sector5_CombatRange.QA_NPC_TestArenaZone`:
+  - 10 маркеров спавна на `MainMap` (охранники и учёные у `RadioTower`/`Warehouse`, олени/кабаны/волки/медведь в открытых зонах) и 6 тестовых маркеров на площадке `QA_NPC_TestPad` в `QA_TestArena` (`rt_guard`, `rt_scientist`, `deer`, `boar`, `wolf`, `bear`).
+  - Костры с атрибутом `StationType = "campfire"` (`Workspace.Campfires.MainMap_Campfire_1` и `Sector3_CraftingAndSurvival.QA_Campfire`) для жарки `raw_meat` -> `cooked_meat`.

@@ -43,6 +43,7 @@ local stations: { StationEntry } = {}
 local dynamicStations: { [string]: StationEntry } = {}
 local activeCrafts: { [Player]: ActiveCraft } = {}
 local lastSyncedTierByPlayer: { [Player]: number } = {}
+local lastSyncedCampfireByPlayer: { [Player]: boolean } = {}
 local nextToken = 0
 local isInitialized = false
 
@@ -56,34 +57,56 @@ local function canPlayerUseStation(player: Player, entry: StationEntry): boolean
 	return entry.OwnerUserId == nil or entry.OwnerUserId == player.UserId
 end
 
+local function registerStationModel(child: Instance, seen: { [Model]: boolean }, defaultStationType: string?)
+	if not child:IsA("Model") or seen[child] then
+		return
+	end
+	local primaryPart = child.PrimaryPart
+	local stationAttr = child:GetAttribute("StationType")
+	local stationType = if typeof(stationAttr) == "string" and #stationAttr > 0 then stationAttr else defaultStationType
+	local ownerAttr = child:GetAttribute("OwnerUserId")
+	local ownerUserId: number? = if typeof(ownerAttr) == "number" then ownerAttr else nil
+	if primaryPart and typeof(stationType) == "string" and #stationType > 0 then
+		seen[child] = true
+		table.insert(stations, {
+			StationType = stationType,
+			Tier = resolveStationTier(stationType),
+			Position = primaryPart.Position,
+			OwnerUserId = ownerUserId,
+		})
+	elseif defaultStationType == nil then
+		warn(string.format('[CraftingService] Workbench "%s" missing PrimaryPart or StationType attribute', child.Name))
+	end
+end
+
 local function scanWorkbenches()
 	table.clear(stations)
+	local seen: { [Model]: boolean } = {}
+
 	local folder = Workspace:FindFirstChild("Workbenches")
 	if not folder then
 		warn("[CraftingService] Workspace.Workbenches folder not found")
-		return
+	else
+		for _, child in folder:GetChildren() do
+			registerStationModel(child, seen, nil)
+		end
 	end
 
-	for _, child in folder:GetChildren() do
-		if child:IsA("Model") then
-			local primaryPart = child.PrimaryPart
-			local stationType = child:GetAttribute("StationType")
-			local ownerAttr = child:GetAttribute("OwnerUserId")
-			local ownerUserId: number? = if typeof(ownerAttr) == "number" then ownerAttr else nil
-			if primaryPart and typeof(stationType) == "string" and #stationType > 0 then
-				table.insert(stations, {
-					StationType = stationType,
-					Tier = resolveStationTier(stationType),
-					Position = primaryPart.Position,
-					OwnerUserId = ownerUserId,
-				})
-			else
-				warn(
-					string.format(
-						'[CraftingService] Workbench "%s" missing PrimaryPart or StationType attribute',
-						child.Name
-					)
-				)
+	local campfiresFolder = Workspace:FindFirstChild("Campfires")
+	if campfiresFolder then
+		for _, child in campfiresFolder:GetChildren() do
+			registerStationModel(child, seen, "campfire")
+		end
+	end
+
+	local qaArena = Workspace:FindFirstChild("QA_TestArena")
+	if qaArena then
+		for _, desc in qaArena:GetDescendants() do
+			if desc:IsA("Model") then
+				local attr = desc:GetAttribute("StationType")
+				if attr == "campfire" or desc.Name == "QA_Campfire" then
+					registerStationModel(desc, seen, "campfire")
+				end
 			end
 		end
 	end
@@ -346,6 +369,12 @@ local function syncWorkbenchAttribute(player: Player)
 		lastSyncedTierByPlayer[player] = tier
 		player:SetAttribute("WorkbenchTier", tier)
 	end
+
+	local nearCampfire = hasNearbyStation(player, "campfire")
+	if lastSyncedCampfireByPlayer[player] ~= nearCampfire then
+		lastSyncedCampfireByPlayer[player] = nearCampfire
+		player:SetAttribute("NearCampfire", nearCampfire)
+	end
 end
 
 function CraftingService.Init()
@@ -366,17 +395,22 @@ function CraftingService.Init()
 
 	for _, player in Players:GetPlayers() do
 		lastSyncedTierByPlayer[player] = 0
+		lastSyncedCampfireByPlayer[player] = false
 		player:SetAttribute("WorkbenchTier", 0)
+		player:SetAttribute("NearCampfire", false)
 	end
 
 	Players.PlayerAdded:Connect(function(player: Player)
 		lastSyncedTierByPlayer[player] = 0
+		lastSyncedCampfireByPlayer[player] = false
 		player:SetAttribute("WorkbenchTier", 0)
+		player:SetAttribute("NearCampfire", false)
 	end)
 
 	Players.PlayerRemoving:Connect(function(player: Player)
 		CraftingService.CancelCraftForPlayer(player, false, true)
 		lastSyncedTierByPlayer[player] = nil
+		lastSyncedCampfireByPlayer[player] = nil
 	end)
 
 	task.spawn(function()

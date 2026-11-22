@@ -20,6 +20,11 @@ type SurvivalStats = Types.SurvivalStats
 type LootContainerState = Types.LootContainerState
 type PlayerData = Types.PlayerData
 
+type BleedState = {
+	ExpiresAt: number,
+	Dps: number,
+}
+
 local HUNGER_LOSS_PER_TICK = 0.35
 local THIRST_LOSS_PER_TICK = 0.5
 local PASSIVE_REGEN_THRESHOLD = 70
@@ -29,6 +34,7 @@ local STARVE_DAMAGE_PER_TICK = 1.5
 local playerJanitors: { [Player]: Janitor.Janitor } = {}
 local characterJanitors: { [Player]: Janitor.Janitor } = {}
 local appliedCharacters: { [Model]: boolean } = {}
+local activeBleeds: { [Player]: BleedState } = {}
 local nextConsumeTime: { [Player]: number } = {}
 local pendingRespawnReset: { [Player]: boolean } = {}
 local nextBagId = 0
@@ -171,6 +177,7 @@ local function applyStatsToCharacter(player: Player, character: Model, data: Pla
 		data.Stats.Health = Types.RESPAWN_HEALTH
 		data.Stats.Hunger = Types.RESPAWN_HUNGER
 		data.Stats.Thirst = Types.RESPAWN_THIRST
+		SurvivalService.ClearBleeding(player)
 	end
 
 	appliedCharacters[character] = true
@@ -230,6 +237,7 @@ local function bindCharacter(player: Player, character: Model)
 		appliedCharacters[character] = nil
 
 		pendingRespawnReset[player] = true
+		SurvivalService.ClearBleeding(player)
 		LootService.CloseContainerForPlayer(player, true)
 
 		local currentData = DataService.GetData(player)
@@ -344,6 +352,10 @@ local function onUseConsumable(player: Player, slotIndexAny: any)
 
 		nextConsumeTime[player] = now + consumableConfig.UseCooldown
 
+		if slot.Id == "bandage" then
+			SurvivalService.ClearBleeding(player)
+		end
+
 		if consumableConfig.Health ~= 0 then
 			humanoid.Health = math.clamp(humanoid.Health + consumableConfig.Health, 0, humanoid.MaxHealth)
 			data.Stats.Health = humanoid.Health
@@ -356,6 +368,7 @@ local function onUseConsumable(player: Player, slotIndexAny: any)
 end
 
 local function stepSurvivalLoop()
+	local now = os.clock()
 	for _, player in Players:GetPlayers() do
 		local data = DataService.GetData(player)
 		local _, _, humanoid = getAliveCharacterParts(player)
@@ -376,9 +389,55 @@ local function stepSurvivalLoop()
 				humanoid.Health = math.max(0, humanoid.Health - STARVE_DAMAGE_PER_TICK)
 			end
 
+			local bleed = activeBleeds[player]
+			if bleed ~= nil then
+				if now >= bleed.ExpiresAt then
+					SurvivalService.ClearBleeding(player)
+				else
+					local bleedDamage = bleed.Dps * Types.SURVIVAL_TICK_INTERVAL
+					humanoid.Health = math.max(0, humanoid.Health - bleedDamage)
+					setAttributeIfChanged(player, "Bleeding", true)
+				end
+			end
+
 			stats.Health = math.clamp(humanoid.Health, 0, humanoid.MaxHealth)
 			syncPlayerAttributes(player, stats)
 		end
+	end
+end
+
+function SurvivalService.ApplyBleeding(player: Player, duration: number, dps: number)
+	if not SecurityService.IsFiniteNumber(duration) or duration <= 0 then
+		return
+	end
+	if not SecurityService.IsFiniteNumber(dps) or dps <= 0 then
+		return
+	end
+	if player.Parent ~= Players then
+		return
+	end
+	if getAliveCharacterParts(player) == nil then
+		return
+	end
+
+	local expiresAt = os.clock() + duration
+	local existing = activeBleeds[player]
+	if existing ~= nil then
+		existing.ExpiresAt = math.max(existing.ExpiresAt, expiresAt)
+		existing.Dps = math.max(existing.Dps, dps)
+	else
+		activeBleeds[player] = {
+			ExpiresAt = expiresAt,
+			Dps = dps,
+		}
+	end
+	setAttributeIfChanged(player, "Bleeding", true)
+end
+
+function SurvivalService.ClearBleeding(player: Player)
+	activeBleeds[player] = nil
+	if player.Parent == Players then
+		setAttributeIfChanged(player, "Bleeding", false)
 	end
 end
 
@@ -416,6 +475,7 @@ function SurvivalService.Init()
 
 	Players.PlayerRemoving:Connect(function(player: Player)
 		LootService.CloseContainerForPlayer(player, false)
+		activeBleeds[player] = nil
 		nextConsumeTime[player] = nil
 		pendingRespawnReset[player] = nil
 

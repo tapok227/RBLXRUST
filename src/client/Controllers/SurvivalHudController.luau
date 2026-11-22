@@ -19,11 +19,13 @@ local WARNING_STROKE_COLOR = Color3.fromRGB(255, 85, 85)
 local healthBar: BarUI? = nil
 local hungerBar: BarUI? = nil
 local thirstBar: BarUI? = nil
+local bleedingBadge: TextLabel? = nil
 
 local currentHealth = Types.MAX_HEALTH
 local currentMaxHealth = Types.MAX_HEALTH
 local currentHunger = Types.MAX_HUNGER
 local currentThirst = Types.MAX_THIRST
+local isBleeding = false
 
 local characterJanitor = Janitor.new()
 local isInitialized = false
@@ -142,6 +144,32 @@ local function createSurvivalHudGui()
 	hungerBar = createStatBar(container, "HungerBar", "Hunger: 100%", Color3.fromRGB(230, 145, 50), 2)
 	thirstBar = createStatBar(container, "ThirstBar", "Thirst: 100%", Color3.fromRGB(65, 175, 235), 3)
 
+	local bleedBadge = Instance.new("TextLabel")
+	bleedBadge.Name = "BleedingBadge"
+	bleedBadge.AnchorPoint = Vector2.new(0, 1)
+	bleedBadge.Position = UDim2.new(0, 16, 1, -118)
+	bleedBadge.Size = UDim2.fromOffset(220, 26)
+	bleedBadge.BackgroundColor3 = Color3.fromRGB(165, 32, 32)
+	bleedBadge.BackgroundTransparency = 0.1
+	bleedBadge.BorderSizePixel = 0
+	bleedBadge.Font = Enum.Font.GothamBold
+	bleedBadge.TextSize = 12
+	bleedBadge.TextColor3 = Color3.fromRGB(255, 240, 240)
+	bleedBadge.Text = "BLEEDING - Use Bandage"
+	bleedBadge.Visible = false
+	bleedBadge.Parent = screenGui
+
+	local bleedCorner = Instance.new("UICorner")
+	bleedCorner.CornerRadius = UDim.new(0, 8)
+	bleedCorner.Parent = bleedBadge
+
+	local bleedStroke = Instance.new("UIStroke")
+	bleedStroke.Color = Color3.fromRGB(255, 95, 95)
+	bleedStroke.Thickness = 1.5
+	bleedStroke.Parent = bleedBadge
+
+	bleedingBadge = bleedBadge
+
 	screenGui.Parent = playerGui
 end
 
@@ -229,6 +257,11 @@ local function readAttributesFromPlayer(localPlayer: Player)
 		then math.clamp(thirstAttr, 0, Types.MAX_THIRST)
 		else Types.MAX_THIRST
 
+	isBleeding = localPlayer:GetAttribute("Bleeding") == true
+	if bleedingBadge then
+		bleedingBadge.Visible = isBleeding
+	end
+
 	updateHungerDisplay()
 	updateThirstDisplay()
 end
@@ -264,6 +297,13 @@ function SurvivalHudController.Init()
 		end
 	end)
 
+	localPlayer:GetAttributeChangedSignal("Bleeding"):Connect(function()
+		isBleeding = localPlayer:GetAttribute("Bleeding") == true
+		if bleedingBadge then
+			bleedingBadge.Visible = isBleeding
+		end
+	end)
+
 	localPlayer.CharacterAdded:Connect(function(character: Model)
 		task.spawn(bindCharacter, character)
 	end)
@@ -276,6 +316,9 @@ function SurvivalHudController.Init()
 		local alpha = 0.5 + 0.5 * math.sin(os.clock() * 6)
 		applyBarPulse(hungerBar, currentHunger, alpha)
 		applyBarPulse(thirstBar, currentThirst, alpha)
+		if bleedingBadge and isBleeding then
+			bleedingBadge.BackgroundTransparency = 0.05 + 0.35 * alpha
+		end
 	end)
 end
 

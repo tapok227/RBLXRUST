@@ -400,6 +400,39 @@ export type RaidDefenseReport = {
 	Summary: string,
 }
 
+export type NPCKind = "Guard" | "Animal"
+export type NPCBehavior = "RangedHostile" | "MeleeHostile" | "PassiveFlee"
+export type NPCState = "Patrol" | "Alert" | "Combat" | "Chase" | "Flee" | "Return"
+
+export type NPCConfig = {
+	Id: string,
+	DisplayName: string,
+	Kind: NPCKind,
+	Behavior: NPCBehavior,
+	MaxHealth: number,
+	WalkSpeed: number,
+	RunSpeed: number,
+	DetectionRadius: number,
+	ChaseRadius: number,
+	AttackRange: number,
+	Damage: number,
+	AttackCooldown: number,
+	BurstCount: number?,
+	BurstInterval: number?,
+	SpreadDeg: number?,
+	ProjectileSpeed: number?,
+	ProjectileGravity: number?,
+	BleedDuration: number?,
+	BleedDps: number?,
+	DefaultPatrolRadius: number,
+	DefaultRespawnTime: number,
+	LootTableId: string,
+	PrimaryColor: Color3,
+	SecondaryColor: Color3,
+	AccentColor: Color3,
+	Scale: number,
+}
+
 local Types = {
 	INVENTORY_SIZE = 30,
 	HOTBAR_SIZE = 6,

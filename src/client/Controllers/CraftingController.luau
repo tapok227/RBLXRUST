@@ -78,6 +78,7 @@ local filterButtons: { [string]: TextButton } = {}
 local recipeCards: { RecipeCardUI } = {}
 local activeCraft: CraftingState? = nil
 local currentWorkbenchTier = 0
+local nearCampfire = false
 local activeFilter = "All"
 local isOpen = false
 local isInitialized = false
@@ -167,8 +168,11 @@ local function refreshRecipeCards()
 	local inv = InventoryController.GetInventory()
 	for _, cardUI in recipeCards do
 		local recipe = cardUI.Recipe
-		local tierMet = currentWorkbenchTier >= recipe.RequiredWorkbench
-		cardUI.Card.Visible = matchesFilter(recipe, tierMet)
+		local stationMet = if recipe.RequiredWorkbench > 0
+			then currentWorkbenchTier >= recipe.RequiredWorkbench
+			elseif recipe.Station == "campfire" then nearCampfire
+			else true
+		cardUI.Card.Visible = matchesFilter(recipe, stationMet)
 
 		local canAffordAll = true
 		for _, row in cardUI.IngredientRows do
@@ -184,9 +188,11 @@ local function refreshRecipeCards()
 			end
 		end
 
-		cardUI.StationLabel.TextColor3 = if tierMet then COLOR_TIER_OK else COLOR_TIER_LOCKED
-		if not tierMet then
-			cardUI.CraftButton.Text = string.format("WB %d", recipe.RequiredWorkbench)
+		cardUI.StationLabel.TextColor3 = if stationMet then COLOR_TIER_OK else COLOR_TIER_LOCKED
+		if not stationMet then
+			cardUI.CraftButton.Text = if recipe.Station == "campfire"
+				then "Campfire"
+				else string.format("WB %d", recipe.RequiredWorkbench)
 			cardUI.CraftButton.BackgroundColor3 = COLOR_BTN_DISABLED
 			cardUI.CardStroke.Color = COLOR_STROKE_LOCKED
 		else
@@ -223,13 +229,15 @@ local function refreshActiveCraftPanel()
 	activeCraftPanel.Visible = true
 end
 
-local function formatRequirementText(requiredWorkbench: number): string
-	if requiredWorkbench <= 0 then
+local function formatRequirementText(recipe: RecipeConfig): string
+	if recipe.Station == "campfire" then
+		return "[Requires Campfire]"
+	elseif recipe.RequiredWorkbench <= 0 then
 		return "[Hand Craft - Tier 0]"
-	elseif requiredWorkbench == 3 then
+	elseif recipe.RequiredWorkbench == 3 then
 		return "[Requires Workbench Lv.3]"
 	else
-		return string.format("[Requires Workbench Lv.%d+]", requiredWorkbench)
+		return string.format("[Requires Workbench Lv.%d+]", recipe.RequiredWorkbench)
 	end
 end
 
@@ -287,7 +295,9 @@ local function buildRecipeCard(parent: Instance, recipe: RecipeConfig, layoutOrd
 	btnCorner.Parent = craftBtn
 
 	craftBtn.Activated:Connect(function()
-		if currentWorkbenchTier < recipe.RequiredWorkbench then
+		if recipe.RequiredWorkbench > 0 and currentWorkbenchTier < recipe.RequiredWorkbench then
+			return
+		elseif recipe.Station == "campfire" and not nearCampfire then
 			return
 		end
 		Net.GetEvent(Net.Events.CraftRequest):FireServer(recipe.Id)
@@ -302,7 +312,7 @@ local function buildRecipeCard(parent: Instance, recipe: RecipeConfig, layoutOrd
 	stationLabel.TextSize = 11
 	stationLabel.TextColor3 = COLOR_TIER_OK
 	stationLabel.TextXAlignment = Enum.TextXAlignment.Left
-	stationLabel.Text = formatRequirementText(recipe.RequiredWorkbench)
+	stationLabel.Text = formatRequirementText(recipe)
 	stationLabel.Parent = card
 
 	local yOffset = 42
@@ -652,6 +662,14 @@ local function updateWorkbenchTierFromPlayer(localPlayer: Player)
 	end
 end
 
+local function updateCampfireFromPlayer(localPlayer: Player)
+	local nextNear = localPlayer:GetAttribute("NearCampfire") == true
+	if nextNear ~= nearCampfire then
+		nearCampfire = nextNear
+		refreshRecipeCards()
+	end
+end
+
 function CraftingController.Init()
 	if isInitialized then
 		return
@@ -663,11 +681,16 @@ function CraftingController.Init()
 	local localPlayer = Players.LocalPlayer
 	if localPlayer then
 		updateWorkbenchTierFromPlayer(localPlayer)
+		updateCampfireFromPlayer(localPlayer)
 		refreshWorkbenchHud()
 		refreshRecipeCards()
 
 		localPlayer:GetAttributeChangedSignal("WorkbenchTier"):Connect(function()
 			updateWorkbenchTierFromPlayer(localPlayer)
+		end)
+
+		localPlayer:GetAttributeChangedSignal("NearCampfire"):Connect(function()
+			updateCampfireFromPlayer(localPlayer)
 		end)
 	end
 

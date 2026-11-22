@@ -123,6 +123,18 @@ local Recipes: { [string]: RecipeConfig } = {
 			{ Id = "stone", Count = 50 },
 		},
 	},
+	cook_meat = {
+		Id = "cook_meat",
+		ResultId = "cooked_meat",
+		ResultCount = 1,
+		CraftTime = 3,
+		RequiredWorkbench = 0,
+		Station = "campfire",
+		Ingredients = {
+			{ Id = "raw_meat", Count = 1 },
+			{ Id = "wood", Count = 5 },
+		},
+	},
 
 	-- Tier 1: Workbench Lv.1+
 	craft_tool_cupboard = {

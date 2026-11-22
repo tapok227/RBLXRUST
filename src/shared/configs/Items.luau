@@ -45,6 +45,21 @@ local Items: { [string]: ItemConfig } = {
 		Type = "Consumable",
 		MaxStack = 10,
 	},
+	raw_meat = {
+		Name = "Raw Meat",
+		Type = "Consumable",
+		MaxStack = 10,
+	},
+	animal_fat = {
+		Name = "Animal Fat",
+		Type = "Resource",
+		MaxStack = 200,
+	},
+	bone = {
+		Name = "Bone Fragments",
+		Type = "Resource",
+		MaxStack = 200,
+	},
 	water_bottle = {
 		Name = "Water Bottle",
 		Type = "Consumable",

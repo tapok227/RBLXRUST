@@ -17,6 +17,12 @@ local Consumables: { [string]: ConsumableConfig } = {
 		Thirst = -5,
 		UseCooldown = 1.0,
 	},
+	raw_meat = {
+		Health = -8,
+		Hunger = 10,
+		Thirst = -4,
+		UseCooldown = 1.0,
+	},
 	water_bottle = {
 		Health = 0,
 		Hunger = 0,
