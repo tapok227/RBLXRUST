@@ -4,12 +4,14 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local ServerScriptService = game:GetService("ServerScriptService")
+local Workspace = game:GetService("Workspace")
 
 local Types = require(ReplicatedStorage.Shared.Types)
 local Config = require(ReplicatedStorage.Shared.Config)
 local Signal = require(ReplicatedStorage.Shared.Signal)
 local BuildingConfig = require(ReplicatedStorage.Shared.configs.BuildingConfig)
 local BuildingGeometry = require(ReplicatedStorage.Shared.BuildingGeometry)
+local BaseSerializer = require(ReplicatedStorage.Shared.BaseSerializer)
 local Recipes = require(ReplicatedStorage.Shared.configs.Recipes)
 local ProfileStore = require(ServerScriptService.Server.Vendor.ProfileStore)
 local SecurityService = require(ServerScriptService.Server.Services.SecurityService)
@@ -115,6 +117,8 @@ local DATA_TEMPLATE = {
 		Pieces = {},
 		BaseTier = 0,
 		LastUpkeepTimestamp = 0,
+		SerializedBlocks = "",
+		ContainerSidecar = {},
 	},
 	UnlockedBlueprints = {},
 	DefenseLogs = {},
@@ -396,6 +400,63 @@ local function serializeBlueprints(unlocked: { [string]: boolean }?): { [string]
 end
 
 local MAX_BASE_BLUEPRINT_SLOTS = 2
+local BLUEPRINT_TIER_SEQUENCE: { BuildTier } = { "wood", "stone", "metal", "armored" }
+
+local function getBaseOrigin(): CFrame
+	local attr = Workspace:GetAttribute("BaseOrigin")
+	if typeof(attr) == "CFrame" then
+		return attr :: CFrame
+	end
+	return BaseSerializer.DEFAULT_ORIGIN
+end
+
+local function computeBlueprintCostFromBlocks(blocks: { SavedBuildPiece }): { [string]: number }
+	local costMap: { [string]: number } = {}
+	for _, block in blocks do
+		local canonical = BuildingGeometry.CanonicalPieceType(block.PieceType)
+		local pieceCfg = BuildingConfig.Pieces[canonical]
+		if canonical ~= "tool_cupboard" and pieceCfg ~= nil then
+			for resId, amt in pieceCfg.Cost do
+				if amt > 0 then
+					costMap[resId] = (costMap[resId] or 0) + amt
+				end
+			end
+			if pieceCfg.Upgradeable then
+				local targetTierCfg = BuildingConfig.Tiers[block.Tier]
+				local targetRank = if targetTierCfg ~= nil then targetTierCfg.Rank else 1
+				for _, seqTier in BLUEPRINT_TIER_SEQUENCE do
+					local seqCfg = BuildingConfig.Tiers[seqTier]
+					if
+						seqCfg ~= nil
+						and seqCfg.Rank > 1
+						and seqCfg.Rank <= targetRank
+						and seqCfg.UpgradeCost ~= nil
+					then
+						for resId, amt in seqCfg.UpgradeCost do
+							if amt > 0 then
+								costMap[resId] = (costMap[resId] or 0) + amt
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+	return costMap
+end
+
+local function sanitizeBlueprintCost(rawCost: any): { [string]: number }?
+	if type(rawCost) ~= "table" then
+		return nil
+	end
+	local cost: { [string]: number } = {}
+	for resId, amt in rawCost do
+		if Types.IsValidString(resId, 1, 64) and isValidFiniteInteger(amt) and (amt :: number) > 0 then
+			cost[resId :: string] = math.floor(amt :: number)
+		end
+	end
+	return cost
+end
 
 local function deserializeBaseBlueprints(rawMap: any): { [string]: BaseBlueprintSlot }
 	local result: { [string]: BaseBlueprintSlot } = {}
@@ -405,8 +466,36 @@ local function deserializeBaseBlueprints(rawMap: any): { [string]: BaseBlueprint
 	for slotIdx = 1, MAX_BASE_BLUEPRINT_SLOTS do
 		local key = tostring(slotIdx)
 		local rawSlot = rawMap[key]
-		if type(rawSlot) == "table" and type(rawSlot.Pieces) == "table" then
-			local pieces: { BlueprintPieceEntry } = {}
+		if type(rawSlot) ~= "table" then
+			continue
+		end
+
+		local slotName = if type(rawSlot.Name) == "string" and #rawSlot.Name > 0
+			then string.sub(rawSlot.Name, 1, 48)
+			else string.format("Планировка #%d", slotIdx)
+		local savedAt = if isValidFiniteInteger(rawSlot.SavedAt) and (rawSlot.SavedAt :: number) >= 0
+			then math.floor(rawSlot.SavedAt :: number)
+			else 0
+
+		if type(rawSlot.EncodedBlocks) == "string" and #rawSlot.EncodedBlocks > 0 then
+			local ok, decoded = BaseSerializer.DeserializeBase(rawSlot.EncodedBlocks, CFrame.identity)
+			if ok and type(decoded) == "table" and #(decoded :: { SavedBuildPiece }) > 0 then
+				local blocks = decoded :: { SavedBuildPiece }
+				local cost = sanitizeBlueprintCost(rawSlot.Cost) or computeBlueprintCostFromBlocks(blocks)
+				result[key] = {
+					Id = string.format("slot_%d", slotIdx),
+					Name = slotName,
+					SavedAt = savedAt,
+					EncodedBlocks = rawSlot.EncodedBlocks,
+					PieceCount = #blocks,
+					Cost = cost,
+				}
+				continue
+			end
+		end
+
+		if type(rawSlot.Pieces) == "table" then
+			local tempBlocks: { SavedBuildPiece } = {}
 			for _, rawEntry in rawSlot.Pieces do
 				if
 					type(rawEntry) == "table"
@@ -416,7 +505,8 @@ local function deserializeBaseBlueprints(rawMap: any): { [string]: BaseBlueprint
 					and SecurityService.IsFiniteNumber(rawEntry.RelZ)
 				then
 					local canonical = BuildingGeometry.CanonicalPieceType(rawEntry.PieceType)
-					if BuildingConfig.Pieces[canonical] ~= nil then
+					local pieceCfg = BuildingConfig.Pieces[canonical]
+					if pieceCfg ~= nil then
 						local tier: BuildTier = if type(rawEntry.Tier) == "string"
 								and BuildingConfig.Tiers[rawEntry.Tier :: BuildTier] ~= nil
 							then rawEntry.Tier :: BuildTier
@@ -429,34 +519,33 @@ local function deserializeBaseBlueprints(rawMap: any): { [string]: BaseBlueprint
 								or rawEntry.MountSurface == "Ceiling"
 							then rawEntry.MountSurface :: DefenseMountSurface
 							else nil
-						table.insert(pieces, {
+						local maxHp = BuildingGeometry.ComputeMaxHp(canonical, tier)
+						table.insert(tempBlocks, {
+							Uid = string.format("bp_%d_%d", slotIdx, #tempBlocks + 1),
 							PieceType = canonical,
 							Tier = tier,
-							RelX = rawEntry.RelX :: number,
-							RelY = rawEntry.RelY :: number,
-							RelZ = rawEntry.RelZ :: number,
-							RelRotY = relRotY,
+							PosX = rawEntry.RelX :: number,
+							PosY = rawEntry.RelY :: number,
+							PosZ = rawEntry.RelZ :: number,
+							RotY = relRotY,
 							MountSurface = mountSurface,
-							IsTc = if rawEntry.IsTc == true then true else nil,
+							Hp = maxHp,
 						})
 					end
 				end
-				if #pieces >= BuildingConfig.MaxPiecesPerBase then
+				if #tempBlocks >= BuildingConfig.MaxPiecesPerBase then
 					break
 				end
 			end
-			if #pieces > 0 then
-				local slotName = if type(rawSlot.Name) == "string" and #rawSlot.Name > 0
-					then string.sub(rawSlot.Name, 1, 48)
-					else string.format("Планировка #%d", slotIdx)
-				local savedAt = if isValidFiniteInteger(rawSlot.SavedAt) and (rawSlot.SavedAt :: number) >= 0
-					then math.floor(rawSlot.SavedAt :: number)
-					else 0
+			if #tempBlocks > 0 then
+				local encoded = BaseSerializer.SerializeBase(tempBlocks, CFrame.identity)
 				result[key] = {
 					Id = string.format("slot_%d", slotIdx),
 					Name = slotName,
 					SavedAt = savedAt,
-					Pieces = pieces,
+					EncodedBlocks = encoded,
+					PieceCount = #tempBlocks,
+					Cost = computeBlueprintCostFromBlocks(tempBlocks),
 				}
 			end
 		end
@@ -539,6 +628,7 @@ local function deserializeBase(rawBase: any): BaseData
 			Pieces = pieces,
 			BaseTier = 0,
 			LastUpkeepTimestamp = 0,
+			SerializedBlocks = "",
 		}
 	end
 
@@ -551,11 +641,41 @@ local function deserializeBase(rawBase: any): BaseData
 		then math.floor(rawTimestamp :: number)
 		else 0
 
+	if type(rawBase.SerializedBlocks) == "string" and #rawBase.SerializedBlocks > 0 then
+		local ok, decodedOrErr = BaseSerializer.DeserializeBase(rawBase.SerializedBlocks, getBaseOrigin())
+		if ok and type(decodedOrErr) == "table" then
+			pieces = decodedOrErr :: { SavedBuildPiece }
+			local sidecar = rawBase.ContainerSidecar
+			if type(sidecar) == "table" then
+				for idx, piece in pieces do
+					local pieceCfg = BuildingConfig.Pieces[piece.PieceType]
+					if pieceCfg ~= nil and pieceCfg.StorageSlots ~= nil then
+						piece.Storage = deserializeStorage(sidecar[tostring(idx)], pieceCfg.StorageSlots)
+					end
+				end
+			end
+			return {
+				Pieces = pieces,
+				BaseTier = baseTier,
+				LastUpkeepTimestamp = lastUpkeepTimestamp,
+				SerializedBlocks = rawBase.SerializedBlocks,
+			}
+		else
+			warn(
+				string.format(
+					"[DataService] Failed to deserialize Base.SerializedBlocks (%s); falling back to legacy Pieces",
+					tostring(decodedOrErr)
+				)
+			)
+		end
+	end
+
 	if type(rawBase.Pieces) ~= "table" then
 		return {
 			Pieces = pieces,
 			BaseTier = baseTier,
 			LastUpkeepTimestamp = lastUpkeepTimestamp,
+			SerializedBlocks = "",
 		}
 	end
 
@@ -692,23 +812,30 @@ local function deserializeBase(rawBase: any): BaseData
 			Hp = hp,
 			LastDamagedAt = lastDamagedAt,
 			Storage = storage,
+			HasCodeLock = if rawPiece.HasCodeLock == true then true else nil,
+			IsDoorOpen = if rawPiece.IsDoorOpen == true then true else nil,
+			LinkedHbhfSensor = if rawPiece.LinkedHbhfSensor == true then true else nil,
+			HasDoor = if rawPiece.HasDoor == true then true else nil,
 		})
 	end
 
+	local serializedBlocks = if #pieces > 0 then BaseSerializer.SerializeBase(pieces, getBaseOrigin()) else ""
 	return {
 		Pieces = pieces,
 		BaseTier = baseTier,
 		LastUpkeepTimestamp = lastUpkeepTimestamp,
+		SerializedBlocks = serializedBlocks,
 	}
 end
 
 local function serializeBase(baseData: BaseData): BaseData
-	local pieces: { SavedBuildPiece } = {}
-	if type(baseData) ~= "table" or type(baseData.Pieces) ~= "table" then
+	if type(baseData) ~= "table" then
 		return {
-			Pieces = pieces,
+			Pieces = {},
 			BaseTier = 0,
 			LastUpkeepTimestamp = 0,
+			SerializedBlocks = "",
+			ContainerSidecar = {},
 		}
 	end
 
@@ -720,42 +847,77 @@ local function serializeBase(baseData: BaseData): BaseData
 		then math.floor(baseData.LastUpkeepTimestamp)
 		else 0
 
-	for _, piece in baseData.Pieces do
-		local canonicalType = BuildingGeometry.CanonicalPieceType(piece.PieceType)
-		local pieceConfig = BuildingConfig.Pieces[canonicalType]
-		if pieceConfig == nil then
-			continue
-		end
-
-		local parentUid = piece.ParentUid or piece.AnchorUid
-		local mountSurface: DefenseMountSurface? = if isValidMountSurface(piece.MountSurface)
-			then piece.MountSurface :: DefenseMountSurface
-			else nil
-		local serializedPiece: SavedBuildPiece = {
-			Uid = piece.Uid,
-			PieceType = canonicalType,
-			Tier = piece.Tier,
-			PosX = piece.PosX,
-			PosY = piece.PosY,
-			PosZ = piece.PosZ,
-			RotY = BuildingGeometry.QuantizeYaw30(piece.RotY),
-			ParentUid = parentUid,
-			AnchorUid = parentUid,
-			SocketId = piece.SocketId,
-			MountSurface = mountSurface,
-			Hp = piece.Hp,
-			LastDamagedAt = piece.LastDamagedAt,
-			Storage = if pieceConfig.StorageSlots ~= nil
-				then serializeStorage(piece.Storage, pieceConfig.StorageSlots)
-				else nil,
+	local rawPieces = if type(baseData.Pieces) == "table" then baseData.Pieces else {}
+	if #rawPieces == 0 and type(baseData.SerializedBlocks) == "string" and #baseData.SerializedBlocks > 0 then
+		return {
+			Pieces = {},
+			BaseTier = baseTier,
+			LastUpkeepTimestamp = lastUpkeepTimestamp,
+			SerializedBlocks = baseData.SerializedBlocks,
+			ContainerSidecar = if type(baseData.ContainerSidecar) == "table" then baseData.ContainerSidecar else {},
 		}
-		table.insert(pieces, serializedPiece)
 	end
 
+	local validPieces: { SavedBuildPiece } = {}
+	local sidecar: { [string]: { [string]: Slot } } = {}
+
+	for _, piece in rawPieces do
+		if #validPieces >= BuildingConfig.MaxPiecesPerBase then
+			break
+		end
+		if
+			type(piece) == "table"
+			and type(piece.PieceType) == "string"
+			and SecurityService.IsFiniteNumber(piece.PosX)
+			and SecurityService.IsFiniteNumber(piece.PosY)
+			and SecurityService.IsFiniteNumber(piece.PosZ)
+		then
+			local canonicalType = BuildingGeometry.CanonicalPieceType(piece.PieceType)
+			local pieceConfig = BuildingConfig.Pieces[canonicalType]
+			if pieceConfig ~= nil then
+				local parentUid = piece.ParentUid or piece.AnchorUid
+				local mountSurface: DefenseMountSurface? = if isValidMountSurface(piece.MountSurface)
+					then piece.MountSurface :: DefenseMountSurface
+					else nil
+				local normalizedPiece: SavedBuildPiece = {
+					Uid = piece.Uid,
+					PieceType = canonicalType,
+					Tier = if BuildingConfig.Tiers[piece.Tier] ~= nil and pieceConfig.Upgradeable
+						then piece.Tier
+						else "wood",
+					PosX = piece.PosX,
+					PosY = piece.PosY,
+					PosZ = piece.PosZ,
+					RotY = if SecurityService.IsFiniteNumber(piece.RotY) then piece.RotY else 0,
+					ParentUid = parentUid,
+					AnchorUid = parentUid,
+					SocketId = piece.SocketId,
+					MountSurface = mountSurface,
+					Hp = piece.Hp,
+					LastDamagedAt = piece.LastDamagedAt,
+					HasCodeLock = piece.HasCodeLock,
+					IsDoorOpen = piece.IsDoorOpen,
+					LinkedHbhfSensor = piece.LinkedHbhfSensor,
+					HasDoor = piece.HasDoor,
+				}
+				table.insert(validPieces, normalizedPiece)
+				if pieceConfig.StorageSlots ~= nil then
+					local slotStorage = serializeStorage(piece.Storage, pieceConfig.StorageSlots)
+					if next(slotStorage) ~= nil then
+						sidecar[tostring(#validPieces)] = slotStorage
+					end
+				end
+			end
+		end
+	end
+
+	local serializedBlocks = if #validPieces > 0 then BaseSerializer.SerializeBase(validPieces, getBaseOrigin()) else ""
 	return {
-		Pieces = pieces,
+		Pieces = {},
 		BaseTier = baseTier,
 		LastUpkeepTimestamp = lastUpkeepTimestamp,
+		SerializedBlocks = serializedBlocks,
+		ContainerSidecar = sidecar,
 	}
 end
 
@@ -945,6 +1107,12 @@ local Migrations: { [number]: (data: { [string]: any }) -> () } = {
 	-- v7 -> v8: Explicit SchemaVersion & Equipment map
 	[8] = function(data: { [string]: any })
 		data.Equipment = deserializeEquipment(data.Equipment)
+	end,
+
+	-- v8 -> v9: Binary buffer serialization for Base & BaseBlueprints
+	[9] = function(data: { [string]: any })
+		data.Base = serializeBase(deserializeBase(data.Base))
+		data.BaseBlueprints = serializeBaseBlueprints(deserializeBaseBlueprints(data.BaseBlueprints))
 	end,
 }
 

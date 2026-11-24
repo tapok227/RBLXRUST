@@ -6,6 +6,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local Types = require(ReplicatedStorage.Shared.Types)
 local BuildingConfig = require(ReplicatedStorage.Shared.configs.BuildingConfig)
 local BuildingGeometry = require(ReplicatedStorage.Shared.BuildingGeometry)
+local BaseSerializer = require(ReplicatedStorage.Shared.BaseSerializer)
 local BuildingValidator = require(ServerScriptService.Server.Services.BuildingValidator)
 local BaseUpkeep = require(ServerScriptService.Server.Services.Base.BaseUpkeep)
 local DataService = require(ServerScriptService.Server.Services.DataService)
@@ -189,10 +190,6 @@ local TIER_SEQUENCE: { BuildTier } = { "wood", "stone", "metal", "armored" }
 
 local BaseBlueprints = {}
 
-local function round3(value: number): number
-	return math.floor(value * 1000 + 0.5) / 1000
-end
-
 local function accumulatePieceCost(costMap: { [string]: number }, pieceType: BuildPieceType, tier: BuildTier)
 	local canonical = BuildingGeometry.CanonicalPieceType(pieceType)
 	local pieceCfg = BuildingConfig.Pieces[canonical]
@@ -226,6 +223,17 @@ local function computeBlueprintTotalCost(entries: { BlueprintPieceEntry }): { [s
 		local canonical = BuildingGeometry.CanonicalPieceType(entry.PieceType)
 		if canonical ~= "tool_cupboard" and entry.IsTc ~= true then
 			accumulatePieceCost(costMap, canonical, entry.Tier)
+		end
+	end
+	return costMap
+end
+
+local function computeBlocksCost(blocks: { SavedBuildPiece }): { [string]: number }
+	local costMap: { [string]: number } = {}
+	for _, block in blocks do
+		local canonical = BuildingGeometry.CanonicalPieceType(block.PieceType)
+		if canonical ~= "tool_cupboard" then
+			accumulatePieceCost(costMap, canonical, block.Tier)
 		end
 	end
 	return costMap
@@ -288,15 +296,43 @@ function BaseBlueprints.BuildSummaries(player: Player): { BaseBlueprintSummary }
 	for slotIdx = 1, MAX_SLOTS do
 		local key = tostring(slotIdx)
 		local slot = savedMap[key]
-		if slot ~= nil and #slot.Pieces > 0 then
+		local pieceCount = 0
+		local slotCost: { [string]: number }? = nil
+		local hasSlotData = false
+
+		if slot ~= nil then
+			if type(slot.EncodedBlocks) == "string" and #slot.EncodedBlocks > 0 then
+				if type(slot.PieceCount) == "number" and slot.PieceCount > 0 and type(slot.Cost) == "table" then
+					pieceCount = math.floor(slot.PieceCount)
+					slotCost = slot.Cost
+					hasSlotData = true
+				else
+					local ok, decoded = BaseSerializer.DeserializeBase(slot.EncodedBlocks, CFrame.identity)
+					if ok and type(decoded) == "table" and #(decoded :: { SavedBuildPiece }) > 0 then
+						local blocks = decoded :: { SavedBuildPiece }
+						pieceCount = #blocks
+						slotCost = computeBlocksCost(blocks)
+						slot.PieceCount = pieceCount
+						slot.Cost = slotCost
+						hasSlotData = true
+					end
+				end
+			elseif type(slot.Pieces) == "table" and #slot.Pieces > 0 then
+				pieceCount = #slot.Pieces
+				slotCost = computeBlueprintTotalCost(slot.Pieces)
+				hasSlotData = true
+			end
+		end
+
+		if slot ~= nil and hasSlotData then
 			table.insert(summaries, {
 				Id = string.format("slot_%d", slotIdx),
 				Name = slot.Name,
-				PieceCount = #slot.Pieces,
+				PieceCount = pieceCount,
 				SavedAt = slot.SavedAt,
 				IsBuiltin = false,
 				HasData = true,
-				Cost = computeBlueprintTotalCost(slot.Pieces),
+				Cost = slotCost or {},
 			})
 		else
 			table.insert(summaries, {
@@ -328,65 +364,108 @@ function BaseBlueprints.SaveBlueprint(player: Player, slotIndex: number): (boole
 	end
 
 	local tcCF = BuildingGeometry.GetPieceWorldCFrame(tcPiece)
-	local tcRotY = BuildingGeometry.QuantizeYaw30(tcPiece.RotY)
-	local entries: { BlueprintPieceEntry } = {}
+	local blocksToSave: { SavedBuildPiece } = {}
 
 	for _, piece in data.Base.Pieces do
 		local canonical = BuildingGeometry.CanonicalPieceType(piece.PieceType)
 		local pieceCfg = BuildingConfig.Pieces[canonical]
 		if canonical ~= "tool_cupboard" and pieceCfg ~= nil and pieceCfg.AssaultDeployable ~= true then
-			local pieceCF = BuildingGeometry.GetPieceWorldCFrame(piece)
-			local relCF = tcCF:ToObjectSpace(pieceCF)
-			local relRotY = BuildingGeometry.QuantizeYaw30(piece.RotY - tcRotY)
-			table.insert(entries, {
-				PieceType = canonical,
-				Tier = piece.Tier,
-				RelX = round3(relCF.Position.X),
-				RelY = round3(relCF.Position.Y),
-				RelZ = round3(relCF.Position.Z),
-				RelRotY = relRotY,
-				MountSurface = piece.MountSurface,
-			})
+			table.insert(blocksToSave, piece)
 		end
 	end
 
-	if #entries == 0 then
+	if #blocksToSave == 0 then
 		return false, "На базе нет модулей для сохранения в планировку"
 	end
+
+	local encoded = BaseSerializer.SerializeBase(blocksToSave, tcCF)
+	local cost = computeBlocksCost(blocksToSave)
 
 	data.BaseBlueprints = data.BaseBlueprints or {}
 	local slotKey = tostring(slotIndex)
 	data.BaseBlueprints[slotKey] = {
 		Id = string.format("slot_%d", slotIndex),
-		Name = string.format("База #%d (%d мод.)", slotIndex, #entries),
+		Name = string.format("База #%d (%d мод.)", slotIndex, #blocksToSave),
 		SavedAt = os.time(),
-		Pieces = entries,
+		EncodedBlocks = encoded,
+		PieceCount = #blocksToSave,
+		Cost = cost,
 	}
 
 	return true,
 		string.format(
 			"Планировка сохранена в слот #%d (%d модулей)",
 			slotIndex,
-			#entries
+			#blocksToSave
 		)
 end
 
-local function resolveBlueprintPieces(data: Types.PlayerData, blueprintId: string): ({ BlueprintPieceEntry }?, string?)
+local function entriesToWorldBlocks(entries: { BlueprintPieceEntry }, tcCF: CFrame, tcRotY: number): { SavedBuildPiece }
+	local blocks: { SavedBuildPiece } = {}
+	for _, entry in entries do
+		local canonical = BuildingGeometry.CanonicalPieceType(entry.PieceType)
+		if canonical == "tool_cupboard" or entry.IsTc == true then
+			continue
+		end
+		local pieceCfg = BuildingConfig.Pieces[canonical]
+		if pieceCfg ~= nil then
+			local tier: BuildTier = if BuildingConfig.Tiers[entry.Tier] ~= nil then entry.Tier else "wood"
+			local worldCF = tcCF
+				* CFrame.new(entry.RelX, entry.RelY, entry.RelZ)
+				* CFrame.Angles(0, math.rad(entry.RelRotY), 0)
+			local worldRotY = BuildingGeometry.QuantizeYaw30(tcRotY + entry.RelRotY)
+			local maxHp = BuildingGeometry.ComputeMaxHp(canonical, tier)
+			table.insert(blocks, {
+				Uid = HttpService:GenerateGUID(false),
+				PieceType = canonical,
+				Tier = tier,
+				PosX = worldCF.Position.X,
+				PosY = worldCF.Position.Y,
+				PosZ = worldCF.Position.Z,
+				RotY = worldRotY,
+				MountSurface = entry.MountSurface,
+				Hp = maxHp,
+				LastDamagedAt = 0,
+			})
+		end
+	end
+	return blocks
+end
+
+local function resolveBlueprintWorldBlocks(
+	data: Types.PlayerData,
+	blueprintId: string,
+	tcCF: CFrame,
+	tcRotY: number
+): ({ SavedBuildPiece }?, string?, string?)
 	if blueprintId == BUILTIN_2X2_ID then
-		return BUILTIN_2X2_PIECES, BUILTIN_2X2_NAME
+		return entriesToWorldBlocks(BUILTIN_2X2_PIECES, tcCF, tcRotY), BUILTIN_2X2_NAME, nil
 	end
 	local slotMatch = string.match(blueprintId, "^slot_(%d+)$")
 	if slotMatch ~= nil then
 		local slotIdx = tonumber(slotMatch)
 		if slotIdx ~= nil and slotIdx >= 1 and slotIdx <= MAX_SLOTS then
 			local slot = data.BaseBlueprints[tostring(slotIdx)]
-			if slot ~= nil and #slot.Pieces > 0 then
-				return slot.Pieces, slot.Name
+			if slot == nil then
+				return nil, nil, nil
 			end
-			return nil, nil
+			if type(slot.EncodedBlocks) == "string" and #slot.EncodedBlocks > 0 then
+				local ok, decoded = BaseSerializer.DeserializeBase(slot.EncodedBlocks, tcCF)
+				if not ok then
+					return nil, nil, tostring(decoded)
+				end
+				return decoded :: { SavedBuildPiece }, slot.Name, nil
+			elseif type(slot.Pieces) == "table" and #slot.Pieces > 0 then
+				local blocks = entriesToWorldBlocks(slot.Pieces, tcCF, tcRotY)
+				slot.EncodedBlocks = BaseSerializer.SerializeBase(blocks, tcCF)
+				slot.PieceCount = #blocks
+				slot.Cost = computeBlocksCost(blocks)
+				slot.Pieces = nil
+				return blocks, slot.Name, nil
+			end
 		end
 	end
-	return nil, nil
+	return nil, nil, nil
 end
 
 function BaseBlueprints.LoadBlueprint(player: Player, blueprintId: string, deps: BlueprintLoadDeps): (boolean, string)
@@ -411,16 +490,22 @@ function BaseBlueprints.LoadBlueprint(player: Player, blueprintId: string, deps:
 			"Нельзя загрузить планировку во время 30-сек рейд-блока"
 	end
 
-	local bpEntries, bpName = resolveBlueprintPieces(data, blueprintId)
-	if bpEntries == nil or #bpEntries == 0 or bpName == nil then
+	local tcCF = BuildingGeometry.GetPieceWorldCFrame(tcPiece)
+	local tcRotY = BuildingGeometry.QuantizeYaw30(tcPiece.RotY)
+
+	local rawWorldBlocks, bpName, decodeErr = resolveBlueprintWorldBlocks(data, blueprintId, tcCF, tcRotY)
+	if decodeErr ~= nil then
+		return false, string.format("Ошибка декодирования планировки: %s", decodeErr)
+	end
+	if rawWorldBlocks == nil or #rawWorldBlocks == 0 or bpName == nil then
 		return false, "Выбранный слот планировки пуст"
 	end
-	if (#bpEntries + 1) > BuildingConfig.MaxPiecesPerBase then
+	if (#rawWorldBlocks + 1) > BuildingConfig.MaxPiecesPerBase then
 		return false, "Превышен максимальный лимит модулей базы"
 	end
 
 	-- Compute blueprint costs & 80% refund from existing non-TC blocks
-	local bpCost = computeBlueprintTotalCost(bpEntries)
+	local bpCost = computeBlocksCost(rawWorldBlocks)
 	local refundMap = computeRefundFromPieces(data.Base.Pieces)
 	local tcTotals = BaseUpkeep.ComputeTcStorageTotals(tcPiece)
 
@@ -436,10 +521,6 @@ function BaseBlueprints.LoadBlueprint(player: Player, blueprintId: string, deps:
 				)
 		end
 	end
-
-	-- Construct candidate pieces relative to TC and validate everything BEFORE mutating the base
-	local tcCF = BuildingGeometry.GetPieceWorldCFrame(tcPiece)
-	local tcRotY = BuildingGeometry.QuantizeYaw30(tcPiece.RotY)
 
 	local existingModelsExclude: { Instance } = {}
 	for _, rec in playerRecords do
@@ -459,10 +540,11 @@ function BaseBlueprints.LoadBlueprint(player: Player, blueprintId: string, deps:
 	local seenWorldKeys: { [string]: boolean } = {
 		[BuildingValidator.GetWorldSocketKeyForPiece("tool_cupboard", tcCF)] = true,
 	}
+	local wallCandidates: { BuildingGeometry.ParallelWallCandidate } = {}
 
-	for _, entry in bpEntries do
+	for _, entry in rawWorldBlocks do
 		local canonical = BuildingGeometry.CanonicalPieceType(entry.PieceType)
-		if canonical == "tool_cupboard" or entry.IsTc == true then
+		if canonical == "tool_cupboard" then
 			continue
 		end
 		local pieceCfg = BuildingConfig.Pieces[canonical]
@@ -476,10 +558,7 @@ function BaseBlueprints.LoadBlueprint(player: Player, blueprintId: string, deps:
 				string.format("Нарушен лимит %s (макс. %d)", pieceCfg.Name, pieceCfg.MaxPerBase)
 		end
 
-		local worldCF = tcCF
-			* CFrame.new(entry.RelX, entry.RelY, entry.RelZ)
-			* CFrame.Angles(0, math.rad(entry.RelRotY), 0)
-		local worldRotY = BuildingGeometry.QuantizeYaw30(tcRotY + entry.RelRotY)
+		local worldCF = BuildingGeometry.GetPieceWorldCFrame(entry)
 
 		if BuildingValidator.IsInRaidOutpostZone(canonical, worldCF) then
 			return false, "Планировка пересекает запрещённую зону (RaidOutpostZone)"
@@ -491,6 +570,12 @@ function BaseBlueprints.LoadBlueprint(player: Player, blueprintId: string, deps:
 				"В планировке обнаружены дублирующиеся модули в одной точке"
 		end
 		seenWorldKeys[worldKey] = true
+
+		local parallelOk, parallelReason =
+			BuildingGeometry.CheckParallelWallStacking(canonical, worldCF, wallCandidates)
+		if not parallelOk then
+			return false, parallelReason or "Обнаружено наложение параллельных стен"
+		end
 
 		local mountSurface: DefenseMountSurface? = entry.MountSurface
 		if pieceCfg.IsDefense == true and mountSurface == nil then
@@ -512,7 +597,9 @@ function BaseBlueprints.LoadBlueprint(player: Player, blueprintId: string, deps:
 			end
 		end
 
-		local tier: BuildTier = if BuildingConfig.Tiers[entry.Tier] ~= nil then entry.Tier else "wood"
+		local tier: BuildTier = if BuildingConfig.Tiers[entry.Tier] ~= nil and pieceCfg.Upgradeable
+			then entry.Tier
+			else "wood"
 		local maxHp = BuildingGeometry.ComputeMaxHp(canonical, tier)
 		local newUid = HttpService:GenerateGUID(false)
 		local newPiece: SavedBuildPiece = {
@@ -522,7 +609,7 @@ function BaseBlueprints.LoadBlueprint(player: Player, blueprintId: string, deps:
 			PosX = worldCF.Position.X,
 			PosY = worldCF.Position.Y,
 			PosZ = worldCF.Position.Z,
-			RotY = worldRotY,
+			RotY = entry.RotY,
 			ParentUid = nil,
 			AnchorUid = nil,
 			SocketId = nil,
@@ -530,8 +617,16 @@ function BaseBlueprints.LoadBlueprint(player: Player, blueprintId: string, deps:
 			Hp = maxHp,
 			LastDamagedAt = 0,
 			Storage = if pieceCfg.StorageSlots ~= nil then {} else nil,
+			HasCodeLock = entry.HasCodeLock,
+			IsDoorOpen = entry.IsDoorOpen,
+			LinkedHbhfSensor = entry.LinkedHbhfSensor,
+			HasDoor = entry.HasDoor,
 		}
 		table.insert(candidatePieces, newPiece)
+		table.insert(wallCandidates, {
+			PieceType = canonical,
+			CFrame = worldCF,
+		})
 		candidateRecords[newUid] = {
 			Owner = player,
 			Piece = newPiece,

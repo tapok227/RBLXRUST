@@ -171,6 +171,10 @@ export type SavedBuildPiece = {
 	Hp: number,
 	LastDamagedAt: number?,
 	Storage: { [string]: Slot }?,
+	HasCodeLock: boolean?,
+	IsDoorOpen: boolean?,
+	LinkedHbhfSensor: boolean?,
+	HasDoor: boolean?,
 	GridX: number?,
 	GridY: number?,
 	GridZ: number?,
@@ -218,7 +222,10 @@ export type BaseBlueprintSlot = {
 	Id: string,
 	Name: string,
 	SavedAt: number,
-	Pieces: { BlueprintPieceEntry },
+	EncodedBlocks: string?,
+	PieceCount: number?,
+	Cost: { [string]: number }?,
+	Pieces: { BlueprintPieceEntry }?,
 }
 
 export type BaseBlueprintSummary = {
@@ -251,6 +258,8 @@ export type BaseData = {
 	Pieces: { SavedBuildPiece },
 	BaseTier: BaseTier,
 	LastUpkeepTimestamp: number,
+	SerializedBlocks: string?,
+	ContainerSidecar: { [string]: { [string]: Slot } }?,
 }
 
 export type BuildingBlockData = SavedBuildPiece
@@ -829,8 +838,8 @@ local Types = {
 	MAX_ATTACK_ORIGIN_OFFSET = 8,
 	MAX_EXPLOSIVE_PLACE_DISTANCE = 14,
 	RAID_DURATION = 300,
-	CURRENT_SCHEMA_VERSION = 8,
-	CURRENT_DATA_VERSION = 8,
+	CURRENT_SCHEMA_VERSION = 9,
+	CURRENT_DATA_VERSION = 9,
 	PING_DISTANCE_TOLERANCE = 2,
 	MAX_BUILD_DISTANCE = 20,
 	MAX_RAID_TERMINAL_DISTANCE = 24,

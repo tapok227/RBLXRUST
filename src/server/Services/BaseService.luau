@@ -14,6 +14,7 @@ local BuildingConfig = require(ReplicatedStorage.Shared.configs.BuildingConfig)
 local Defenses = require(ReplicatedStorage.Shared.configs.Defenses)
 local Recipes = require(ReplicatedStorage.Shared.configs.Recipes)
 local BuildingGeometry = require(ReplicatedStorage.Shared.BuildingGeometry)
+local BaseSerializer = require(ReplicatedStorage.Shared.BaseSerializer)
 local Net = require(ReplicatedStorage.Shared.Net)
 local BaseBlueprints = require(ServerScriptService.Server.Services.Base.BaseBlueprints)
 local BaseGhosts = require(ServerScriptService.Server.Services.Base.BaseGhosts)
@@ -278,6 +279,17 @@ local function createPieceModel(owner: Player, piece: SavedBuildPiece): (Model, 
 	model:SetAttribute("MaxHp", maxHp)
 	model:SetAttribute("LastDamagedAt", piece.LastDamagedAt or 0)
 	model:SetAttribute("LastDamagedServerTime", 0)
+	if piece.HasCodeLock == true then
+		model:SetAttribute("HasCodeLock", true)
+	end
+	if piece.LinkedHbhfSensor == true then
+		model:SetAttribute("LinkedHbhfSensor", true)
+	end
+	if canonicalType == "doorway" and piece.HasDoor == true then
+		BuildingGeometry.AttachDoorPanel(model, worldCF, piece.Tier, piece.IsDoorOpen == true)
+	elseif canonicalType == "smart_door" and piece.IsDoorOpen == true then
+		BuildingGeometry.SetDoorOpen(model, true)
+	end
 	return model, worldCF
 end
 
@@ -449,8 +461,57 @@ local function despawnBaseForPlayer(player: Player)
 	end
 end
 
+local function collectCharacterExcludes(): { Instance }
+	local excludes: { Instance } = {}
+	for _, p in Players:GetPlayers() do
+		if p.Character ~= nil then
+			table.insert(excludes, p.Character)
+		end
+	end
+	return excludes
+end
+
+function BaseService.GetBaseOrigin(_player: Player?): CFrame
+	local attr = Workspace:GetAttribute("BaseOrigin")
+	if typeof(attr) == "CFrame" then
+		return attr :: CFrame
+	end
+	return BaseSerializer.DEFAULT_ORIGIN
+end
+
 local function spawnBaseForPlayer(player: Player, data: Types.PlayerData)
 	despawnBaseForPlayer(player)
+	local originCF = BaseService.GetBaseOrigin(player)
+
+	if #data.Base.Pieces == 0 and type(data.Base.SerializedBlocks) == "string" and #data.Base.SerializedBlocks > 0 then
+		local ok, decodedOrErr = BaseUpkeep.UnpackBaseSnapshot(data.Base.SerializedBlocks, originCF)
+		if ok then
+			data.Base.Pieces = decodedOrErr :: { SavedBuildPiece }
+		else
+			warn(
+				string.format(
+					"[BaseService] Failed to unpack SerializedBlocks for %s: %s",
+					player.Name,
+					tostring(decodedOrErr)
+				)
+			)
+		end
+	end
+
+	local validatedPieces, droppedCount =
+		BaseUpkeep.ValidateLoadedBasePieces(player, data.Base.Pieces, collectCharacterExcludes())
+	if droppedCount > 0 then
+		warn(
+			string.format(
+				"[BaseService] Dropped %d invalid/floating blocks on base load for %s",
+				droppedCount,
+				player.Name
+			)
+		)
+	end
+	data.Base.Pieces = validatedPieces
+	data.Base.SerializedBlocks = BaseSerializer.SerializeBase(validatedPieces, originCF)
+
 	for _, piece in data.Base.Pieces do
 		spawnPieceForPlayer(player, piece)
 	end
@@ -1528,6 +1589,49 @@ function BaseService.GetPlayerPieces(player: Player): { SavedBuildPiece }
 	return if data ~= nil then table.clone(data.Base.Pieces) else {}
 end
 
+function BaseService.SerializePlayerBase(player: Player): string?
+	local data = DataService.GetData(player)
+	if data == nil then
+		return nil
+	end
+	BaseUpkeep.SyncPieceStatesFromModels(data.Base.Pieces, spawnedByPlayer[player])
+	local encoded = BaseSerializer.SerializeBase(data.Base.Pieces, BaseService.GetBaseOrigin(player))
+	data.Base.SerializedBlocks = encoded
+	return encoded
+end
+
+function BaseService.LoadSerializedBase(player: Player, encoded: string): (boolean, string)
+	local data = DataService.GetData(player)
+	if data == nil then
+		return false, "Player data not loaded"
+	end
+	local originCF = BaseService.GetBaseOrigin(player)
+	local ok, decodedOrErr = BaseUpkeep.UnpackBaseSnapshot(encoded, originCF)
+	if not ok then
+		return false, tostring(decodedOrErr)
+	end
+
+	local excludes = collectCharacterExcludes()
+	local existingRecords = spawnedByPlayer[player]
+	if existingRecords ~= nil then
+		for _, rec in existingRecords do
+			table.insert(excludes, rec.Model)
+		end
+	end
+
+	local validated, dropped =
+		BaseUpkeep.ValidateLoadedBasePieces(player, decodedOrErr :: { SavedBuildPiece }, excludes)
+	despawnBaseForPlayer(player)
+	data.Base.Pieces = validated
+	data.Base.SerializedBlocks = BaseSerializer.SerializeBase(validated, originCF)
+	for _, piece in data.Base.Pieces do
+		spawnPieceForPlayer(player, piece)
+	end
+	recalculateAndSyncBaseTier(player)
+	syncBaseState(player)
+	return true, string.format("Loaded %d blocks (dropped %d)", #validated, dropped)
+end
+
 function BaseService.GetStorageContainerId(player: Player, uid: string): string?
 	local playerRecords = spawnedByPlayer[player]
 	local record = if playerRecords ~= nil then playerRecords[uid] else nil
@@ -1559,7 +1663,9 @@ function BaseService.Init()
 	Net.GetEvent(Net.Events.ToolCupboardAction).OnServerEvent:Connect(onToolCupboardAction)
 	TeleportService.TeleportInitFailed:Connect(onTeleportInitFailed)
 
-	DataService.OnBeforeUnload(function(_player: Player, data: Types.PlayerData)
+	DataService.OnBeforeUnload(function(player: Player, data: Types.PlayerData)
+		BaseUpkeep.SyncPieceStatesFromModels(data.Base.Pieces, spawnedByPlayer[player])
+		data.Base.SerializedBlocks = BaseSerializer.SerializeBase(data.Base.Pieces, BaseService.GetBaseOrigin(player))
 		data.Base.LastUpkeepTimestamp = os.time()
 	end)
 

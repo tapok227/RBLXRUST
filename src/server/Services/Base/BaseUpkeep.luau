@@ -7,6 +7,7 @@ local Types = require(ReplicatedStorage.Shared.Types)
 local Items = require(ReplicatedStorage.Shared.configs.Items)
 local BuildingConfig = require(ReplicatedStorage.Shared.configs.BuildingConfig)
 local BuildingGeometry = require(ReplicatedStorage.Shared.BuildingGeometry)
+local BaseSerializer = require(ReplicatedStorage.Shared.BaseSerializer)
 local BuildingValidator = require(ServerScriptService.Server.Services.BuildingValidator)
 local DataService = require(ServerScriptService.Server.Services.DataService)
 local DefenseService = require(ServerScriptService.Server.Services.DefenseService)
@@ -597,6 +598,117 @@ function BaseUpkeep.DepositItemsToPlayerBase(
 	end
 
 	return addedInvTotal, addedStorageTotal
+end
+
+function BaseUpkeep.SyncPieceStatesFromModels(pieces: { SavedBuildPiece }, playerRecords: { [string]: LivePieceEntry }?)
+	if playerRecords == nil then
+		return
+	end
+	for _, piece in pieces do
+		local record = playerRecords[piece.Uid]
+		if record ~= nil and record.Model.Parent ~= nil then
+			local model = record.Model
+			piece.HasDoor = if model:GetAttribute("HasDoor") == true then true else nil
+			piece.IsDoorOpen = if model:GetAttribute("DoorOpen") == true then true else nil
+			piece.HasCodeLock = if model:GetAttribute("HasCodeLock") == true then true else nil
+			piece.LinkedHbhfSensor = if model:GetAttribute("LinkedHbhfSensor") == true then true else nil
+		end
+	end
+end
+
+function BaseUpkeep.PackBaseSnapshot(pieces: { SavedBuildPiece }, originCF: CFrame?): string
+	return BaseSerializer.SerializeBase(pieces, originCF)
+end
+
+function BaseUpkeep.UnpackBaseSnapshot(encoded: string, originCF: CFrame?): (boolean, { SavedBuildPiece } | string)
+	return BaseSerializer.DeserializeBase(encoded, originCF)
+end
+
+function BaseUpkeep.ValidateLoadedBasePieces(
+	_owner: Player,
+	pieces: { SavedBuildPiece },
+	excludeInstances: { Instance }?
+): ({ SavedBuildPiece }, number)
+	local kept: { SavedBuildPiece } = {}
+	local dropped = 0
+	local countsByType: { [string]: number } = {}
+	local seenWorldKeys: { [string]: boolean } = {}
+	local wallCandidates: { BuildingGeometry.ParallelWallCandidate } = {}
+
+	for _, piece in pieces do
+		if #kept >= BuildingConfig.MaxPiecesPerBase then
+			dropped += 1
+			continue
+		end
+
+		local canonical = BuildingGeometry.CanonicalPieceType(piece.PieceType)
+		local pieceCfg = BuildingConfig.Pieces[canonical]
+		if pieceCfg == nil then
+			dropped += 1
+			continue
+		end
+
+		local nextCount = (countsByType[canonical] or 0) + 1
+		if pieceCfg.MaxPerBase ~= nil and nextCount > pieceCfg.MaxPerBase then
+			dropped += 1
+			continue
+		end
+
+		local worldCF = BuildingGeometry.GetPieceWorldCFrame(piece)
+		if BuildingValidator.IsInRaidOutpostZone(canonical, worldCF) then
+			dropped += 1
+			continue
+		end
+
+		local worldKey = BuildingValidator.GetWorldSocketKeyForPiece(canonical, worldCF)
+		if seenWorldKeys[worldKey] then
+			dropped += 1
+			continue
+		end
+
+		local parallelOk = BuildingGeometry.CheckParallelWallStacking(canonical, worldCF, wallCandidates)
+		if not parallelOk then
+			dropped += 1
+			continue
+		end
+
+		local overlap =
+			BuildingValidator.CheckWorldOverlap(canonical, worldCF, excludeInstances, false, false, piece.MountSurface)
+		if not overlap.Allowed then
+			dropped += 1
+			continue
+		end
+
+		countsByType[canonical] = nextCount
+		seenWorldKeys[worldKey] = true
+		piece.PieceType = canonical
+		table.insert(kept, piece)
+		table.insert(wallCandidates, {
+			PieceType = canonical,
+			CFrame = worldCF,
+		})
+	end
+
+	if #kept > 0 then
+		local unsupportedUids = BuildingValidator.FindUnsupportedPieces(kept, nil)
+		if #unsupportedUids > 0 then
+			local badSet: { [string]: boolean } = {}
+			for _, uid in unsupportedUids do
+				badSet[uid] = true
+			end
+			local supportedList: { SavedBuildPiece } = {}
+			for _, piece in kept do
+				if badSet[piece.Uid] then
+					dropped += 1
+				else
+					table.insert(supportedList, piece)
+				end
+			end
+			kept = supportedList
+		end
+	end
+
+	return kept, dropped
 end
 
 return BaseUpkeep
