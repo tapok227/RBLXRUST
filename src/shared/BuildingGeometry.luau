@@ -21,6 +21,8 @@ local TRIANGLE_INRADIUS = BuildingConfig.TriangleInradius
 local GRID_SIZE = BuildingConfig.GridSize
 local WALL_HEIGHT = BuildingConfig.WallHeight
 local WALL_BODY_HEIGHT = BuildingConfig.WallBodyHeight
+local HALF_WALL_BODY_HEIGHT = BuildingConfig.HalfWallBodyHeight
+local QUARTER_WALL_HEIGHT = BuildingConfig.QuarterWallHeight
 local WALL_THICKNESS = BuildingConfig.WallThickness
 local FLOOR_THICKNESS = BuildingConfig.FloorThickness
 local FOUNDATION_THICKNESS = BuildingConfig.FoundationThickness
@@ -80,6 +82,27 @@ local TRIANGLE_FLOOR_SOCKETS = makeTriangleSockets(WALL_HEIGHT, FLOOR_THICKNESS)
 local WALL_SOCKETS: { BuildSocketDef } = table.freeze({
 	table.freeze({ Id = "WallTop", Kind = "WallTop", LocalCFrame = CFrame.new(0, WALL_BODY_HEIGHT, 0) }),
 })
+local HALF_WALL_SOCKETS: { BuildSocketDef } = table.freeze({
+	table.freeze({ Id = "WallTop", Kind = "WallTop", LocalCFrame = CFrame.new(0, HALF_WALL_BODY_HEIGHT, 0) }),
+})
+local SLOPED_ROOF_SOCKETS: { BuildSocketDef } = table.freeze({
+	table.freeze({ Id = "Edge_1", Kind = "Edge", LocalCFrame = CFrame.new(0, 0, -GRID_SIZE * 0.5) }),
+	table.freeze({
+		Id = "Edge_2",
+		Kind = "Edge",
+		LocalCFrame = CFrame.new(GRID_SIZE * 0.5, 0, 0) * CFrame.Angles(0, math.rad(-90), 0),
+	}),
+	table.freeze({
+		Id = "Edge_3",
+		Kind = "Edge",
+		LocalCFrame = CFrame.new(0, 0, GRID_SIZE * 0.5) * CFrame.Angles(0, math.rad(180), 0),
+	}),
+	table.freeze({
+		Id = "Edge_4",
+		Kind = "Edge",
+		LocalCFrame = CFrame.new(-GRID_SIZE * 0.5, 0, 0) * CFrame.Angles(0, math.rad(90), 0),
+	}),
+})
 local EMPTY_SOCKETS: { BuildSocketDef } = table.freeze({})
 local NO_BUILD_FOLDERS = {
 	"NoBuildZones",
@@ -99,6 +122,21 @@ local BuildingGeometry = {}
 
 function BuildingGeometry.CanonicalPieceType(pieceType: string): BuildPieceType
 	return BuildingConfig.NormalizePieceType(pieceType) or (pieceType :: BuildPieceType)
+end
+
+function BuildingGeometry.GetWallBodyHeight(pieceType: BuildPieceType): number
+	local canonical = BuildingGeometry.CanonicalPieceType(pieceType)
+	if canonical == "half_wall" then
+		return HALF_WALL_BODY_HEIGHT
+	elseif canonical == "quarter_wall" then
+		return QUARTER_WALL_HEIGHT
+	end
+	return WALL_BODY_HEIGHT
+end
+
+function BuildingGeometry.IsFullHeightWall(pieceType: BuildPieceType): boolean
+	local canonical = BuildingGeometry.CanonicalPieceType(pieceType)
+	return canonical == "wall" or canonical == "doorway" or canonical == "window_wall"
 end
 
 local function spawnPrim(
@@ -224,6 +262,52 @@ function BuildingGeometry.CreateModel(
 			"Wall",
 			Vector3.new(GRID_SIZE, WALL_BODY_HEIGHT, WALL_THICKNESS),
 			worldCF * primaryLocalCF,
+			isGhost
+		)
+	elseif canonical == "half_wall" then
+		primaryLocalCF = CFrame.new(0, HALF_WALL_BODY_HEIGHT * 0.5, 0)
+		primaryPart = spawnPrim(
+			"Part",
+			model,
+			"Wall",
+			Vector3.new(GRID_SIZE, HALF_WALL_BODY_HEIGHT, WALL_THICKNESS),
+			worldCF * primaryLocalCF,
+			isGhost
+		)
+	elseif canonical == "quarter_wall" then
+		primaryLocalCF = CFrame.new(0, QUARTER_WALL_HEIGHT * 0.5, 0)
+		primaryPart = spawnPrim(
+			"Part",
+			model,
+			"Wall",
+			Vector3.new(GRID_SIZE, QUARTER_WALL_HEIGHT, WALL_THICKNESS),
+			worldCF * primaryLocalCF,
+			isGhost
+		)
+	elseif canonical == "sloped_roof" then
+		primaryLocalCF = CFrame.new(0, WALL_HEIGHT * 0.5, 0)
+		primaryPart = spawnPrim(
+			"WedgePart",
+			model,
+			"RoofWedge",
+			Vector3.new(GRID_SIZE, WALL_HEIGHT, GRID_SIZE),
+			worldCF * primaryLocalCF,
+			isGhost
+		)
+		spawnPrim(
+			"Part",
+			model,
+			"EaveFascia",
+			Vector3.new(GRID_SIZE, FLOOR_THICKNESS, 0.8),
+			worldCF * CFrame.new(0, FLOOR_THICKNESS * 0.5, -GRID_SIZE * 0.5 + 0.4),
+			isGhost
+		)
+		spawnPrim(
+			"Part",
+			model,
+			"RidgeCap",
+			Vector3.new(GRID_SIZE, 0.4, 0.8),
+			worldCF * CFrame.new(0, WALL_HEIGHT - 0.2, GRID_SIZE * 0.5 - 0.4),
 			isGhost
 		)
 	elseif canonical == "doorway" then
@@ -1021,28 +1105,52 @@ function BuildingGeometry.ApplyWearVisuals(
 			smoke.Parent = primary
 
 			local sz = primary.Size
-			local halfX = math.max(0.4, sz.X * 0.26)
-			local halfY = math.max(0.4, sz.Y * 0.24)
-			local faceZ = sz.Z * 0.5 + 0.04
-			local crackOffsets = {
-				CFrame.new(-halfX * 0.6, halfY * 0.35, faceZ) * CFrame.Angles(0, 0, math.rad(28)),
-				CFrame.new(halfX * 0.45, -halfY * 0.2, -faceZ) * CFrame.Angles(0, 0, math.rad(-34)),
-				CFrame.new(0, 0, faceZ) * CFrame.Angles(0, 0, math.rad(55)),
-			}
 			local crackLen = math.clamp(math.min(sz.X, sz.Y) * 0.55, 0.7, 3.6)
-			for idx, relCF in crackOffsets do
-				local crack = Instance.new("Part")
-				crack.Name = string.format("WearCrack_%d", idx)
-				crack.Anchored = true
-				crack.CanCollide = false
-				crack.CanQuery = false
-				crack.CanTouch = false
-				crack.CastShadow = false
-				crack.Material = Enum.Material.Slate
-				crack.Color = Color3.fromRGB(14, 12, 12)
-				crack.Size = Vector3.new(crackLen, 0.14, 0.08)
-				crack.CFrame = primary.CFrame * relCF
-				crack.Parent = model
+			if canonical == "sloped_roof" then
+				local slopeAngle = math.atan2(sz.Y, sz.Z)
+				local slopeBase = CFrame.Angles(-slopeAngle, 0, 0)
+				local slopeOffsets = {
+					slopeBase * CFrame.new(-sz.X * 0.22, 0.05, -1.6) * CFrame.Angles(0, math.rad(28), 0),
+					slopeBase * CFrame.new(sz.X * 0.18, 0.05, 1.4) * CFrame.Angles(0, math.rad(-34), 0),
+					slopeBase * CFrame.new(0, 0.05, 0) * CFrame.Angles(0, math.rad(55), 0),
+				}
+				for idx, relCF in slopeOffsets do
+					local crack = Instance.new("Part")
+					crack.Name = string.format("WearCrack_%d", idx)
+					crack.Anchored = true
+					crack.CanCollide = false
+					crack.CanQuery = false
+					crack.CanTouch = false
+					crack.CastShadow = false
+					crack.Material = Enum.Material.Slate
+					crack.Color = Color3.fromRGB(14, 12, 12)
+					crack.Size = Vector3.new(crackLen, 0.08, 0.14)
+					crack.CFrame = primary.CFrame * relCF
+					crack.Parent = model
+				end
+			else
+				local halfX = math.max(0.4, sz.X * 0.26)
+				local halfY = math.max(0.4, sz.Y * 0.24)
+				local faceZ = sz.Z * 0.5 + 0.04
+				local crackOffsets = {
+					CFrame.new(-halfX * 0.6, halfY * 0.35, faceZ) * CFrame.Angles(0, 0, math.rad(28)),
+					CFrame.new(halfX * 0.45, -halfY * 0.2, -faceZ) * CFrame.Angles(0, 0, math.rad(-34)),
+					CFrame.new(0, 0, faceZ) * CFrame.Angles(0, 0, math.rad(55)),
+				}
+				for idx, relCF in crackOffsets do
+					local crack = Instance.new("Part")
+					crack.Name = string.format("WearCrack_%d", idx)
+					crack.Anchored = true
+					crack.CanCollide = false
+					crack.CanQuery = false
+					crack.CanTouch = false
+					crack.CastShadow = false
+					crack.Material = Enum.Material.Slate
+					crack.Color = Color3.fromRGB(14, 12, 12)
+					crack.Size = Vector3.new(crackLen, 0.14, 0.08)
+					crack.CFrame = primary.CFrame * relCF
+					crack.Parent = model
+				end
 			end
 		end
 	end
@@ -1101,9 +1209,17 @@ function BuildingGeometry.SetGhostColor(model: Model, color: Color3)
 end
 
 function BuildingGeometry.GetPieceSockets(pieceType: BuildPieceType): { BuildSocketDef }
-	local cfg = BuildingConfig.Pieces[pieceType]
+	local canonical = BuildingGeometry.CanonicalPieceType(pieceType)
+	local cfg = BuildingConfig.Pieces[canonical]
 	if cfg == nil then
 		return EMPTY_SOCKETS
+	end
+	if canonical == "quarter_wall" then
+		return EMPTY_SOCKETS
+	elseif canonical == "half_wall" then
+		return HALF_WALL_SOCKETS
+	elseif canonical == "sloped_roof" then
+		return SLOPED_ROOF_SOCKETS
 	end
 	if cfg.Category == "Foundation" then
 		return if cfg.Shape == "Square" then SQUARE_FOUNDATION_SOCKETS else TRIANGLE_FOUNDATION_SOCKETS
@@ -1129,10 +1245,14 @@ function BuildingGeometry.IsSocketCompatible(
 	socket: BuildSocketDef,
 	childType: BuildPieceType
 ): boolean
-	local parentCfg = BuildingConfig.Pieces[parentType]
-	local childCfg = BuildingConfig.Pieces[childType]
+	local canonicalParent = BuildingGeometry.CanonicalPieceType(parentType)
 	local canonicalChild = BuildingGeometry.CanonicalPieceType(childType)
+	local parentCfg = BuildingConfig.Pieces[canonicalParent]
+	local childCfg = BuildingConfig.Pieces[canonicalChild]
 	if parentCfg == nil or childCfg == nil then
+		return false
+	end
+	if canonicalParent == "quarter_wall" then
 		return false
 	end
 
@@ -1143,7 +1263,7 @@ function BuildingGeometry.IsSocketCompatible(
 			return childCfg.Category == "Floor" or childCfg.Category == "Wall"
 		end
 	elseif socket.Kind == "Top" then
-		return (parentCfg.Shape == "Square" and canonicalChild == "roof")
+		return (parentCfg.Shape == "Square" and (canonicalChild == "roof" or canonicalChild == "sloped_roof"))
 			or (parentCfg.Shape == "Triangle" and canonicalChild == "triangle_floor")
 	elseif socket.Kind == "WallTop" then
 		return childCfg.Category == "Wall" or childCfg.Category == "Floor"
@@ -1200,17 +1320,28 @@ function BuildingGeometry.ComputeSnappedCFrame(
 		local wallYOffset = if parentCfg.Category == "Foundation" then FOUNDATION_THICKNESS else FLOOR_THICKNESS
 		if childCfg.Category == "Wall" then
 			return socketWorldCF * CFrame.new(0, wallYOffset, 0) * CFrame.Angles(0, math.rad((step % 2) * 180), 0)
+		elseif canonicalChild == "sloped_roof" then
+			return socketWorldCF * CFrame.new(0, 0, -GRID_SIZE * 0.5) * CFrame.Angles(0, math.rad((step % 4) * 90), 0)
 		elseif childCfg.Shape == "Square" then
 			return socketWorldCF * CFrame.new(0, 0, -GRID_SIZE * 0.5)
 		elseif childCfg.Shape == "Triangle" then
 			return socketWorldCF * CFrame.new(0, 0, -TRIANGLE_INRADIUS) * CFrame.Angles(0, math.rad(180), 0)
 		end
 	elseif socket.Kind == "Top" then
+		if canonicalChild == "sloped_roof" then
+			return socketWorldCF * CFrame.Angles(0, math.rad((step % 4) * 90), 0)
+		end
 		return socketWorldCF
 	elseif socket.Kind == "WallTop" then
 		local sideFlip = (step % 2) * 180
 		if childCfg.Category == "Wall" then
 			return socketWorldCF * CFrame.new(0, FLOOR_THICKNESS, 0) * CFrame.Angles(0, math.rad(sideFlip), 0)
+		elseif canonicalChild == "sloped_roof" then
+			local pitchYaw = ((step // 2) % 4) * 90
+			return socketWorldCF
+				* CFrame.Angles(0, math.rad(sideFlip), 0)
+				* CFrame.new(0, 0, -GRID_SIZE * 0.5)
+				* CFrame.Angles(0, math.rad(pitchYaw), 0)
 		elseif childCfg.Shape == "Square" then
 			return socketWorldCF * CFrame.Angles(0, math.rad(sideFlip), 0) * CFrame.new(0, 0, -GRID_SIZE * 0.5)
 		elseif childCfg.Shape == "Triangle" then
@@ -1327,6 +1458,22 @@ function BuildingGeometry.GetOverlapBoxes(
 			CFrame = worldCF * CFrame.new(0, WALL_BODY_HEIGHT * 0.5, 0),
 			Size = Vector3.new(GRID_SIZE * shrink, WALL_BODY_HEIGHT * shrink, WALL_THICKNESS * shrink),
 		})
+	elseif canonical == "half_wall" then
+		table.insert(boxes, {
+			CFrame = worldCF * CFrame.new(0, HALF_WALL_BODY_HEIGHT * 0.5, 0),
+			Size = Vector3.new(GRID_SIZE * shrink, HALF_WALL_BODY_HEIGHT * shrink, WALL_THICKNESS * shrink),
+		})
+	elseif canonical == "quarter_wall" then
+		table.insert(boxes, {
+			CFrame = worldCF * CFrame.new(0, QUARTER_WALL_HEIGHT * 0.5, 0),
+			Size = Vector3.new(GRID_SIZE * shrink, QUARTER_WALL_HEIGHT * shrink, WALL_THICKNESS * shrink),
+		})
+	elseif canonical == "sloped_roof" then
+		table.insert(boxes, {
+			CFrame = worldCF * CFrame.new(0, WALL_HEIGHT * 0.5, 0),
+			Size = Vector3.new(GRID_SIZE * shrink, WALL_HEIGHT * shrink, GRID_SIZE * shrink),
+			IsWedge = true,
+		})
 	elseif canonical == "square_stairs" then
 		table.insert(boxes, {
 			CFrame = worldCF * CFrame.new(0, WALL_BODY_HEIGHT * 0.5, 0),
@@ -1413,11 +1560,18 @@ function BuildingGeometry.CheckParallelWallStacking(
 	local searchRadius = BuildingConfig.ParallelWallSearchRadius
 	local halfWall = GRID_SIZE * 0.5
 
+	local targetH = BuildingGeometry.GetWallBodyHeight(targetType)
 	for _, candidate in existingPieces do
 		local cfg = BuildingConfig.Pieces[candidate.PieceType]
 		if cfg ~= nil and cfg.Category == "Wall" then
 			local otherPos = candidate.CFrame.Position
-			if math.abs(otherPos.Y - targetPos.Y) < (WALL_HEIGHT - 1.0) then
+			local otherH = BuildingGeometry.GetWallBodyHeight(candidate.PieceType)
+			local targetMinY = targetPos.Y
+			local targetMaxY = targetPos.Y + targetH
+			local otherMinY = otherPos.Y
+			local otherMaxY = otherPos.Y + otherH
+			local verticalOverlap = (targetMinY < otherMaxY - 0.15) and (otherMinY < targetMaxY - 0.15)
+			if verticalOverlap then
 				local otherRight = Vector3.new(candidate.CFrame.RightVector.X, 0, candidate.CFrame.RightVector.Z)
 				local otherLook = Vector3.new(candidate.CFrame.LookVector.X, 0, candidate.CFrame.LookVector.Z)
 				if otherRight.Magnitude >= 0.01 and otherLook.Magnitude >= 0.01 then
@@ -1560,6 +1714,29 @@ local function filterExactWedgeHits(box: BuildOverlapBox, rawParts: { BasePart }
 	return result
 end
 
+local function queryOverlapBox(box: BuildOverlapBox, params: OverlapParams): { BasePart }
+	if box.IsWedge == true then
+		local wedgeProbe = Instance.new("WedgePart")
+		wedgeProbe.Anchored = true
+		wedgeProbe.CanCollide = false
+		wedgeProbe.CanQuery = false
+		wedgeProbe.CanTouch = false
+		wedgeProbe.Transparency = 1
+		wedgeProbe.Size = box.Size
+		wedgeProbe.CFrame = box.CFrame
+		wedgeProbe.Parent = Workspace
+		local ok, hits = pcall(function()
+			return Workspace:GetPartsInPart(wedgeProbe, params)
+		end)
+		wedgeProbe:Destroy()
+		if ok and type(hits) == "table" then
+			return hits :: { BasePart }
+		end
+		return {}
+	end
+	return filterExactWedgeHits(box, Workspace:GetPartBoundsInBox(box.CFrame, box.Size, params))
+end
+
 function BuildingGeometry.CheckWorldOverlap(
 	pieceType: BuildPieceType,
 	targetCF: CFrame,
@@ -1583,7 +1760,7 @@ function BuildingGeometry.CheckWorldOverlap(
 	params.FilterDescendantsInstances = excludeInstances or {}
 
 	for _, box in boxes do
-		local parts = filterExactWedgeHits(box, Workspace:GetPartBoundsInBox(box.CFrame, box.Size, params))
+		local parts = queryOverlapBox(box, params)
 		for _, part in parts do
 			if BuildingGeometry.IsNoBuildInstance(part, allowRaidOutpostZone) then
 				return { Allowed = false, Reason = "Blocked by restricted zone" }

@@ -400,3 +400,36 @@
 
 ### Сцена Studio (`QA_TestArena`)
 - В `Workspace.QA_TestArena.LogicWearTestStand` добавлена связка `QA_HbhfSensor` (`hbhf_sensor`) + `QA_SmartDoor` (`smart_door`) + скрытый за дверью `QA_HiddenShotgunTrap` (`shotgun_trap`), а также повреждённая каменная стена `QA_DamagedWall` (`120 / 500` HP, `IsQaRepairTarget = true`) для проверки визуального износа и `repair_hammer`.
+
+---
+
+## 11. Режим креатива / QA-команды, новые блоки и аудит эксплоитов
+
+### Режим креатива и QA-команды (`CreativeService`)
+- **Сервис (`src/server/Services/CreativeService.luau`, инициализируется в `PRIORITY_SERVICES` после `DataService`):**
+  - Доступ к чат-командам `/creative` и `/giveall` разрешён строго на сервере при `RunService:IsStudio()` или `game.CreatorId ~= 0 and player.UserId == game.CreatorId`.
+  - `/giveall` — выдаёт полный QA-комплект ресурсов (`wood`, `stone`, `metal_ore`, `high_quality_metal`, `scrap`, `animal_fat`, `cloth`, `tech_parts`), взрывчатки (`c4_charge`, `satchel_charge`), тактических гаджетов (`emp_grenade`, `smoke_grenade`), инструментов (`building_plan`, `hammer`, `repair_hammer`), оружия/боеприпасов (`pipe_pistol`, `pistol_ammo`, `rocket_launcher`, `rocket`, `hunting_bow`, `arrow`, `shotgun_shell`, `spear`, `metal_hatchet`) и вызывает `BlueprintService.UnlockAllBlueprints(player)`.
+  - `/creative` — переключает флаг в серверной таблице `CreativePlayers[player.UserId]` и реплицирует атрибут `IsCreativeMode` исключительно для клиентского HUD/UX (`SurvivalHudController`: бейдж `CREATIVE MODE (GOD / INF)`, `BuildingController`, `CraftingController`, `CombatController`).
+  - **Авторитарная защита:** все серверные проверки в `BaseService` (строительство, апгрейд тиров, ремонт молотком), `BaseUpkeep` (пропуск расхода TC и гниения), `CraftingService` (крафт без списания и с пустым `ConsumedIngredients`, исключая дюп при отмене), `CombatService` (бесконечные патроны), `DefenseService` (бесплатное пополнение турелей через `DepositAmmo`) опираются **только** на `CreativeService.IsCreative(player)`, никогда не читая клиентски подменяемый атрибут `IsCreativeMode`.
+  - **Неуязвимость с порогом `HP >= 1`:** `CreativeService.ApplyPlayerDamage(humanoid, amount)` (используется в `CombatService`, `DefenseService`, `NPCService`, `RaidExplosives`) и защита в `SurvivalService` (`HealthChanged`, `stepSurvivalLoop`, `ApplyConsumableEffects`) отключают `Enum.HumanoidStateType.Dead` и зажимают здоровье через `math.max(1, hp - dmg)` с сохранением хитмаркеров и логов урона.
+
+### Новые строительные блоки (`half_wall`, `quarter_wall`, `sloped_roof`)
+- **Обратная совместимость `BaseSerializer` (`Types.luau`, `BuildingConfig.luau`, `BaseSerializer.luau`):**
+  - Исторический ключ `"roof"` сохранён на индексе `6` (`"Square Floor"`, с алиасом `"floor" -> "roof"`), чтобы не нарушать старые сохранения и `BaseBlueprints`.
+  - В конец `BuildingConfig.PieceOrder` добавлены индексы `24–26`:
+    - `half_wall` (`24`, `Half Wall`, высота тела `4.2` + толщина перекрытия `0.8` = `5.0 = 0.5 * WallHeight`, `BaseHp = 150`, `HALF_WALL_SOCKETS` с `WallTop` на `Y = 4.2`, полноценная опора для перекрытий, стен и полустенок);
+    - `quarter_wall` (`25`, `Quarter Wall`, высота `2.5 = 0.25 * WallHeight`, `BaseHp = 100`, `EMPTY_SOCKETS` — жёсткий запрет на установку любых блоков/ловушек сверху);
+    - `sloped_roof` (`26`, `Sloped Roof`, `BaseHp = 200`, `SLOPED_ROOF_SOCKETS` по 4 граням без `Top`/`Center`, наклонная модель `45°` из `WedgePart` `RoofWedge` + герметизирующие `Part` `EaveFascia`/`RidgeCap`).
+- **Тиры, износ и ремонт (`BuildingGeometry.luau`):** все 3 блока поддерживают 4 тира (`wood`/`stone`/`metal`/`armored`), ремонт молотком и визуальный износ `< 60%` / `< 30%` HP (для `sloped_roof` трещины `WearCrack_*` ориентируются точно по наклону `RoofWedge`).
+
+### Аудит коллизий и эксплоитов
+1. **Анти-стакинг и `WedgePart` overlap (`BuildingGeometry.luau`):**
+   - `CheckParallelWallStacking` проверяет перекрытие вертикальных интервалов `[PosY, PosY + WallBodyHeight]` (`< 3.5` studs по горизонтали запрещает стакинг `half_wall`/`quarter_wall`/`wall` в одном слоте/рядом, но разрешает ставить `half_wall` поверх `half_wall`).
+   - `GetOverlapBoxes` для `sloped_roof` помечает бокс флагом `IsWedge = true`, а `queryOverlapBox` в `CheckWorldOverlap` использует точный `WedgePart` probe через `Workspace:GetPartsInPart`, предотвращая вклинивание скатной крыши внутрь стен, ящиков и TC для пиксель-бункеров.
+2. **Авторитарный запрет надстройки на `quarter_wall` (`BuildingValidator.luau`):**
+   - `ValidatePlacement`, `findAutoMatchedSocket`, `validateDefensePlacement` (для `Floor`/`Doorway`/`Wall` креплений) и `HasSupportingWallOnEdges` (`BuildingGeometry.IsFullHeightWall`) на сервере отклоняют установку любых блоков и ловушек на `quarter_wall` независимо от подмены `CFrame` в `RemoteEvent`.
+3. **Защита TC-слоёв и каскадное разрушение (`BuildingValidator.luau`):**
+   - `CheckMaxWallsToTC` учитывает `half_wall` и заднюю грань `sloped_roof` в `edgeBarriers` (`+1` слой с вертикальной проверкой в `getEdgeBarrierCost`) и снижает порог потолочного перекрытия с `7.0` до `3.5` studs (`hasImmediateCeiling`/`hasAnyOverheadRoof`), чтобы перекрытия/крыши на полустенках не обходили `MAX_TC_WALL_LAYERS = 2`.
+   - `FindUnsupportedPieces` исключает `quarter_wall` из `supportedWalls` и использует динамическую высоту опоры `GetWallBodyHeight(wall.Canonical)` / `HalfWallHeight`, обеспечивая корректный каскадный снос верхних этажей при разрушении нижней `half_wall`.
+4. **Окклюзия взрывов и баллистика (`RaidExplosives.luau`, `Ballistics.luau`, `DefenseService.luau`):**
+   - `RaidExplosives.getTargetControlPoints` задаёт 5 контрольных точек по фактической высоте `half_wall`/`quarter_wall` и точно на наклонной плоскости `sloped_roof` для корректного multi-raycast расчёта сплэш-урона без ложных пробитий/блокировок; все детали `sloped_roof` имеют `CanCollide = true, CanQuery = true` и блокируют пули и LoS турелей.

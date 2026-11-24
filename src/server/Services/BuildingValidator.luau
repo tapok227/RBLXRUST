@@ -280,17 +280,13 @@ function BuildingValidator.HasSupportingWallOnEdges(
 			local wallSlotKey = socket.Id .. ":Wall"
 			if occMap ~= nil and occMap[wallSlotKey] ~= nil then
 				local occupant = playerRecords[occMap[wallSlotKey]]
-				if occupant ~= nil then
-					local occCfg = BuildingConfig.Pieces[occupant.Piece.PieceType]
-					if occCfg ~= nil and occCfg.Category == "Wall" then
-						return true
-					end
+				if occupant ~= nil and BuildingGeometry.IsFullHeightWall(occupant.Piece.PieceType) then
+					return true
 				end
 			end
 			local edgeWallPos = (anchorEntry.CFrame * socket.LocalCFrame * CFrame.new(0, wallYOffset, 0)).Position
 			for _, otherEntry in playerRecords do
-				local otherCfg = BuildingConfig.Pieces[otherEntry.Piece.PieceType]
-				if otherCfg ~= nil and otherCfg.Category == "Wall" then
+				if BuildingGeometry.IsFullHeightWall(otherEntry.Piece.PieceType) then
 					if (otherEntry.CFrame.Position - edgeWallPos).Magnitude <= SOCKET_MATCH_EPSILON then
 						return true
 					end
@@ -372,6 +368,10 @@ function BuildingValidator.HasDuplicateAtSameSpot(
 				and (otherCfg.Category == "Foundation" or otherCfg.Category == "Floor")
 			then
 				if isSameHorizontalSpot(targetPos, otherPos, 4.0, 1.5) then
+					return true
+				end
+			elseif cfg.Category == "Wall" and otherCfg.Category == "Wall" then
+				if isSameHorizontalSpot(targetPos, otherPos, 0.6, 0.6) then
 					return true
 				end
 			elseif cfg.Category == "Stairs" and otherCfg.Category == "Stairs" then
@@ -557,12 +557,23 @@ function BuildingValidator.CheckMaxWallsToTC(
 		if canonical == "tool_cupboard" then
 			tcParentUid = record.Piece.ParentUid or record.Piece.AnchorUid
 			tcPos = record.CFrame.Position
-		elseif canonical == "wall" or canonical == "window_wall" or canonical == "smart_door" then
+		elseif
+			canonical == "wall"
+			or canonical == "window_wall"
+			or canonical == "smart_door"
+			or canonical == "half_wall"
+		then
 			table.insert(edgeBarriers, { CFrame = record.CFrame, Cost = 1 })
 		elseif canonical == "doorway" then
 			local barrierCost = if record.Model:GetAttribute("HasDoor") == true then 1 else 0
 			table.insert(edgeBarriers, { CFrame = record.CFrame, Cost = barrierCost })
 		elseif isSurfaceCategory(cfg.Category) then
+			if canonical == "sloped_roof" then
+				table.insert(
+					edgeBarriers,
+					{ CFrame = record.CFrame * CFrame.new(0, 0, BuildingConfig.GridSize * 0.5), Cost = 1 }
+				)
+			end
 			local node: SurfaceNode = {
 				Uid = uid,
 				PieceType = canonical,
@@ -587,11 +598,17 @@ function BuildingValidator.CheckMaxWallsToTC(
 			if candCanonical == "tool_cupboard" then
 				tcParentUid = candidatePiece.ParentUid
 				tcPos = candidatePiece.CFrame.Position
-			elseif candCanonical == "wall" or candCanonical == "window_wall" then
+			elseif candCanonical == "wall" or candCanonical == "window_wall" or candCanonical == "half_wall" then
 				table.insert(edgeBarriers, { CFrame = candidatePiece.CFrame, Cost = 1 })
 			elseif candCanonical == "doorway" then
 				table.insert(edgeBarriers, { CFrame = candidatePiece.CFrame, Cost = 0 })
 			elseif isSurfaceCategory(candCfg.Category) then
+				if candCanonical == "sloped_roof" then
+					table.insert(edgeBarriers, {
+						CFrame = candidatePiece.CFrame * CFrame.new(0, 0, BuildingConfig.GridSize * 0.5),
+						Cost = 1,
+					})
+				end
 				local node: SurfaceNode = {
 					Uid = "__CANDIDATE__",
 					PieceType = candCanonical,
@@ -637,8 +654,18 @@ function BuildingValidator.CheckMaxWallsToTC(
 
 	local function getEdgeBarrierCost(edgeWallPos: Vector3): number
 		for _, barrier in edgeBarriers do
-			if barrier.Cost > 0 and (barrier.CFrame.Position - edgeWallPos).Magnitude <= 1.35 then
-				return 1
+			if barrier.Cost > 0 then
+				local bp = barrier.CFrame.Position
+				local dx = bp.X - edgeWallPos.X
+				local dz = bp.Z - edgeWallPos.Z
+				local dy = bp.Y - edgeWallPos.Y
+				if
+					(dx * dx + dz * dz) <= (1.35 * 1.35)
+					and dy >= -1.0
+					and dy <= (BuildingConfig.WallBodyHeight - 0.5)
+				then
+					return 1
+				end
 			end
 		end
 		return 0
@@ -709,7 +736,7 @@ function BuildingValidator.CheckMaxWallsToTC(
 		for _, upper in surfaceList do
 			if upper.Uid ~= lower.Uid and upper.Category == "Floor" then
 				local dy = upper.CFrame.Position.Y - lowerPos.Y
-				if dy >= 7.0 then
+				if dy >= 3.5 then
 					local dx = upper.CFrame.Position.X - lowerPos.X
 					local dz = upper.CFrame.Position.Z - lowerPos.Z
 					local xzDist = math.sqrt(dx * dx + dz * dz)
@@ -916,7 +943,9 @@ function BuildingValidator.FindUnsupportedPieces(
 				table.insert(supportedFloors, node)
 			end
 		elseif node.Category == "Wall" then
-			table.insert(supportedWalls, node)
+			if node.Canonical ~= "quarter_wall" then
+				table.insert(supportedWalls, node)
+			end
 		end
 	end
 
@@ -958,7 +987,10 @@ function BuildingValidator.FindUnsupportedPieces(
 			local dx = wallPos.X - lp.X
 			local dz = wallPos.Z - lp.Z
 			local dy = wallPos.Y - lp.Y
-			if math.sqrt(dx * dx + dz * dz) <= 1.2 and dy >= 8.5 and dy <= 10.8 then
+			local expectedStep = if lowerWall.Canonical == "half_wall"
+				then BuildingConfig.HalfWallHeight
+				else BuildingConfig.WallHeight
+			if math.sqrt(dx * dx + dz * dz) <= 1.2 and dy >= (expectedStep - 1.5) and dy <= (expectedStep + 1.0) then
 				return true
 			end
 		end
@@ -968,7 +1000,8 @@ function BuildingValidator.FindUnsupportedPieces(
 	local function hasSupportedWallSupportingFloor(floorNode: NodeInfo): boolean
 		local floorSockets = BuildingGeometry.GetPieceSockets(floorNode.Canonical)
 		for _, wall in supportedWalls do
-			local wallTopPos = wall.CFrame.Position + Vector3.new(0, BuildingConfig.WallBodyHeight, 0)
+			local wallTopPos = wall.CFrame.Position
+				+ Vector3.new(0, BuildingGeometry.GetWallBodyHeight(wall.Canonical), 0)
 			for _, socket in floorSockets do
 				if socket.Kind == "Edge" then
 					local edgePos = (floorNode.CFrame * socket.LocalCFrame).Position
@@ -1010,6 +1043,9 @@ function BuildingValidator.FindUnsupportedPieces(
 		end
 		local parentNode = nodesByUid[parentUid]
 		if parentNode == nil or not supported[parentUid] then
+			return false
+		end
+		if parentNode.Canonical == "quarter_wall" then
 			return false
 		end
 		if allowedParentCategories ~= nil and not allowedParentCategories[parentNode.Category] then
@@ -1153,6 +1189,9 @@ local function findAutoMatchedSocket(
 	for _, parentEntry in playerRecords do
 		if parentEntry.Model.Parent ~= nil then
 			local parentType = parentEntry.Piece.PieceType
+			if BuildingGeometry.CanonicalPieceType(parentType) == "quarter_wall" then
+				continue
+			end
 			for _, socket in BuildingGeometry.GetPieceSockets(parentType) do
 				if BuildingGeometry.IsSocketCompatible(parentType, socket, pieceType) then
 					local step = BuildingGeometry.InferRotStepFromCFrame(
@@ -1294,6 +1333,13 @@ local function validateDefensePlacement(
 		resolvedMount = "Floor"
 		local hostEntry = findPlayerStructureEntryFromPart(hit.Instance, input.PlayerRecords)
 		if hostEntry ~= nil then
+			local hostCanonical = BuildingGeometry.CanonicalPieceType(hostEntry.Piece.PieceType)
+			if hostCanonical == "quarter_wall" or hostCanonical == "sloped_roof" then
+				return {
+					Allowed = false,
+					Reason = "Нельзя устанавливать защиту на четверть стены или скатную крышу",
+				}
+			end
 			resolvedParentUid = hostEntry.Piece.Uid
 		end
 	elseif defCfg.AllowedMount == "Doorway" then
@@ -1339,6 +1385,13 @@ local function validateDefensePlacement(
 			resolvedMount = "Floor"
 			local hostEntry = findPlayerStructureEntryFromPart(hit.Instance, input.PlayerRecords)
 			if hostEntry ~= nil then
+				local hostCanonical = BuildingGeometry.CanonicalPieceType(hostEntry.Piece.PieceType)
+				if hostCanonical == "quarter_wall" or hostCanonical == "sloped_roof" then
+					return {
+						Allowed = false,
+						Reason = "Нельзя устанавливать защиту на четверть стены или скатную крышу",
+					}
+				end
 				resolvedParentUid = hostEntry.Piece.Uid
 			end
 		end
@@ -1402,7 +1455,8 @@ local function validateDefensePlacement(
 				}
 			end
 			local hostCfg = BuildingConfig.Pieces[hostEntry.Piece.PieceType]
-			if hostCfg == nil or hostCfg.Category ~= "Wall" then
+			local hostCanonical = BuildingGeometry.CanonicalPieceType(hostEntry.Piece.PieceType)
+			if hostCfg == nil or hostCfg.Category ~= "Wall" or hostCanonical == "quarter_wall" then
 				return {
 					Allowed = false,
 					Reason = "Для настенного крепления требуется стена",
@@ -1580,6 +1634,12 @@ function BuildingValidator.ValidatePlacement(input: PlacementValidationInput): P
 		local anchorRecord = input.AllRecordsByUid[parentUid]
 		if anchorRecord == nil or anchorRecord.Owner ~= input.Player or anchorRecord.Model.Parent == nil then
 			return { Allowed = false, Reason = "Invalid parent structure" }
+		end
+		if BuildingGeometry.CanonicalPieceType(anchorRecord.Piece.PieceType) == "quarter_wall" then
+			return {
+				Allowed = false,
+				Reason = "На четверть стены запрещено устанавливать блоки",
+			}
 		end
 
 		local socket = BuildingGeometry.GetSocketById(anchorRecord.Piece.PieceType, socketId)

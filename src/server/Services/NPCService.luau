@@ -11,6 +11,7 @@ local Ballistics = require(ReplicatedStorage.Shared.Ballistics)
 local Janitor = require(ReplicatedStorage.Shared.Janitor)
 local Net = require(ReplicatedStorage.Shared.Net)
 local LootService = require(ServerScriptService.Server.Services.LootService)
+local CreativeService = require(ServerScriptService.Server.Services.CreativeService)
 local SurvivalService = require(ServerScriptService.Server.Services.SurvivalService)
 
 type NPCConfig = Types.NPCConfig
@@ -947,7 +948,7 @@ local function fireGuardBurst(record: ActiveNpcRecord, targetChar: Model, target
 								and hitChar:GetAttribute("RaidInvulnerable") ~= true
 								and hitChar:FindFirstChildOfClass("ForceField") == nil
 							then
-								hitHum:TakeDamage(cfg.Damage)
+								CreativeService.ApplyPlayerDamage(hitHum, cfg.Damage)
 							end
 						end
 					end,
@@ -1510,7 +1511,7 @@ local function stepMeleeAnimal(record: ActiveNpcRecord, now: number, exclude: { 
 	if dist <= cfg.AttackRange and now >= record.NextAttackTime then
 		if hasLineOfSight(record.Head.Position, targetHrp, targetChar, exclude) then
 			record.NextAttackTime = now + cfg.AttackCooldown
-			targetHum:TakeDamage(cfg.Damage)
+			CreativeService.ApplyPlayerDamage(targetHum, cfg.Damage)
 			if cfg.BleedDuration ~= nil and cfg.BleedDps ~= nil then
 				SurvivalService.ApplyBleeding(targetPlayer, cfg.BleedDuration, cfg.BleedDps)
 			end

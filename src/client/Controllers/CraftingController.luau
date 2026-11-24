@@ -176,13 +176,15 @@ local function refreshRecipeCards()
 		local bpMet = BlueprintController.HasBlueprint(recipe.Id)
 		cardUI.Card.Visible = matchesFilter(recipe, stationMet)
 
+		local localPlayer = Players.LocalPlayer
+		local isCreative = localPlayer ~= nil and localPlayer:GetAttribute("IsCreativeMode") == true
 		local canAffordAll = true
 		for _, row in cardUI.IngredientRows do
 			local owned = countItemInInventory(inv, row.Id)
 			local itemCfg = Items[row.Id]
 			local itemName = if itemCfg then itemCfg.Name else row.Id
 			row.Label.Text = string.format("%s: %d / %d", itemName, owned, row.Required)
-			if owned >= row.Required then
+			if isCreative or owned >= row.Required then
 				row.Label.TextColor3 = COLOR_AFFORDABLE
 			else
 				row.Label.TextColor3 = COLOR_MISSING
@@ -705,6 +707,10 @@ function CraftingController.Init()
 
 		localPlayer:GetAttributeChangedSignal("NearCampfire"):Connect(function()
 			updateCampfireFromPlayer(localPlayer)
+		end)
+
+		localPlayer:GetAttributeChangedSignal("IsCreativeMode"):Connect(function()
+			refreshRecipeCards()
 		end)
 	end
 

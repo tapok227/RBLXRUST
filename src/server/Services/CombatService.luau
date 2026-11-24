@@ -10,6 +10,7 @@ local Projectiles = require(ReplicatedStorage.Shared.configs.Projectiles)
 local Ballistics = require(ReplicatedStorage.Shared.Ballistics)
 local Net = require(ReplicatedStorage.Shared.Net)
 local BaseService = require(ServerScriptService.Server.Services.BaseService)
+local CreativeService = require(ServerScriptService.Server.Services.CreativeService)
 local DataService = require(ServerScriptService.Server.Services.DataService)
 local InventoryService = require(ServerScriptService.Server.Services.InventoryService)
 local RaidService = require(ServerScriptService.Server.Services.RaidService)
@@ -446,7 +447,7 @@ local function launchServerProjectile(
 					)
 					isHeadshot = hitZone == "Head"
 					targetModel:SetAttribute("LastAttackerUserId", player.UserId)
-					targetHumanoid:TakeDamage(finalDamage)
+					CreativeService.ApplyPlayerDamage(targetHumanoid, finalDamage)
 					local targetPlayer = Players:GetPlayerFromCharacter(targetModel)
 					if targetPlayer ~= nil then
 						RaidService.NotifyRaiderDamaged(targetPlayer)
@@ -643,7 +644,7 @@ local function onAttackRequest(player: Player, requestAny: any)
 			end
 		end
 
-		if weapon.AmmoId ~= nil then
+		if weapon.AmmoId ~= nil and not CreativeService.IsCreative(player) then
 			if not InventoryService.RemoveItem(player, weapon.AmmoId, 1) then
 				return
 			end
@@ -730,7 +731,7 @@ local function onAttackRequest(player: Player, requestAny: any)
 					isHeadshot = hitZone == "Head"
 				end
 				targetModel:SetAttribute("LastAttackerUserId", player.UserId)
-				targetHumanoid:TakeDamage(finalDamage)
+				CreativeService.ApplyPlayerDamage(targetHumanoid, finalDamage)
 				local targetPlayer = Players:GetPlayerFromCharacter(targetModel)
 				if targetPlayer ~= nil then
 					RaidService.NotifyRaiderDamaged(targetPlayer)

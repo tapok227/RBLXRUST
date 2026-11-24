@@ -12,6 +12,7 @@ local Consumables = require(ReplicatedStorage.Shared.configs.Consumables)
 local Net = require(ReplicatedStorage.Shared.Net)
 local Janitor = require(ReplicatedStorage.Shared.Janitor)
 local BaseService = require(ServerScriptService.Server.Services.BaseService)
+local CreativeService = require(ServerScriptService.Server.Services.CreativeService)
 local DataService = require(ServerScriptService.Server.Services.DataService)
 local InventoryService = require(ServerScriptService.Server.Services.InventoryService)
 local LootService = require(ServerScriptService.Server.Services.LootService)
@@ -319,6 +320,9 @@ local function bindCharacter(player: Player, character: Model)
 
 	local humanoid = humanoidInstance :: Humanoid
 	local diedHandled = false
+	if CreativeService.IsCreative(player) then
+		humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+	end
 
 	local data = DataService.GetData(player)
 	if data ~= nil then
@@ -330,6 +334,11 @@ local function bindCharacter(player: Player, character: Model)
 	local lastHealth = humanoid.Health
 
 	charJanitor:Add(humanoid.HealthChanged:Connect(function(newHealth: number)
+		if CreativeService.IsCreative(player) and newHealth < 1 then
+			humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+			humanoid.Health = 1
+			newHealth = 1
+		end
 		local prevHealth = lastHealth
 		lastHealth = newHealth
 		if not appliedCharacters[character] then
@@ -438,7 +447,8 @@ function SurvivalService.ApplyConsumableEffects(
 	end
 
 	if humanoid ~= nil and consumableConfig.Health ~= 0 then
-		humanoid.Health = math.clamp(humanoid.Health + consumableConfig.Health, 0, humanoid.MaxHealth)
+		local minHp = if CreativeService.IsCreative(player) then 1 else 0
+		humanoid.Health = math.clamp(humanoid.Health + consumableConfig.Health, minHp, humanoid.MaxHealth)
 		data.Stats.Health = humanoid.Health
 	end
 
@@ -626,11 +636,17 @@ local function stepSurvivalLoop()
 					SurvivalService.ClearBleeding(player)
 				else
 					local bleedDamage = bleed.Dps * Types.SURVIVAL_TICK_INTERVAL
-					humanoid.Health = math.max(0, humanoid.Health - bleedDamage)
+					local minHp = if CreativeService.IsCreative(player) then 1 else 0
+					humanoid.Health = math.max(minHp, humanoid.Health - bleedDamage)
 					lastDamageAt[player] = now
 					hpRegenAccum[player] = 0
 					setAttributeIfChanged(player, "Bleeding", true)
 				end
+			end
+
+			if CreativeService.IsCreative(player) and humanoid.Health < 1 then
+				humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+				humanoid.Health = 1
 			end
 
 			local lastDmg = lastDamageAt[player] or 0

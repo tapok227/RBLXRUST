@@ -217,6 +217,10 @@ local function countOwnedItem(itemId: string): number
 end
 
 local function canAffordCost(costMap: { [string]: number }): boolean
+	local localPlayer = Players.LocalPlayer
+	if localPlayer ~= nil and localPlayer:GetAttribute("IsCreativeMode") == true then
+		return true
+	end
 	for itemId, required in costMap do
 		if countOwnedItem(itemId) < required then
 			return false
@@ -338,8 +342,8 @@ local function hasSupportingWallLocally(parentType: BuildPieceType, parentCF: CF
 			for _, otherModel in allModels do
 				local otherTypeAttr = otherModel:GetAttribute("PieceType")
 				if typeof(otherTypeAttr) == "string" then
-					local otherCfg = BuildingConfig.Pieces[otherTypeAttr :: BuildPieceType]
-					if otherCfg ~= nil and otherCfg.Category == "Wall" then
+					local otherCanonical = BuildingGeometry.CanonicalPieceType(otherTypeAttr)
+					if BuildingGeometry.IsFullHeightWall(otherCanonical) then
 						if (otherModel:GetPivot().Position - edgeWallPos).Magnitude <= SOCKET_OCCUPY_EPSILON then
 							return true
 						end
@@ -1178,9 +1182,15 @@ local function updatePreviewAndHighlight()
 
 			for _, socket in BuildingGeometry.GetPieceSockets(parentType) do
 				if BuildingGeometry.IsSocketCompatible(parentType, socket, selectedType) then
-					local stepsToTry = if socket.Kind == "WallTop" and pieceCfg.Category == "Floor"
-						then { 0, 1 }
-						else { currentRotStep }
+					local stepsToTry: { number } = { currentRotStep }
+					if socket.Kind == "WallTop" and pieceCfg.Category == "Floor" then
+						if selectedType == "sloped_roof" then
+							local basePitch = (currentRotStep % 4) * 2
+							stepsToTry = { basePitch, basePitch + 1 }
+						else
+							stepsToTry = { 0, 1 }
+						end
+					end
 					for _, candStep in stepsToTry do
 						if
 							not isSocketOccupiedLocally(
@@ -1867,6 +1877,7 @@ function BuildingController.Init()
 			syncModeFromEquippedTool()
 		end)
 		localPlayer:GetAttributeChangedSignal("BaseTier"):Connect(updateBuildUiVisuals)
+		localPlayer:GetAttributeChangedSignal("IsCreativeMode"):Connect(updateBuildUiVisuals)
 		localPlayer.CharacterAdded:Connect(function()
 			refreshPreviewRaycastFilter()
 		end)

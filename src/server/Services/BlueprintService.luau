@@ -117,6 +117,27 @@ function BlueprintService.UnlockBlueprint(player: Player, recipeId: string): boo
 	return true
 end
 
+function BlueprintService.UnlockAllBlueprints(player: Player): number
+	local data = DataService.GetData(player)
+	if data == nil then
+		return 0
+	end
+	if type(data.UnlockedBlueprints) ~= "table" then
+		data.UnlockedBlueprints = {}
+	end
+	local unlocked = 0
+	for recipeId, recipe in Recipes do
+		if recipe.RequiresBlueprint and data.UnlockedBlueprints[recipeId] ~= true then
+			data.UnlockedBlueprints[recipeId] = true
+			unlocked += 1
+		end
+	end
+	if unlocked > 0 then
+		BlueprintService.SyncBlueprints(player)
+	end
+	return unlocked
+end
+
 function BlueprintService.RegisterResearchTable(tableId: string, model: Model, ownerUserId: number?)
 	if typeof(tableId) ~= "string" or #tableId == 0 or not model:IsA("Model") then
 		return

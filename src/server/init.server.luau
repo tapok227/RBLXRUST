@@ -8,6 +8,7 @@ local PRIORITY_SERVICES = {
 	"SecurityService",
 	"TeleportService",
 	"DataService",
+	"CreativeService",
 }
 
 local servicesFolder = script:FindFirstChild("Services")

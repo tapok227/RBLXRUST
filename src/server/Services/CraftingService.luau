@@ -12,6 +12,7 @@ local DataService = require(ServerScriptService.Server.Services.DataService)
 local InventoryService = require(ServerScriptService.Server.Services.InventoryService)
 local SecurityService = require(ServerScriptService.Server.Services.SecurityService)
 local BlueprintService = require(ServerScriptService.Server.Services.BlueprintService)
+local CreativeService = require(ServerScriptService.Server.Services.CreativeService)
 
 type Ingredient = Types.Ingredient
 type CraftingState = Types.CraftingState
@@ -252,27 +253,38 @@ local function onCraftRequest(player: Player, recipeIdAny: any)
 		if not BlueprintService.CanCraftRecipe(player, recipe.Id) then
 			return
 		end
-		if
-			not InventoryService.CanCraftTransaction(player, recipe.Ingredients, recipe.ResultId, recipe.ResultCount)
-		then
-			return
-		end
-		if not InventoryService.RemoveItems(player, recipe.Ingredients) then
-			return
+		local isCreative = CreativeService.IsCreative(player)
+		local consumed: { Ingredient } = {}
+		if isCreative then
+			if not InventoryService.CanCraftTransaction(player, {}, recipe.ResultId, recipe.ResultCount) then
+				return
+			end
+		else
+			if
+				not InventoryService.CanCraftTransaction(
+					player,
+					recipe.Ingredients,
+					recipe.ResultId,
+					recipe.ResultCount
+				)
+			then
+				return
+			end
+			if not InventoryService.RemoveItems(player, recipe.Ingredients) then
+				return
+			end
+			for _, ing in recipe.Ingredients do
+				table.insert(consumed, {
+					Id = ing.Id,
+					Count = ing.Count,
+				})
+			end
 		end
 
 		nextToken += 1
 		local token = nextToken
 		local startTime = Workspace:GetServerTimeNow()
 		local endTime = startTime + recipe.CraftTime
-
-		local consumed: { Ingredient } = {}
-		for _, ing in recipe.Ingredients do
-			table.insert(consumed, {
-				Id = ing.Id,
-				Count = ing.Count,
-			})
-		end
 
 		local craftRecord: ActiveCraft = {
 			Token = token,

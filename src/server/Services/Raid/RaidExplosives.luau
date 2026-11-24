@@ -14,6 +14,7 @@ local Explosives = require(ReplicatedStorage.Shared.configs.Explosives)
 local Net = require(ReplicatedStorage.Shared.Net)
 local BaseService = require(ServerScriptService.Server.Services.BaseService)
 local BuildingValidator = require(ServerScriptService.Server.Services.BuildingValidator)
+local CreativeService = require(ServerScriptService.Server.Services.CreativeService)
 local DefenseService = require(ServerScriptService.Server.Services.DefenseService)
 local SecurityService = require(ServerScriptService.Server.Services.SecurityService)
 
@@ -132,10 +133,18 @@ local function getTargetControlPoints(targetModel: Model, isCharacterTarget: boo
 		local canonical = if typeof(pieceAttr) == "string" then BuildingGeometry.CanonicalPieceType(pieceAttr) else nil
 		local baseCF = targetModel:GetPivot()
 
-		if canonical == "wall" or canonical == "doorway" or canonical == "window_wall" or canonical == "smart_door" then
-			local centerCF = baseCF * CFrame.new(0, BuildingConfig.WallBodyHeight * 0.5, 0)
+		if
+			canonical == "wall"
+			or canonical == "doorway"
+			or canonical == "window_wall"
+			or canonical == "smart_door"
+			or canonical == "half_wall"
+			or canonical == "quarter_wall"
+		then
+			local wallH = BuildingGeometry.GetWallBodyHeight(canonical)
+			local centerCF = baseCF * CFrame.new(0, wallH * 0.5, 0)
 			local hx = BuildingConfig.GridSize * 0.42
-			local hy = BuildingConfig.WallBodyHeight * 0.38
+			local hy = wallH * 0.38
 			local offsets = {
 				Vector3.new(0, 0, 0),
 				Vector3.new(-hx, -hy, 0),
@@ -145,6 +154,24 @@ local function getTargetControlPoints(targetModel: Model, isCharacterTarget: boo
 			}
 			for _, off in offsets do
 				table.insert(points, (centerCF * CFrame.new(off)).Position)
+			end
+			return points
+		elseif canonical == "sloped_roof" then
+			local hx = BuildingConfig.GridSize * 0.40
+			local hz = BuildingConfig.GridSize * 0.40
+			local yLow = BuildingConfig.WallHeight * 0.10
+			local yMid = BuildingConfig.WallHeight * 0.50
+			local yHigh = BuildingConfig.WallHeight * 0.90
+			for _, off in
+				{
+					Vector3.new(0, yMid, 0),
+					Vector3.new(-hx, yLow, -hz),
+					Vector3.new(hx, yLow, -hz),
+					Vector3.new(-hx, yHigh, hz),
+					Vector3.new(hx, yHigh, hz),
+				}
+			do
+				table.insert(points, (baseCF * CFrame.new(off)).Position)
 			end
 			return points
 		elseif canonical == "foundation" or canonical == "roof" then
@@ -517,7 +544,7 @@ function RaidExplosives.TriggerExplosion(params: ExplosionParams, deps: Explosio
 				hit.Model:SetAttribute("LastAttackerUserId", params.Attacker.UserId)
 			end
 			hit.Model:SetAttribute("LastDamageSource", dmgSource)
-			hit.Humanoid:TakeDamage(hit.Damage)
+			CreativeService.ApplyPlayerDamage(hit.Humanoid, hit.Damage)
 			local hitPlayer = Players:GetPlayerFromCharacter(hit.Model)
 			if hitPlayer ~= nil then
 				deps.NotifyRaiderDamaged(hitPlayer)

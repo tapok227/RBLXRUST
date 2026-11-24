@@ -80,6 +80,10 @@ export type BuildPieceType =
 	| "auto_turret"
 	| "hbhf_sensor"
 	| "smart_door"
+	| "half_wall"
+	| "quarter_wall"
+	| "sloped_roof"
+	| "floor"
 	| "TriangleFoundation"
 	| "WindowWall"
 	| "TriangleFloor"
@@ -107,6 +111,7 @@ export type BuildSocketDef = {
 export type BuildOverlapBox = {
 	CFrame: CFrame,
 	Size: Vector3,
+	IsWedge: boolean?,
 }
 
 export type DefenseMountSurface = "Floor" | "Wall" | "Ceiling"
@@ -743,6 +748,10 @@ local VALID_MODULE_TYPES: { [string]: boolean } = table.freeze({
 	auto_turret = true,
 	hbhf_sensor = true,
 	smart_door = true,
+	half_wall = true,
+	quarter_wall = true,
+	sloped_roof = true,
+	floor = true,
 	TriangleFoundation = true,
 	WindowWall = true,
 	TriangleFloor = true,

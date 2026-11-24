@@ -14,6 +14,9 @@ local GRID_SIZE = 12
 local WALL_HEIGHT = 10
 local WALL_BODY_HEIGHT = 9.2
 local THICKNESS = 0.8
+local HALF_WALL_HEIGHT = WALL_HEIGHT * 0.5
+local HALF_WALL_BODY_HEIGHT = HALF_WALL_HEIGHT - THICKNESS
+local QUARTER_WALL_HEIGHT = WALL_HEIGHT * 0.25
 local FOUNDATION_THICKNESS = 1.0
 local TRIANGLE_HEIGHT = GRID_SIZE * math.sqrt(3) / 2
 local TRIANGLE_INRADIUS = GRID_SIZE * math.sqrt(3) / 6
@@ -248,6 +251,30 @@ local Pieces: { [BuildPieceType]: BuildPieceConfig } = table.freeze({
 		DefenseCost = Config.DefenseCapacity.Costs.smart_door,
 		AllowedMount = "Doorway",
 	}),
+	half_wall = table.freeze({
+		Name = "Half Wall",
+		Category = "Wall",
+		Shape = "Edge",
+		Cost = table.freeze({ wood = 20 }),
+		BaseHp = 150,
+		Upgradeable = true,
+	}),
+	quarter_wall = table.freeze({
+		Name = "Quarter Wall",
+		Category = "Wall",
+		Shape = "Edge",
+		Cost = table.freeze({ wood = 15 }),
+		BaseHp = 100,
+		Upgradeable = true,
+	}),
+	sloped_roof = table.freeze({
+		Name = "Sloped Roof",
+		Category = "Floor",
+		Shape = "Square",
+		Cost = table.freeze({ wood = 35 }),
+		BaseHp = 200,
+		Upgradeable = true,
+	}),
 })
 
 local CanonicalPieceMap: { [string]: BuildPieceType } = table.freeze({
@@ -259,6 +286,7 @@ local CanonicalPieceMap: { [string]: BuildPieceType } = table.freeze({
 	window_wall = "window_wall",
 	WindowWall = "window_wall",
 	roof = "roof",
+	floor = "roof",
 	triangle_floor = "triangle_floor",
 	TriangleFloor = "triangle_floor",
 	square_stairs = "square_stairs",
@@ -279,6 +307,9 @@ local CanonicalPieceMap: { [string]: BuildPieceType } = table.freeze({
 	auto_turret = "auto_turret",
 	hbhf_sensor = "hbhf_sensor",
 	smart_door = "smart_door",
+	half_wall = "half_wall",
+	quarter_wall = "quarter_wall",
+	sloped_roof = "sloped_roof",
 })
 
 local Tiers: { [BuildTier]: BuildTierConfig } = table.freeze({
@@ -363,6 +394,9 @@ local PieceOrder: { BuildPieceType } = table.freeze({
 	"auto_turret",
 	"hbhf_sensor",
 	"smart_door",
+	"half_wall",
+	"quarter_wall",
+	"sloped_roof",
 })
 
 local TierOrder: { BuildTier } = table.freeze({
@@ -408,6 +442,9 @@ local BuildingConfig = table.freeze({
 	GridSize = GRID_SIZE,
 	WallHeight = WALL_HEIGHT,
 	WallBodyHeight = WALL_BODY_HEIGHT,
+	HalfWallHeight = HALF_WALL_HEIGHT,
+	HalfWallBodyHeight = HALF_WALL_BODY_HEIGHT,
+	QuarterWallHeight = QUARTER_WALL_HEIGHT,
 	Thickness = THICKNESS,
 	WallThickness = THICKNESS,
 	FloorThickness = THICKNESS,

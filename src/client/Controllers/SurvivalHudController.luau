@@ -25,6 +25,7 @@ local thirstBar: BarUI? = nil
 local staminaBar: BarUI? = nil
 local bleedingBadge: TextLabel? = nil
 local wellFedBadge: TextLabel? = nil
+local creativeBadge: TextLabel? = nil
 
 local currentHealth = Types.MAX_HEALTH
 local currentMaxHealth = Types.MAX_HEALTH
@@ -36,6 +37,7 @@ local staminaExhausted = false
 local isWellFed = false
 local wellFedRemaining = 0
 local isBleeding = false
+local isCreativeMode = false
 
 local characterJanitor = Janitor.new()
 local isInitialized = false
@@ -207,7 +209,48 @@ local function createSurvivalHudGui()
 
 	bleedingBadge = bleedBadge
 
+	local crtBadge = Instance.new("TextLabel")
+	crtBadge.Name = "CreativeBadge"
+	crtBadge.AnchorPoint = Vector2.new(0, 1)
+	crtBadge.Position = UDim2.new(0, 16, 1, -204)
+	crtBadge.Size = UDim2.fromOffset(220, 24)
+	crtBadge.BackgroundColor3 = Color3.fromRGB(38, 86, 132)
+	crtBadge.BackgroundTransparency = 0.1
+	crtBadge.BorderSizePixel = 0
+	crtBadge.Font = Enum.Font.GothamBold
+	crtBadge.TextSize = 11
+	crtBadge.TextColor3 = Color3.fromRGB(235, 248, 255)
+	crtBadge.Text = "CREATIVE MODE (GOD / INF)"
+	crtBadge.Visible = false
+	crtBadge.Parent = screenGui
+
+	local crtCorner = Instance.new("UICorner")
+	crtCorner.CornerRadius = UDim.new(0, 8)
+	crtCorner.Parent = crtBadge
+
+	local crtStroke = Instance.new("UIStroke")
+	crtStroke.Color = Color3.fromRGB(100, 210, 255)
+	crtStroke.Thickness = 1.3
+	crtStroke.Parent = crtBadge
+
+	creativeBadge = crtBadge
+
 	screenGui.Parent = playerGui
+end
+
+local function updateCreativeBadge()
+	if not creativeBadge then
+		return
+	end
+	creativeBadge.Visible = isCreativeMode
+	local offsetY = -145
+	if wellFedBadge and wellFedBadge.Visible then
+		offsetY -= 29
+	end
+	if bleedingBadge and bleedingBadge.Visible then
+		offsetY -= 30
+	end
+	creativeBadge.Position = UDim2.new(0, 16, 1, offsetY)
 end
 
 local function updateWellFedBadge()
@@ -226,6 +269,7 @@ local function updateWellFedBadge()
 	if bleedingBadge then
 		bleedingBadge.Position = if wellFedBadge.Visible then UDim2.new(0, 16, 1, -174) else UDim2.new(0, 16, 1, -145)
 	end
+	updateCreativeBadge()
 end
 
 local function updateHealthDisplay()
@@ -348,7 +392,10 @@ local function readAttributesFromPlayer(localPlayer: Player)
 		bleedingBadge.Visible = isBleeding
 	end
 
+	isCreativeMode = localPlayer:GetAttribute("IsCreativeMode") == true
+
 	updateWellFedBadge()
+	updateCreativeBadge()
 	updateHealthDisplay()
 	updateHungerDisplay()
 	updateThirstDisplay()
@@ -425,6 +472,12 @@ function SurvivalHudController.Init()
 		if bleedingBadge then
 			bleedingBadge.Visible = isBleeding
 		end
+		updateCreativeBadge()
+	end)
+
+	localPlayer:GetAttributeChangedSignal("IsCreativeMode"):Connect(function()
+		isCreativeMode = localPlayer:GetAttribute("IsCreativeMode") == true
+		updateCreativeBadge()
 	end)
 
 	localPlayer.CharacterAdded:Connect(function(character: Model)

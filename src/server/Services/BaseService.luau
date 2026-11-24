@@ -26,6 +26,7 @@ local InventoryService = require(ServerScriptService.Server.Services.InventorySe
 local LootService = require(ServerScriptService.Server.Services.LootService)
 local CraftingService = require(ServerScriptService.Server.Services.CraftingService)
 local BlueprintService = require(ServerScriptService.Server.Services.BlueprintService)
+local CreativeService = require(ServerScriptService.Server.Services.CreativeService)
 local CrossPlaceTeleport = require(ServerScriptService.Server.Services.TeleportService)
 local SecurityService = require(ServerScriptService.Server.Services.SecurityService)
 
@@ -665,30 +666,33 @@ local function onBuildPlaceRequest(
 			and BuildingGeometry.CanonicalPieceType(equippedSlot.Id) == pieceType
 			and equippedSlot.Count > 0
 
-		if isUsingEquippedDeployableItem then
-			if not InventoryService.ConsumeSlot(player, equippedSlotIdx, 1) then
-				sendBuildFeedback(player, false, "Недостаточно предметов", data.Base.BaseTier)
-				return
-			end
-		else
-			if pieceConfig.IsDefense == true then
-				local reqWb = REQUIRED_WB_BY_PIECE[pieceType] or 0
-				if reqWb > 0 and CraftingService.GetPlayerWorkbenchTier(player, true) < reqWb then
-					sendBuildFeedback(
-						player,
-						false,
-						string.format(
-							"Требуется верстак Lv.%d рядом или предмет в слоте",
-							reqWb
-						),
-						data.Base.BaseTier
-					)
+		local isCreative = CreativeService.IsCreative(player)
+		if not isCreative then
+			if isUsingEquippedDeployableItem then
+				if not InventoryService.ConsumeSlot(player, equippedSlotIdx, 1) then
+					sendBuildFeedback(player, false, "Недостаточно предметов", data.Base.BaseTier)
 					return
 				end
-			end
-			if not InventoryService.RemoveItems(player, costMapToBatch(pieceConfig.Cost)) then
-				sendBuildFeedback(player, false, "Недостаточно ресурсов", data.Base.BaseTier)
-				return
+			else
+				if pieceConfig.IsDefense == true then
+					local reqWb = REQUIRED_WB_BY_PIECE[pieceType] or 0
+					if reqWb > 0 and CraftingService.GetPlayerWorkbenchTier(player, true) < reqWb then
+						sendBuildFeedback(
+							player,
+							false,
+							string.format(
+								"Требуется верстак Lv.%d рядом или предмет в слоте",
+								reqWb
+							),
+							data.Base.BaseTier
+						)
+						return
+					end
+				end
+				if not InventoryService.RemoveItems(player, costMapToBatch(pieceConfig.Cost)) then
+					sendBuildFeedback(player, false, "Недостаточно ресурсов", data.Base.BaseTier)
+					return
+				end
 			end
 		end
 
@@ -797,10 +801,14 @@ local function onBuildUpgradeRequest(player: Player, uidAny: any, targetTierAny:
 			return
 		end
 
-		if
-			targetTierConfig.UpgradeCost == nil
-			or not InventoryService.RemoveItems(player, costMapToBatch(targetTierConfig.UpgradeCost))
-		then
+		if not CreativeService.IsCreative(player) then
+			if
+				targetTierConfig.UpgradeCost == nil
+				or not InventoryService.RemoveItems(player, costMapToBatch(targetTierConfig.UpgradeCost))
+			then
+				return
+			end
+		elseif targetTierConfig.UpgradeCost == nil then
 			return
 		end
 
@@ -1087,9 +1095,10 @@ local function onBuildRepairRequest(player: Player, uidAny: any)
 			return
 		end
 
+		local isCreative = CreativeService.IsCreative(player)
 		if isRepairHammer then
 			local tcPiece = BaseUpkeep.FindToolCupboardPiece(data.Base.Pieces)
-			if tcPiece == nil then
+			if tcPiece == nil and not isCreative then
 				sendBuildFeedback(
 					player,
 					false,
@@ -1101,37 +1110,39 @@ local function onBuildRepairRequest(player: Player, uidAny: any)
 
 			local healAmount = math.max(1, math.ceil(maxHp * 0.25))
 			local actualHeal = math.min(healAmount, maxHp - targetPiece.Hp)
-			local healRatio = math.clamp(actualHeal / math.max(1, maxHp), 0.01, 1.0)
-			local repairCostMap: { [string]: number } = {}
-			for resId, costCount in pieceConfig.Cost do
-				if UPKEEP_ALLOWED_SET[resId] then
-					local amt = math.max(1, math.ceil(costCount * healRatio))
-					repairCostMap[resId] = (repairCostMap[resId] or 0) + amt
-				end
-			end
-			local tierCfg = BuildingConfig.Tiers[targetPiece.Tier]
-			if tierCfg ~= nil and tierCfg.UpgradeCost ~= nil then
-				for resId, costCount in tierCfg.UpgradeCost do
+			if not isCreative and tcPiece ~= nil then
+				local healRatio = math.clamp(actualHeal / math.max(1, maxHp), 0.01, 1.0)
+				local repairCostMap: { [string]: number } = {}
+				for resId, costCount in pieceConfig.Cost do
 					if UPKEEP_ALLOWED_SET[resId] then
 						local amt = math.max(1, math.ceil(costCount * healRatio))
 						repairCostMap[resId] = (repairCostMap[resId] or 0) + amt
 					end
 				end
-			end
-			if next(repairCostMap) == nil then
-				local resByTier = Config.Upkeep.ResourceByBuildTier :: { [string]: string }
-				local fallbackRes = resByTier[targetPiece.Tier] or "metal_ore"
-				repairCostMap[fallbackRes] = math.max(1, math.ceil(10 * healRatio))
-			end
+				local tierCfg = BuildingConfig.Tiers[targetPiece.Tier]
+				if tierCfg ~= nil and tierCfg.UpgradeCost ~= nil then
+					for resId, costCount in tierCfg.UpgradeCost do
+						if UPKEEP_ALLOWED_SET[resId] then
+							local amt = math.max(1, math.ceil(costCount * healRatio))
+							repairCostMap[resId] = (repairCostMap[resId] or 0) + amt
+						end
+					end
+				end
+				if next(repairCostMap) == nil then
+					local resByTier = Config.Upkeep.ResourceByBuildTier :: { [string]: string }
+					local fallbackRes = resByTier[targetPiece.Tier] or "metal_ore"
+					repairCostMap[fallbackRes] = math.max(1, math.ceil(10 * healRatio))
+				end
 
-			if not BaseUpkeep.ConsumeCostFromTcStorage(tcPiece, repairCostMap) then
-				sendBuildFeedback(
-					player,
-					false,
-					"Недостаточно ресурсов в шкафу (TC) для ремонта",
-					data.Base.BaseTier
-				)
-				return
+				if not BaseUpkeep.ConsumeCostFromTcStorage(tcPiece, repairCostMap) then
+					sendBuildFeedback(
+						player,
+						false,
+						"Недостаточно ресурсов в шкафу (TC) для ремонта",
+						data.Base.BaseTier
+					)
+					return
+				end
 			end
 
 			lastBuildActionTime[player] = now
@@ -1147,7 +1158,9 @@ local function onBuildRepairRequest(player: Player, uidAny: any)
 				maxHp
 			)
 			syncBaseState(player)
-			syncToolCupboardForPlayer(player)
+			if tcPiece ~= nil then
+				syncToolCupboardForPlayer(player)
+			end
 			sendBuildFeedback(
 				player,
 				true,
@@ -1157,28 +1170,30 @@ local function onBuildRepairRequest(player: Player, uidAny: any)
 			return
 		end
 
-		local missingRatio = math.clamp((maxHp - targetPiece.Hp) / math.max(1, maxHp), 0.05, 1.0)
-		local repairCostMap: { [string]: number } = {}
-		for resId, costCount in pieceConfig.Cost do
-			local amt = math.max(1, math.ceil(costCount * missingRatio * 0.5))
-			repairCostMap[resId] = (repairCostMap[resId] or 0) + amt
-		end
-		local tierCfg = BuildingConfig.Tiers[targetPiece.Tier]
-		if tierCfg ~= nil and tierCfg.UpgradeCost ~= nil then
-			for resId, costCount in tierCfg.UpgradeCost do
+		if not isCreative then
+			local missingRatio = math.clamp((maxHp - targetPiece.Hp) / math.max(1, maxHp), 0.05, 1.0)
+			local repairCostMap: { [string]: number } = {}
+			for resId, costCount in pieceConfig.Cost do
 				local amt = math.max(1, math.ceil(costCount * missingRatio * 0.5))
 				repairCostMap[resId] = (repairCostMap[resId] or 0) + amt
 			end
-		end
+			local tierCfg = BuildingConfig.Tiers[targetPiece.Tier]
+			if tierCfg ~= nil and tierCfg.UpgradeCost ~= nil then
+				for resId, costCount in tierCfg.UpgradeCost do
+					local amt = math.max(1, math.ceil(costCount * missingRatio * 0.5))
+					repairCostMap[resId] = (repairCostMap[resId] or 0) + amt
+				end
+			end
 
-		if not InventoryService.RemoveItems(player, costMapToBatch(repairCostMap)) then
-			sendBuildFeedback(
-				player,
-				false,
-				"Недостаточно ресурсов для ремонта",
-				data.Base.BaseTier
-			)
-			return
+			if not InventoryService.RemoveItems(player, costMapToBatch(repairCostMap)) then
+				sendBuildFeedback(
+					player,
+					false,
+					"Недостаточно ресурсов для ремонта",
+					data.Base.BaseTier
+				)
+				return
+			end
 		end
 
 		lastBuildActionTime[player] = now

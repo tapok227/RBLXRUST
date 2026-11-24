@@ -37,6 +37,7 @@ for idx, pieceType in BuildingConfig.PieceOrder do
 end
 
 local LEGACY_ALIAS_TO_CANONICAL: { [string]: ModuleType } = table.freeze({
+	floor = "roof",
 	TriangleFoundation = "triangle_foundation",
 	WindowWall = "window_wall",
 	TriangleFloor = "triangle_floor",

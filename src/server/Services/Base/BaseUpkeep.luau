@@ -9,6 +9,7 @@ local BuildingConfig = require(ReplicatedStorage.Shared.configs.BuildingConfig)
 local BuildingGeometry = require(ReplicatedStorage.Shared.BuildingGeometry)
 local BaseSerializer = require(ReplicatedStorage.Shared.BaseSerializer)
 local BuildingValidator = require(ServerScriptService.Server.Services.BuildingValidator)
+local CreativeService = require(ServerScriptService.Server.Services.CreativeService)
 local DataService = require(ServerScriptService.Server.Services.DataService)
 local DefenseService = require(ServerScriptService.Server.Services.DefenseService)
 local InventoryService = require(ServerScriptService.Server.Services.InventoryService)
@@ -304,6 +305,10 @@ end
 function BaseUpkeep.ProcessUpkeepAndDecay(player: Player, elapsedSeconds: number, deps: UpkeepDeps): boolean
 	local data = DataService.GetData(player)
 	if data == nil then
+		return false
+	end
+	if CreativeService.IsCreative(player) then
+		data.Base.LastUpkeepTimestamp = os.time()
 		return false
 	end
 	if #data.Base.Pieces == 0 then

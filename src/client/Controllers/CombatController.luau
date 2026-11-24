@@ -73,6 +73,10 @@ local function isAnyUiOpen(): boolean
 end
 
 local function hasAmmoInInventory(ammoId: string): boolean
+	local localPlayer = Players.LocalPlayer
+	if localPlayer ~= nil and localPlayer:GetAttribute("IsCreativeMode") == true then
+		return true
+	end
 	for i = 1, Types.INVENTORY_SIZE do
 		local slot = InventoryController.GetSlot(i)
 		if slot ~= nil and slot.Id == ammoId and slot.Count > 0 then

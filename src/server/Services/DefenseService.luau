@@ -12,6 +12,7 @@ local Config = require(ReplicatedStorage.Shared.Config)
 local Defenses = require(ReplicatedStorage.Shared.configs.Defenses)
 local Net = require(ReplicatedStorage.Shared.Net)
 local Types = require(ReplicatedStorage.Shared.Types)
+local CreativeService = require(ServerScriptService.Server.Services.CreativeService)
 local DataService = require(ServerScriptService.Server.Services.DataService)
 local InventoryService = require(ServerScriptService.Server.Services.InventoryService)
 local SecurityService = require(ServerScriptService.Server.Services.SecurityService)
@@ -508,7 +509,7 @@ local function applyDamageToTarget(record: ActiveDefenseRecord, targetModel: Mod
 		targetModel:SetAttribute("LastAttackerUserId", record.OwnerUserId)
 	end
 	targetModel:SetAttribute("LastDamageSource", string.format("Killed by %s", record.Config.Name))
-	humanoid:TakeDamage(amount)
+	CreativeService.ApplyPlayerDamage(humanoid, amount)
 	local hitPlayer = Players:GetPlayerFromCharacter(targetModel)
 	if hitPlayer ~= nil then
 		raidHooks.NotifyRaiderDamaged(hitPlayer)
@@ -1136,6 +1137,11 @@ local function onDefenseAction(player: Player, actionAny: any, argAny: any)
 		end
 
 		if action == "DepositAmmo" then
+			if CreativeService.IsCreative(player) then
+				depositStorageAmmo(record, MAX_AMMO_STACK)
+				syncDefenseUiForOwner(record)
+				return
+			end
 			local owned = InventoryService.GetItemCount(player, ammoId)
 			if owned <= 0 then
 				syncDefenseUiForOwner(record)
