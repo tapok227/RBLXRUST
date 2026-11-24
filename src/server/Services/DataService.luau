@@ -143,7 +143,16 @@ local raidableBasesStore: OrderedDataStore? = nil
 local defenseReportsStore: DataStore? = nil
 local pendingDefenseReports: { [number]: { RaidDefenseReport } } = {}
 local dataLoadedSignal: Signal.Signal<Player, PlayerData> = Signal.new()
+local arrivalHandler: ((player: Player) -> ())? = nil
 local isInitialized = false
+
+local DEFAULT_SESSION_RETRY_DELAYS: { number } = { 0.5, 1, 2, 4 }
+
+export type LoadProfileOptions = {
+	ExpectedInventoryHash: string?,
+	WaitForSessionRelease: boolean?,
+	RetryDelays: { number }?,
+}
 
 local DataService = {
 	CURRENT_SCHEMA_VERSION = CURRENT_SCHEMA_VERSION,
@@ -1244,13 +1253,162 @@ local function resolveDisplayName(userId: number): string
 	return string.format("Player_%d", userId)
 end
 
-local function loadPlayerProfile(player: Player)
+local function computeFnv1a32(str: string): number
+	local hash = 0x811c9dc5
+	for i = 1, #str do
+		hash = bit32.bxor(hash, string.byte(str, i))
+		-- FNV-1a 32-bit prime: 16777619 = 0x01000193
+		local low = bit32.band(hash, 0xFFFF) * 0x0193
+		local high = (bit32.rshift(hash, 16) * 0x0193 + bit32.band(hash, 0xFFFF) * 0x0100) * 65536
+		hash = bit32.band(low + high, 0xFFFFFFFF)
+	end
+	return hash
+end
+
+function DataService.ComputeInventoryHash(inventory: Types.Inventory, equipment: EquipmentMap?): string
+	local parts: { string } = {}
+	for i = 1, Types.INVENTORY_SIZE do
+		local slot = inventory[i]
+		if slot ~= nil and type(slot.Id) == "string" and type(slot.Count) == "number" and slot.Count > 0 then
+			table.insert(parts, string.format("I:%d:%s:%d;", i, slot.Id, math.floor(slot.Count)))
+		end
+	end
+
+	if type(equipment) == "table" then
+		local equipKeys: { string } = {}
+		for key, slot in equipment do
+			if type(key) == "string" and slot ~= nil and type(slot.Id) == "string" and slot.Count > 0 then
+				table.insert(equipKeys, key)
+			end
+		end
+		table.sort(equipKeys)
+		for _, key in equipKeys do
+			local slot = equipment[key]
+			if slot ~= nil then
+				table.insert(parts, string.format("E:%s:%s:%d;", key, slot.Id, math.floor(slot.Count)))
+			end
+		end
+	end
+
+	local canonical = table.concat(parts)
+	local crc32Val = BaseSerializer.ComputeCRC32(buffer.fromstring(canonical))
+	local fnvVal = computeFnv1a32(canonical)
+	return string.format("%08x%08x", crc32Val, fnvVal)
+end
+
+function DataService.GetPlayerInventoryHash(player: Player): string?
+	local profile = Profiles[player]
+	if profile == nil or not profile:IsActive() then
+		return nil
+	end
+	local runtime = RuntimeData[player]
+	if runtime == nil then
+		return nil
+	end
+	return DataService.ComputeInventoryHash(runtime.Inventory, runtime.Equipment)
+end
+
+function DataService.FlushBeforeUnload(player: Player): boolean
+	local profile = Profiles[player]
+	local runtimePlayerData = RuntimeData[player]
+	if profile == nil or not profile:IsActive() or runtimePlayerData == nil then
+		return false
+	end
+	runBeforeUnload(player, runtimePlayerData)
+	syncRuntimeToProfile(profile, runtimePlayerData)
+	return true
+end
+
+function DataService.ResetUnloadFlag(player: Player)
+	if Profiles[player] ~= nil then
+		unloadedByPlayer[player] = false
+	end
+end
+
+function DataService.SetArrivalHandler(handler: (player: Player) -> ())
+	arrivalHandler = handler
+end
+
+local function waitForSessionRelease(player: Player, profileKey: string, retryDelays: { number })
+	for attempt, delaySec in retryDelays do
+		if player.Parent ~= Players then
+			return
+		end
+		local ok, viewProfile = pcall(function()
+			return PlayerStore:GetAsync(profileKey)
+		end)
+		if not ok or viewProfile == nil then
+			return
+		end
+		local session = (viewProfile :: any).Session
+		if session == nil or session.JobId == game.JobId then
+			return
+		end
+		warn(
+			string.format(
+				"[DataService] SessionLock still held for %s (%d) by job %s; retrying in %.1fs (%d/%d)",
+				player.Name,
+				player.UserId,
+				tostring(session.JobId),
+				delaySec,
+				attempt,
+				#retryDelays
+			)
+		)
+		task.wait(delaySec)
+	end
+end
+
+function DataService.LoadProfileForPlayer(player: Player, options: LoadProfileOptions?): (boolean, PlayerData?)
+	if player.Parent ~= Players then
+		return false, nil
+	end
+	local existingProfile = Profiles[player]
+	if existingProfile ~= nil and existingProfile:IsActive() then
+		local existingData = RuntimeData[player]
+		if existingData ~= nil then
+			return true, existingData
+		end
+	end
+
 	local profileKey = string.format("Player_%d", player.UserId)
-	local profile = PlayerStore:StartSessionAsync(profileKey, {
-		Cancel = function()
-			return player.Parent ~= Players
-		end,
-	})
+	local retryDelays = if options ~= nil and options.RetryDelays ~= nil
+		then options.RetryDelays
+		else DEFAULT_SESSION_RETRY_DELAYS
+
+	if options ~= nil and options.WaitForSessionRelease == true then
+		waitForSessionRelease(player, profileKey, retryDelays)
+	end
+
+	local profile: any = nil
+	local maxAttempts = #retryDelays + 1
+	for attempt = 1, maxAttempts do
+		if player.Parent ~= Players then
+			return false, nil
+		end
+		profile = PlayerStore:StartSessionAsync(profileKey, {
+			Cancel = function()
+				return player.Parent ~= Players
+			end,
+		})
+		if profile ~= nil then
+			break
+		end
+		if attempt <= #retryDelays and player.Parent == Players then
+			local delaySec = retryDelays[attempt]
+			warn(
+				string.format(
+					"[DataService] StartSessionAsync returned nil for %s (%d); retrying in %.1fs (%d/%d)",
+					player.Name,
+					player.UserId,
+					delaySec,
+					attempt,
+					#retryDelays
+				)
+			)
+			task.wait(delaySec)
+		end
+	end
 
 	if profile ~= nil then
 		profile:AddUserId(player.UserId)
@@ -1283,6 +1441,27 @@ local function loadPlayerProfile(player: Player)
 				then math.floor(profile.Data.LastStarterKitAt :: number)
 				else 0,
 		}
+
+		if options ~= nil and type(options.ExpectedInventoryHash) == "string" then
+			local actualHash =
+				DataService.ComputeInventoryHash(runtimePlayerData.Inventory, runtimePlayerData.Equipment)
+			if actualHash ~= options.ExpectedInventoryHash then
+				warn(
+					string.format(
+						"[DataService] Anti-dupe inventory hash mismatch for %s (%d): expected=%s actual=%s",
+						player.Name,
+						player.UserId,
+						options.ExpectedInventoryHash,
+						actualHash
+					)
+				)
+				profile:EndSession()
+				if player.Parent == Players then
+					player:Kick("Transfer inventory integrity check failed. Please rejoin.")
+				end
+				return false, nil
+			end
+		end
 
 		profile.OnSave:Connect(function()
 			syncRuntimeToProfile(profile, runtimePlayerData)
@@ -1317,17 +1496,22 @@ local function loadPlayerProfile(player: Player)
 		end)
 
 		if player.Parent == Players then
+			transferringPlayers[player] = nil
+			SecurityService.SetTeleportLock(player, false)
 			unloadedByPlayer[player] = false
 			Profiles[player] = profile
 			RuntimeData[player] = runtimePlayerData
 			dataLoadedSignal:Fire(player, runtimePlayerData)
+			return true, runtimePlayerData
 		else
 			profile:EndSession()
+			return false, nil
 		end
 	else
 		if player.Parent == Players then
 			player:Kick("Failed to load your player data. Please rejoin in a moment.")
 		end
+		return false, nil
 	end
 end
 
@@ -1364,6 +1548,14 @@ function DataService.SetTransferring(player: Player, locked: boolean)
 		transferringPlayers[player] = nil
 	end
 	SecurityService.SetTeleportLock(player, locked)
+end
+
+function DataService.SetTransferLock(player: Player, locked: boolean)
+	DataService.SetTransferring(player, locked)
+end
+
+function DataService.IsTransferLocked(player: Player): boolean
+	return DataService.IsTransferring(player)
 end
 
 function DataService.IsTeleporting(player: Player): boolean
@@ -1445,8 +1637,8 @@ function DataService.RestoreAfterFailedTeleport(player: Player): boolean
 	end
 
 	transferringPlayers[player] = nil
-	loadPlayerProfile(player)
-	if DataService.GetData(player) ~= nil then
+	local loadedOk = DataService.LoadProfileForPlayer(player, nil)
+	if loadedOk and DataService.GetData(player) ~= nil then
 		DataService.SetTransferring(player, false)
 		return true
 	end
@@ -1936,17 +2128,25 @@ function DataService.LoadBaseSnapshot(targetUserId: number): BaseData?
 	return deserializeBase(migrated.Base)
 end
 
+local function handlePlayerAdded(player: Player)
+	if arrivalHandler ~= nil then
+		arrivalHandler(player)
+	else
+		DataService.LoadProfileForPlayer(player, nil)
+	end
+end
+
 function DataService.Init()
 	if isInitialized then
 		return
 	end
 	isInitialized = true
 
-	Players.PlayerAdded:Connect(loadPlayerProfile)
+	Players.PlayerAdded:Connect(handlePlayerAdded)
 	Players.PlayerRemoving:Connect(onPlayerRemoving)
 
 	for _, player in Players:GetPlayers() do
-		task.spawn(loadPlayerProfile, player)
+		task.spawn(handlePlayerAdded, player)
 	end
 end
 

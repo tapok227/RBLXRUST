@@ -587,9 +587,14 @@ export type TransferPayload = {
 	SourcePlaceId: number,
 	TargetPlaceId: number,
 	IssuedAt: number,
+	InventoryHash: string?,
 	TargetBaseUserId: number?,
 	MapKey: string?,
 	LootItems: { ItemBatchEntry }?,
+	RaidMetadata: { [string]: any }?,
+	Consumed: boolean?,
+	ConsumedAt: number?,
+	ConsumedByJobId: string?,
 }
 
 export type TransferReceipt = {
@@ -943,6 +948,9 @@ function Types.IsValidTransferPayload(val: any): boolean
 		return false
 	end
 	if val.MapKey ~= nil and not isValidString(val.MapKey, 1, 64) then
+		return false
+	end
+	if val.InventoryHash ~= nil and not isValidString(val.InventoryHash, 1, 64) then
 		return false
 	end
 	if val.LootItems ~= nil then

@@ -101,14 +101,25 @@
 ### `DataService` (`src/server/Services/DataService.luau`)
 - `DataService.CURRENT_SCHEMA_VERSION` (`9`) & `DataService.Migrations: { [number]: (data) -> () }` -> Цепочка чистых функций миграции `v1..v9` (`Base`/`BaseBlueprints` в бинарном формате `BaseSerializer` + `ContainerSidecar`, `SchemaVersion`, `Equipment`, `DefenseLogs`, `UnlockedBlueprints`, `MountSurface`, `BaseTier`/`LastUpkeepTimestamp`, `(PosX, PosY, PosZ)`).
 - `DataService.MigrateProfileData(rawData): { [string]: any }` -> Последовательно обновляет профиль с версии `N` до `CURRENT_SCHEMA_VERSION` до вызова `Profile:Reconcile()`.
-- `DataService.IsTransferring(player)` / `SetTransferring(player, locked)` / `IsTeleporting(player)` -> Управление флагом блокировки трансфера (блокирует мутации через `GetData`, `SetInventorySlot`, `SetField`, `UpdateProfile` на время межплейсового перехода).
+- `DataService.SetTransferLock(player, locked)` / `IsTransferLocked(player)` / `IsTransferring(player)` / `SetTransferring(player, locked)` / `IsTeleporting(player)` -> Управление флагом блокировки трансфера (блокирует мутации через `GetData`, `SetInventorySlot`, `SetField`, `UpdateProfile` и все предметные сервисы на время межплейсового перехода).
+- `DataService.ComputeInventoryHash(inventory, equipment?)` / `GetPlayerInventoryHash(player)` -> Детерминированный 64-битный хеш (`CRC32 + FNV-1a`) инвентаря и экипировки для анти-дюп сверки при межплейсовом переходе.
+- `DataService.FlushBeforeUnload(player)` / `ResetUnloadFlag(player)` / `SetArrivalHandler(handler)` / `LoadProfileForPlayer(player, options?)` -> Синхронный сброс `OnBeforeUnload` перед коммитом `TransferNonce` и загрузка профиля с ожиданием снятия `SessionLock` (`0.5s -> 1s -> 2s -> 4s`) и проверкой `ExpectedInventoryHash`.
 - `DataService.GetData(player): PlayerData?` / `GetProfileSnapshot(player): PlayerData?` / `GetInventorySlot(player, slotIndex)` / `SetInventorySlot(player, slotIndex, slot): NetResult<InventorySlot?>` / `GetField(player, fieldName)` / `SetField(player, fieldName, value): NetResult<boolean>` / `UpdateProfile(player, mutator): NetResult<boolean>` -> Безопасные геттеры/сеттеры профиля с проверкой `IsTransferring` и валидацией полей.
 - `DataService.OnDataLoaded(callback): Signal.Connection` -> Подписка на загрузку профиля.
 - `DataService.OnBeforeUnload(callback)` -> Хук перед сохранением/выгрузкой профиля.
 - `DataService.ReleaseForTeleport(player): boolean` / `RestoreAfterFailedTeleport(player): boolean` -> Безопасное освобождение и восстановление сессии `ProfileStore`.
 - `DataService.RegisterRaidableBase(player)` / `GetRaidTargets(excludeUserId, limit)` / `GetPresetTier(targetUserId)` / `LoadBaseSnapshot(targetUserId)` -> Индексация и загрузка снимков баз для рейдов (включая `BaseTier`, пресеты `Tier 1/2/3`, `DangerLabel`, `RewardLabel`, `LaunchCost`).
 - `DataService.RecordRaidDefenseReport(targetUserId, report)` / `ConsumeDefenseReports(player)` -> Запись и выдача отчётов о защите базы (без удаления реальной базы защитника).
-- `DataService.Init()` -> Управление жизненным циклом профилей `ProfileStore`.
+- `DataService.Init()` -> Управление жизненным циклом профилей `ProfileStore` (делегирует `PlayerAdded` в `TeleportService.OnPlayerArrived` при регистрации `SetArrivalHandler`).
+
+### `TeleportService` (`src/server/Services/TeleportService.luau`)
+- Протокол защиты от дюпов **Commit-Before-Teleport** (`PlayerBase` ↔ `MainMap` `Tier 1/2/3`):
+  1. **Фаза 1 (Lock):** `DataService.SetTransferLock(player, true)` + закрытие активных контейнеров (`LootService.CloseContainerForPlayer`); блокирует дроп, перекладывание, крафт, переработку, торговлю и подбор лута.
+  2. **Фаза 2 (Commit & Nonce):** `DataService.FlushBeforeUnload(player)` (возврат активного крафта и финализация состояния), вычисление `InventoryHash` (`DataService.GetPlayerInventoryHash`), генерация одноразового `TransferNonce` (`HttpService:GenerateGUID(false)`), запись `TransferPayload` в `MemoryStoreService:GetHashMap("CrossPlaceTransfers")` с TTL `120` с и последующее принудительное сохранение/освобождение `ProfileStore` через `DataService.ReleaseForTeleport(player)`.
+  3. **Фаза 3 (Teleport & Rollback):** вызов `TeleportAsync` с `TransferNonce` в `TeleportOptions`; при `TeleportInitFailed` или ошибке — немедленный откат (`RemoveAsync` токена, `DataService.RestoreAfterFailedTeleport`, снятие `TransferLock` и уведомление клиента).
+- `TeleportService.TransferPlayer(player, options): TransferReceipt` -> Единая транзакционная точка межплейсового телепорта (используется `ExtractionService` и `BaseService.onRequestReturnToMap`).
+- `TeleportService.OnPlayerArrived(player)` -> Приём на целевом плейсе: атомарное чтение и удаление `TransferNonce` через `UpdateAsync` (`Consumed = true`) + `RemoveAsync` (повторный токен/гонка/чужой `UserId`/`TargetPlaceId` кикаются), экспоненциальный ретрай `SessionLock` (`0.5s -> 1s -> 2s -> 4s`) и сверка `ExpectedInventoryHash`; первый вход без `TransferNonce` (`SourcePlaceId == 0`) безопасно открывает профиль на `PlayerBase`.
+- `TeleportService.GetArrivedPayload(player)` / `GetLastReceipt(player)` / `Init()` -> Регистрация `DataService.SetArrivalHandler` и подписка на `TeleportInitFailed` (инициализируется в `init.server.luau` строго до `DataService`).
 
 ### `InventoryService` (`src/server/Services/InventoryService.luau`)
 - `InventoryService.GetEquippedSlot(player): number` / `GetEquippedItem(player): Slot?` / `GetSlot(player, slotIndex): Slot?` -> Чтение слотов и активного предмета хотбара.
@@ -166,7 +177,7 @@
 - `ExtractionService.CanAccessMap(player, mapKey, playerBaseTier): (boolean, string?)` -> Проверка допуска к PvP-карте (`MainMap_Tier1/2/3`) по `BaseTier` игрока.
 - `ExtractionService.GetExtractionState(player): ExtractionState?` / `IsInCombatCooldown(player): boolean` -> Статус эвакуации игрока.
 - `ExtractionService.RecordDamage(player)` -> Сброс таймера эвакуации при получении урона.
-- `ExtractionService.Init()` -> Проверка зон эвакуации и телепорт на `PlayerBase`.
+- `ExtractionService.Init()` -> Проверка зон эвакуации и транзакционный телепорт на `PlayerBase` через `TeleportService.TransferPlayer`.
 
 ### `BuildingValidator` (`src/server/Services/BuildingValidator.luau`)
 - `BuildingValidator.ComputeDefenseCapacity(pieces, baseTier): (number, number)` -> Подсчёт использованного и максимального бюджета `DefenseCapacity`.
@@ -201,7 +212,7 @@
 - `BaseService.IsBaseMode(): boolean` / `CanBuild(player): boolean` -> Проверка разрешения на строительство.
 - `BaseService.DamagePiece(uid, rawDamage, damageKind, attacker?): (boolean, boolean)` -> Нанесение урона постройке (для `"Explosion"` — через `BuildingConfig.ComputeExplosionDamage`) с записью `LastDamagedAt = os.clock()`, каскадным обрушением зависимых блоков и пересчётом `BaseTier` при разрушении.
 - `BaseService.GetLivePieceModelsInRadius(origin, radius)` / `GetPlayerPieces(player)` / `GetStorageContainerId(player, uid)` / `DepositItemsToPlayerBase(player, items)` -> Доступ к постройкам игрока и перенос эвакуированного лута в инвентарь и `storage_box` профиля.
-- `BaseService.Init()` -> Спавн базы (включая `ProximityPrompt` для TC, регистрацию верстаков `workbench_1/2/3` и активных защит в `DefenseService`), обработка `BuildPlaceRequest` (из `BuildingPlan` и предметов `workbench_1/2/3`, `tool_cupboard`, `IsDefense` в хотбаре; проверка требуемого верстака при постройке защиты из сырых ресурсов; игнорируется при `InRaid == true`), `BuildUpgradeRequest`, `BuildRepairRequest` (ремонт киянкой), `BuildDemolishRequest` (с проверкой `CheckMaxWallsToTC` при сносе лестниц, запретом сноса несущих опор при непустом `BuildingValidator.FindUnsupportedPieces`, проверкой свободного слота инвентаря и возвратом снятой защиты и её боезапаса), `ToolCupboardAction`, `RequestReturnToMap`, `BuildFeedback` и фоновый цикл Upkeep/Decay.
+- `BaseService.Init()` -> Спавн базы (включая `ProximityPrompt` для TC, регистрацию верстаков `workbench_1/2/3` и активных защит в `DefenseService`), обработка `BuildPlaceRequest` (из `BuildingPlan` и предметов `workbench_1/2/3`, `tool_cupboard`, `IsDefense` в хотбаре; проверка требуемого верстака при постройке защиты из сырых ресурсов; игнорируется при `InRaid == true`), `BuildUpgradeRequest`, `BuildRepairRequest` (ремонт киянкой), `BuildDemolishRequest` (с проверкой `CheckMaxWallsToTC` при сносе лестниц, запретом сноса несущих опор при непустом `BuildingValidator.FindUnsupportedPieces`, проверкой свободного слота инвентаря и возвратом снятой защиты и её боезапаса), `ToolCupboardAction`, `RequestReturnToMap` (через `TeleportService.TransferPlayer`), `BuildFeedback` и фоновый цикл Upkeep/Decay.
 
 ### `RaidService` (`src/server/Services/RaidService.luau` + `src/server/Services/Raid/`)
 - Декомпозиция подмодулей:

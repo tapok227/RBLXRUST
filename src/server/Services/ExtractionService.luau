@@ -1,9 +1,7 @@
 --!strict
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local RunService = game:GetService("RunService")
 local ServerScriptService = game:GetService("ServerScriptService")
-local TeleportService = game:GetService("TeleportService")
 local Workspace = game:GetService("Workspace")
 
 local Config = require(ReplicatedStorage.Shared.Config)
@@ -11,7 +9,7 @@ local Types = require(ReplicatedStorage.Shared.Types)
 local Net = require(ReplicatedStorage.Shared.Net)
 local Janitor = require(ReplicatedStorage.Shared.Janitor)
 local DataService = require(ServerScriptService.Server.Services.DataService)
-local LootService = require(ServerScriptService.Server.Services.LootService)
+local CrossPlaceTeleport = require(ServerScriptService.Server.Services.TeleportService)
 local SecurityService = require(ServerScriptService.Server.Services.SecurityService)
 
 type ExtractionState = Types.ExtractionState
@@ -28,26 +26,13 @@ type ActiveExtraction = {
 	TotalTime: number,
 }
 
-type PendingTeleport = {
-	TargetPlaceId: number,
-	ZoneName: string,
-	TotalTime: number,
-	Attempts: number,
-	Retrying: boolean,
-	Options: TeleportOptions,
-}
-
 local TICK_INTERVAL = 0.25
 local DAMAGE_EPSILON = 0.05
-local MAX_TELEPORT_RETRIES = 2
-local TELEPORT_RETRY_DELAY = 2
-local STUDIO_SIM_BANNER_DURATION = 5
 
 local zones: { ExtractionZone } = {}
 local activeExtractions: { [Player]: ActiveExtraction } = {}
 local lastDamageTime: { [Player]: number } = {}
 local teleportInProgress: { [Player]: boolean } = {}
-local pendingTeleports: { [Player]: PendingTeleport } = {}
 local playerJanitors: { [Player]: Janitor.Janitor } = {}
 local characterJanitors: { [Player]: Janitor.Janitor } = {}
 local folderJanitor: Janitor.Janitor? = nil
@@ -224,177 +209,42 @@ local function bindPlayer(player: Player)
 	end
 end
 
-local function handleTeleportFailure(player: Player, reasonText: string, allowRetry: boolean)
-	local pending = pendingTeleports[player]
-	if pending == nil or pending.Retrying then
-		return
-	end
-
-	if allowRetry and pending.Attempts <= MAX_TELEPORT_RETRIES and player.Parent == Players then
-		pending.Retrying = true
-		local retryNumber = pending.Attempts
-		pending.Attempts += 1
-		sendExtractionState(player, {
-			Active = true,
-			ZoneName = pending.ZoneName,
-			TimeLeft = 0,
-			TotalTime = pending.TotalTime,
-			StatusText = string.format("Teleport failed, retrying (%d/%d)...", retryNumber, MAX_TELEPORT_RETRIES),
-		})
-
-		task.delay(TELEPORT_RETRY_DELAY, function()
-			local currentPending = pendingTeleports[player]
-			if currentPending ~= pending then
-				return
-			end
-			currentPending.Retrying = false
-			if player.Parent ~= Players then
-				pendingTeleports[player] = nil
-				teleportInProgress[player] = nil
-				SecurityService.SetTeleportLock(player, false)
-				return
-			end
-
-			local ok, err = pcall(function()
-				TeleportService:TeleportAsync(currentPending.TargetPlaceId, { player }, currentPending.Options)
-			end)
-			if not ok then
-				warn(string.format("[ExtractionService] Teleport retry failed for %s: %s", player.Name, tostring(err)))
-				handleTeleportFailure(player, reasonText, true)
-			end
-		end)
-		return
-	end
-
-	pendingTeleports[player] = nil
-	teleportInProgress[player] = nil
-	DataService.RestoreAfterFailedTeleport(player)
-	sendExtractionState(player, {
-		Active = false,
-		ZoneName = pending.ZoneName,
-		TimeLeft = pending.TotalTime,
-		TotalTime = pending.TotalTime,
-		StatusText = reasonText,
-	})
-end
-
-local function teleportPlayerToPlace(
-	player: Player,
-	targetPlaceId: number,
-	zoneName: string,
-	totalTime: number,
-	teleportData: { [string]: any }
-)
-	if teleportInProgress[player] or SecurityService.IsTeleportLocked(player) or player.Parent ~= Players then
+local function completeExtraction(player: Player, zoneName: string, totalTime: number)
+	if
+		teleportInProgress[player]
+		or DataService.IsTransferLocked(player)
+		or SecurityService.IsTeleportLocked(player)
+		or player.Parent ~= Players
+	then
 		return
 	end
 	teleportInProgress[player] = true
-	SecurityService.SetTeleportLock(player, true)
-	LootService.CloseContainerForPlayer(player, true)
 
-	if RunService:IsStudio() then
-		DataService.ReleaseForTeleport(player)
-		sendExtractionState(player, {
-			Active = true,
-			ZoneName = zoneName,
-			TimeLeft = 0,
-			TotalTime = totalTime,
-			StatusText = "Extracted (Studio Simulation)",
-		})
-
-		task.delay(STUDIO_SIM_BANNER_DURATION, function()
-			if player.Parent == Players and pendingTeleports[player] == nil then
-				DataService.RestoreAfterFailedTeleport(player)
-				teleportInProgress[player] = nil
-				SecurityService.SetTeleportLock(player, false)
-				sendExtractionState(player, {
-					Active = false,
-					ZoneName = zoneName,
-					TimeLeft = 0,
-					TotalTime = totalTime,
-				})
-			end
-		end)
-		return
-	end
-
-	sendExtractionState(player, {
-		Active = true,
-		ZoneName = zoneName,
-		TimeLeft = 0,
-		TotalTime = totalTime,
-		StatusText = "Saving data & teleporting...",
-	})
-
-	local released = DataService.ReleaseForTeleport(player)
-	if not released then
-		warn(string.format("[ExtractionService] Failed to release profile before teleport for %s", player.Name))
-		DataService.RestoreAfterFailedTeleport(player)
-		teleportInProgress[player] = nil
-		sendExtractionState(player, {
-			Active = false,
-			ZoneName = zoneName,
-			TimeLeft = totalTime,
-			TotalTime = totalTime,
-			StatusText = "Extraction failed: save timeout",
-		})
-		return
-	end
-
-	if player.Parent ~= Players then
-		teleportInProgress[player] = nil
-		SecurityService.SetTeleportLock(player, false)
-		return
-	end
-
-	local options = Instance.new("TeleportOptions")
-	options:SetTeleportData(teleportData)
-
-	pendingTeleports[player] = {
-		TargetPlaceId = targetPlaceId,
+	local receipt = CrossPlaceTeleport.TransferPlayer(player, {
+		TargetPlaceId = Config.Places.PlayerBase,
+		Reason = "Extraction",
 		ZoneName = zoneName,
 		TotalTime = totalTime,
-		Attempts = 1,
-		Retrying = false,
-		Options = options,
-	}
-
-	local ok, err = pcall(function()
-		TeleportService:TeleportAsync(targetPlaceId, { player }, options)
-	end)
-	if not ok then
-		warn(string.format("[ExtractionService] TeleportAsync error for %s: %s", player.Name, tostring(err)))
-		handleTeleportFailure(player, "Teleport failed", true)
-	end
-end
-
-local function completeExtraction(player: Player, zoneName: string, totalTime: number)
-	teleportPlayerToPlace(player, Config.Places.PlayerBase, zoneName, totalTime, {
-		FromPlaceId = game.PlaceId,
-		OwnerUserId = player.UserId,
-		Mode = "Base",
+		TeleportData = {
+			FromPlaceId = game.PlaceId,
+			OwnerUserId = player.UserId,
+			Mode = "Base",
+		},
+		OnFailure = function(reasonText: string)
+			teleportInProgress[player] = nil
+			sendExtractionState(player, {
+				Active = false,
+				ZoneName = zoneName,
+				TimeLeft = totalTime,
+				TotalTime = totalTime,
+				StatusText = reasonText,
+			})
+		end,
 	})
-end
 
-local function onTeleportInitFailed(
-	player: Player,
-	teleportResult: Enum.TeleportResult,
-	errorMessage: string,
-	_placeId: number,
-	_teleportOptions: TeleportOptions
-)
-	if pendingTeleports[player] == nil then
-		return
+	if not receipt.Success then
+		teleportInProgress[player] = nil
 	end
-	warn(
-		string.format(
-			"[ExtractionService] TeleportInitFailed for %s (%s): %s",
-			player.Name,
-			tostring(teleportResult),
-			errorMessage
-		)
-	)
-	handleTeleportFailure(player, string.format("Teleport failed: %s", errorMessage), true)
 end
 
 local function stepExtractionLoop()
@@ -508,8 +358,6 @@ function ExtractionService.Init()
 		end)
 	end
 
-	TeleportService.TeleportInitFailed:Connect(onTeleportInitFailed)
-
 	Players.PlayerAdded:Connect(bindPlayer)
 	for _, player in Players:GetPlayers() do
 		bindPlayer(player)
@@ -519,7 +367,6 @@ function ExtractionService.Init()
 		activeExtractions[player] = nil
 		lastDamageTime[player] = nil
 		teleportInProgress[player] = nil
-		pendingTeleports[player] = nil
 
 		local charJanitor = characterJanitors[player]
 		if charJanitor then

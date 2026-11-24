@@ -4,7 +4,6 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local ServerScriptService = game:GetService("ServerScriptService")
-local TeleportService = game:GetService("TeleportService")
 local Workspace = game:GetService("Workspace")
 
 local Config = require(ReplicatedStorage.Shared.Config)
@@ -27,6 +26,7 @@ local InventoryService = require(ServerScriptService.Server.Services.InventorySe
 local LootService = require(ServerScriptService.Server.Services.LootService)
 local CraftingService = require(ServerScriptService.Server.Services.CraftingService)
 local BlueprintService = require(ServerScriptService.Server.Services.BlueprintService)
+local CrossPlaceTeleport = require(ServerScriptService.Server.Services.TeleportService)
 local SecurityService = require(ServerScriptService.Server.Services.SecurityService)
 
 type Slot = Types.Slot
@@ -52,7 +52,6 @@ export type RaidHooks = {
 }
 
 local STRUCTURES_FOLDER_NAME = "PlayerBaseStructures"
-local STUDIO_SIM_BANNER_DURATION = 4
 local BUILD_ACTION_COOLDOWN = 0.15
 local REPAIR_HAMMER_COOLDOWN = 0.45
 
@@ -67,7 +66,6 @@ local occupiedSockets: { [string]: { [string]: string } } = {}
 local occupiedWorldKeys: { [string]: string } = {}
 local lastBuildActionTime: { [Player]: number } = {}
 local teleportInProgress: { [Player]: boolean } = {}
-local pendingTeleports: { [Player]: boolean } = {}
 local openTcByPlayer: { [Player]: string } = {}
 local raidHooks: RaidHooks = {}
 local isInitialized = false
@@ -1396,7 +1394,11 @@ local function onRequestReturnToMap(player: Player, mapKeyAny: any)
 	if not SecurityService.CheckRateLimit(player, Net.Events.RequestReturnToMap) or not BaseService.IsBaseMode() then
 		return
 	end
-	if teleportInProgress[player] or SecurityService.IsTeleportLocked(player) then
+	if
+		teleportInProgress[player]
+		or DataService.IsTransferLocked(player)
+		or SecurityService.IsTeleportLocked(player)
+	then
 		return
 	end
 	local data = DataService.GetData(player)
@@ -1414,7 +1416,7 @@ local function onRequestReturnToMap(player: Player, mapKeyAny: any)
 		sendBuildFeedback(player, false, msg, data.Base.BaseTier)
 		sendReturnBanner(player, true, msg)
 		task.delay(3.5, function()
-			if player.Parent == Players and pendingTeleports[player] == nil and not teleportInProgress[player] then
+			if player.Parent == Players and not teleportInProgress[player] then
 				sendReturnBanner(player, false, nil)
 			end
 		end)
@@ -1427,62 +1429,39 @@ local function onRequestReturnToMap(player: Player, mapKeyAny: any)
 	local targetMapName = if mapCfg ~= nil then mapCfg.Name else "PvP Map"
 
 	teleportInProgress[player] = true
-	SecurityService.SetTeleportLock(player, true)
-	LootService.CloseContainerForPlayer(player, true)
 	BaseService.ClearSessionGhosts(player)
 
-	if RunService:IsStudio() then
-		DataService.ReleaseForTeleport(player)
-		sendReturnBanner(player, true, string.format("Deploying to %s (Studio Simulation)", targetMapName))
-		task.delay(STUDIO_SIM_BANNER_DURATION, function()
-			if player.Parent == Players and pendingTeleports[player] == nil then
-				sendReturnBanner(player, false, nil)
-			end
-		end)
-		return
-	end
-
 	task.spawn(function()
-		sendReturnBanner(player, true, string.format("Saving base & deploying to %s...", targetMapName))
-		if not DataService.ReleaseForTeleport(player) then
-			DataService.RestoreAfterFailedTeleport(player)
-			teleportInProgress[player] = nil
-			sendReturnBanner(player, false, nil)
-			return
-		end
-		if player.Parent ~= Players then
-			teleportInProgress[player] = nil
-			SecurityService.SetTeleportLock(player, false)
-			return
-		end
-
-		local options = Instance.new("TeleportOptions")
-		options:SetTeleportData({
-			FromPlaceId = game.PlaceId,
-			OwnerUserId = player.UserId,
-			Mode = "Raid",
-			TargetMapKey = mapKey,
+		local receipt = CrossPlaceTeleport.TransferPlayer(player, {
+			TargetPlaceId = targetPlaceId,
+			Reason = "ReturnToMap",
+			MapKey = mapKey,
+			TeleportData = {
+				FromPlaceId = game.PlaceId,
+				OwnerUserId = player.UserId,
+				Mode = "Raid",
+				TargetMapKey = mapKey,
+			},
+			OnStatus = function(statusText: string)
+				if RunService:IsStudio() then
+					sendReturnBanner(player, true, string.format("Deploying to %s (Studio Simulation)", targetMapName))
+				elseif #statusText > 0 then
+					sendReturnBanner(player, true, string.format("Saving base & deploying to %s...", targetMapName))
+				end
+			end,
+			OnFailure = function(reasonText: string)
+				teleportInProgress[player] = nil
+				if #reasonText > 0 then
+					sendBuildFeedback(player, false, reasonText, data.Base.BaseTier)
+				end
+				sendReturnBanner(player, false, nil)
+			end,
 		})
-		pendingTeleports[player] = true
-		local ok = pcall(function()
-			TeleportService:TeleportAsync(targetPlaceId, { player }, options)
-		end)
-		if not ok then
-			pendingTeleports[player] = nil
+
+		if not receipt.Success then
 			teleportInProgress[player] = nil
-			DataService.RestoreAfterFailedTeleport(player)
-			sendReturnBanner(player, false, nil)
 		end
 	end)
-end
-
-local function onTeleportInitFailed(player: Player)
-	if pendingTeleports[player] then
-		pendingTeleports[player] = nil
-		teleportInProgress[player] = nil
-		DataService.RestoreAfterFailedTeleport(player)
-		sendReturnBanner(player, false, nil)
-	end
 end
 
 function BaseService.IsBaseMode(): boolean
@@ -1661,7 +1640,6 @@ function BaseService.Init()
 	Net.GetEvent(Net.Events.BuildRepairRequest).OnServerEvent:Connect(onBuildRepairRequest)
 	Net.GetEvent(Net.Events.RequestReturnToMap).OnServerEvent:Connect(onRequestReturnToMap)
 	Net.GetEvent(Net.Events.ToolCupboardAction).OnServerEvent:Connect(onToolCupboardAction)
-	TeleportService.TeleportInitFailed:Connect(onTeleportInitFailed)
 
 	DataService.OnBeforeUnload(function(player: Player, data: Types.PlayerData)
 		BaseUpkeep.SyncPieceStatesFromModels(data.Base.Pieces, spawnedByPlayer[player])
@@ -1713,7 +1691,6 @@ function BaseService.Init()
 		despawnBaseForPlayer(player)
 		lastBuildActionTime[player] = nil
 		teleportInProgress[player] = nil
-		pendingTeleports[player] = nil
 		openTcByPlayer[player] = nil
 		BaseUpkeep.ClearPlayerState(player)
 	end)
