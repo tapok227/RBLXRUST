@@ -1,4 +1,5 @@
 --!strict
+local CollectionService = game:GetService("CollectionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
@@ -34,6 +35,7 @@ type ActiveProjectile = {
 
 local MAX_STEP_DT = 0.1
 local MAX_SEGMENT_FILTER_PASSES = 6
+local LIMB_DAMAGE_MULTIPLIER = 0.75
 
 local IGNORED_PROP_NAMES: { [string]: boolean } = {
 	GunBody = true,
@@ -95,6 +97,70 @@ function Ballistics.ClassifyHitZone(hitPart: BasePart): Types.HitZone
 	return "Limb"
 end
 
+function Ballistics.IsSmokeVolume(inst: Instance): boolean
+	if
+		inst.Name == "SmokeVolume"
+		or inst:GetAttribute("SmokeVolume") == true
+		or CollectionService:HasTag(inst, "SmokeVolume")
+	then
+		return true
+	end
+	local parent = inst.Parent
+	if parent ~= nil then
+		if parent:GetAttribute("SmokeVolume") == true or parent.Name == "SmokeVolumes" then
+			return true
+		end
+	end
+	return false
+end
+
+function Ballistics.ResolveHitZoneMultiplier(hitPart: BasePart, headshotMultiplier: number?): (Types.HitZone, number)
+	local zone = Ballistics.ClassifyHitZone(hitPart)
+	if zone == "Head" then
+		return zone, (headshotMultiplier or 1.8)
+	elseif zone == "Limb" then
+		return zone, LIMB_DAMAGE_MULTIPLIER
+	end
+	return zone, 1.0
+end
+
+function Ballistics.ComputeDistanceFalloff(
+	distance: number,
+	maxRange: number,
+	falloffStartRatio: number?,
+	minFalloffMultiplier: number?
+): number
+	if maxRange <= 0 or distance <= 0 then
+		return 1.0
+	end
+	local minMult = math.clamp(minFalloffMultiplier or 1.0, 0.05, 1.0)
+	if minMult >= 1.0 then
+		return 1.0
+	end
+	local startDist = maxRange * math.clamp(falloffStartRatio or 0.5, 0.0, 0.99)
+	if distance <= startDist then
+		return 1.0
+	end
+	local span = math.max(1e-3, maxRange - startDist)
+	local alpha = math.clamp((distance - startDist) / span, 0, 1)
+	return 1.0 - (1.0 - minMult) * alpha
+end
+
+function Ballistics.ComputeFinalDamage(
+	baseDamage: number,
+	hitPart: BasePart,
+	distance: number,
+	maxRange: number,
+	headshotMultiplier: number?,
+	falloffStartRatio: number?,
+	minFalloffMultiplier: number?
+): (number, Types.HitZone)
+	local zone, zoneMult = Ballistics.ResolveHitZoneMultiplier(hitPart, headshotMultiplier)
+	local falloff = Ballistics.ComputeDistanceFalloff(distance, maxRange, falloffStartRatio, minFalloffMultiplier)
+	local finalDamage = math.max(1, math.floor(baseDamage * zoneMult * falloff + 0.5))
+	return finalDamage, zone
+end
+
 local function findCharacterModel(inst: Instance): Model?
 	local current: Instance? = inst
 	while current ~= nil and current ~= Workspace do
@@ -141,6 +207,54 @@ local function castSegment(origin: Vector3, delta: Vector3, baseExclude: { Insta
 	end
 
 	return nil
+end
+
+function Ballistics.CastHitscan(
+	origin: Vector3,
+	unitDir: Vector3,
+	range: number,
+	baseExclude: { Instance },
+	blockOnSmoke: boolean?
+): (RaycastResult?, boolean, Vector3)
+	local clampedRange = math.max(0.01, range)
+	local excludeCopy: { Instance } = table.clone(baseExclude)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.IgnoreWater = true
+	params.FilterDescendantsInstances = excludeCopy
+
+	local rayDelta = unitDir * clampedRange
+	for _ = 1, MAX_SEGMENT_FILTER_PASSES do
+		local result = Workspace:Raycast(origin, rayDelta, params)
+		if result == nil then
+			return nil, false, origin + rayDelta
+		end
+
+		if Ballistics.IsSmokeVolume(result.Instance) then
+			if blockOnSmoke == true then
+				return nil, true, result.Position
+			end
+			table.insert(excludeCopy, result.Instance)
+			params.FilterDescendantsInstances = excludeCopy
+			continue
+		end
+
+		if findCharacterModel(result.Instance) ~= nil then
+			if Ballistics.IsIgnoredCharacterPart(result.Instance) then
+				table.insert(excludeCopy, result.Instance)
+				params.FilterDescendantsInstances = excludeCopy
+			else
+				return result, false, result.Position
+			end
+		elseif result.Instance.CanCollide == false and not result.Instance:IsA("Terrain") then
+			table.insert(excludeCopy, result.Instance)
+			params.FilterDescendantsInstances = excludeCopy
+		else
+			return result, false, result.Position
+		end
+	end
+
+	return nil, false, origin + rayDelta
 end
 
 local function disconnectHeartbeatIfEmpty()

@@ -62,6 +62,8 @@ local Weapons: { [string]: WeaponConfig } = {
 		ProjectileId = "arrow",
 		DrawMinTime = 0.25,
 		DrawFullTime = 1.0,
+		FalloffStartRatio = 0.6,
+		MinFalloffMultiplier = 0.65,
 	}),
 	pipe_pistol = table.freeze({
 		Category = "Ranged" :: Types.WeaponCategory,
@@ -77,6 +79,8 @@ local Weapons: { [string]: WeaponConfig } = {
 		MoveSpreadDeg = 2.4,
 		AirSpreadDeg = 5.2,
 		CrouchSpreadMultiplier = 0.55,
+		FalloffStartRatio = 0.4,
+		MinFalloffMultiplier = 0.5,
 	}),
 	rocket_launcher = table.freeze({
 		Category = "Ranged" :: Types.WeaponCategory,

@@ -445,8 +445,8 @@ local function cancelBowDraw()
 	end
 end
 
-local function fireWeaponWithCharge(weapon: WeaponConfig, chargeRatio: number)
-	local origin, direction, targetModel, isHeadshotHint, character = computeAimData(weapon)
+local function fireWeaponWithCharge(weaponId: string, weapon: WeaponConfig, chargeRatio: number)
+	local origin, direction, targetModel, _isHeadshotHint, character = computeAimData(weapon)
 	if origin == nil or direction == nil or character == nil then
 		return
 	end
@@ -463,7 +463,16 @@ local function fireWeaponWithCharge(weapon: WeaponConfig, chargeRatio: number)
 		end
 		ProjectileController.SpawnLocalProjectile(weapon.ProjectileId, origin, finalDir, character, speedOverride)
 	end
-	Net.GetEvent(Net.Events.AttackRequest):FireServer(origin, finalDir, targetModel, isHeadshotHint, chargeRatio)
+
+	local shotRequest: Types.BallisticShotRequest = {
+		WeaponId = weaponId,
+		Origin = origin,
+		Direction = finalDir,
+		ChargeRatio = chargeRatio,
+		ClientTimestamp = Workspace:GetServerTimeNow(),
+		TargetInstance = targetModel,
+	}
+	Net.GetEvent(Net.Events.AttackRequest):FireServer(shotRequest)
 	applyRecoilKick(weapon)
 end
 
@@ -498,7 +507,7 @@ local function handleAttackPress()
 		return
 	end
 
-	fireWeaponWithCharge(weapon, 1.0)
+	fireWeaponWithCharge(weaponId, weapon, 1.0)
 end
 
 local function handleAttackRelease()
@@ -534,7 +543,7 @@ local function handleAttackRelease()
 
 	local span = math.max(0.01, weapon.DrawFullTime - weapon.DrawMinTime)
 	local chargeRatio = math.clamp((elapsed - weapon.DrawMinTime) / span, 0, 1)
-	fireWeaponWithCharge(weapon, chargeRatio)
+	fireWeaponWithCharge(weaponId, weapon, chargeRatio)
 end
 
 function CombatController.Init()

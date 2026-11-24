@@ -466,6 +466,8 @@ export type WeaponConfig = {
 	AirSpreadDeg: number?,
 	CrouchSpreadMultiplier: number?,
 	MeleeConeHalfAngleDeg: number?,
+	FalloffStartRatio: number?,
+	MinFalloffMultiplier: number?,
 }
 
 export type LootDropEntry = {
@@ -689,6 +691,8 @@ export type BallisticShotRequest = {
 	ChargeRatio: number?,
 	WeaponId: ItemId?,
 	ClientTime: number?,
+	ClientTimestamp: number?,
+	TargetInstance: Instance?,
 }
 
 export type BallisticHitResult = {
@@ -841,7 +845,7 @@ local Types = {
 	MAX_LOOT_DISTANCE = 14,
 	LOOT_CONTAINER_LIFETIME = 300,
 	MAX_ATTACK_ORIGIN_OFFSET = 8,
-	MAX_EXPLOSIVE_PLACE_DISTANCE = 14,
+	MAX_EXPLOSIVE_PLACE_DISTANCE = 12,
 	RAID_DURATION = 300,
 	CURRENT_SCHEMA_VERSION = 9,
 	CURRENT_DATA_VERSION = 9,
@@ -884,6 +888,9 @@ function Types.IsValidShotRequest(val: any): boolean
 	if type(val) ~= "table" then
 		return false
 	end
+	if val.Damage ~= nil or val.Multiplier ~= nil or val.HitboxMultiplier ~= nil or val.HeadshotMultiplier ~= nil then
+		return false
+	end
 	if not isValidVector3(val.Origin) or not isValidVector3(val.Direction) then
 		return false
 	end
@@ -904,6 +911,14 @@ function Types.IsValidShotRequest(val: any): boolean
 		return false
 	end
 	if val.ClientTime ~= nil and (not isFiniteNumber(val.ClientTime) or (val.ClientTime :: number) < 0) then
+		return false
+	end
+	if
+		val.ClientTimestamp ~= nil and (not isFiniteNumber(val.ClientTimestamp) or (val.ClientTimestamp :: number) < 0)
+	then
+		return false
+	end
+	if val.TargetInstance ~= nil and typeof(val.TargetInstance) ~= "Instance" then
 		return false
 	end
 	return true

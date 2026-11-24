@@ -16,14 +16,14 @@ local RaidService = require(ServerScriptService.Server.Services.RaidService)
 local SecurityService = require(ServerScriptService.Server.Services.SecurityService)
 
 type WeaponConfig = Types.WeaponConfig
+type BallisticShotRequest = Types.BallisticShotRequest
 
-local MAX_RAY_FILTER_PASSES = 8
 local ATTACK_EFFECT_BROADCAST_RADIUS = 250
 local PROJECTILE_BROADCAST_RADIUS = 400
-local LIMB_DAMAGE_MULTIPLIER = 0.75
 local DEFAULT_MELEE_CONE_HALF_ANGLE_DEG = 42
+local FIRE_RATE_JITTER_TOLERANCE = 0.05
 
-local lastAttackTime: { [Player]: number } = {}
+local nextAllowedAttackTime: { [Player]: number } = {}
 local activeProjectilesByPlayer: { [Player]: number } = {}
 local nextProjectileSeq = 0
 local boundDummies: { [Model]: boolean } = {}
@@ -98,21 +98,11 @@ local function resolveDamageMultiplier(
 	hitPart: BasePart,
 	overrideHeadMult: number?
 ): (number, boolean)
-	local zone = Ballistics.ClassifyHitZone(hitPart)
-	if zone == "Head" then
-		return (overrideHeadMult or weapon.HeadshotMultiplier), true
-	elseif zone == "Limb" then
-		return LIMB_DAMAGE_MULTIPLIER, false
-	end
-	return 1.0, false
+	local zone, mult = Ballistics.ResolveHitZoneMultiplier(hitPart, overrideHeadMult or weapon.HeadshotMultiplier)
+	return mult, zone == "Head"
 end
 
-local function performServerRaycast(
-	origin: Vector3,
-	unitDir: Vector3,
-	range: number,
-	attackerCharacter: Model
-): RaycastResult?
+local function buildServerExcludeList(attackerCharacter: Model): { Instance }
 	local excludeList: { Instance } = { attackerCharacter }
 	if cachedLootFolder == nil or cachedLootFolder.Parent == nil then
 		cachedLootFolder = Workspace:FindFirstChild("LootContainers")
@@ -120,35 +110,23 @@ local function performServerRaycast(
 	if cachedLootFolder ~= nil then
 		table.insert(excludeList, cachedLootFolder)
 	end
+	return excludeList
+end
 
-	local params = RaycastParams.new()
-	params.FilterType = Enum.RaycastFilterType.Exclude
-	params.IgnoreWater = true
-	params.FilterDescendantsInstances = excludeList
-
-	for _ = 1, MAX_RAY_FILTER_PASSES do
-		local result = Workspace:Raycast(origin, unitDir * range, params)
-		if result == nil then
-			return nil
-		end
-
-		local targetModel = findTargetCharacter(result.Instance)
-		if targetModel ~= nil then
-			if Ballistics.IsIgnoredCharacterPart(result.Instance) then
-				table.insert(excludeList, result.Instance)
-				params.FilterDescendantsInstances = excludeList
-			else
-				return result
-			end
-		elseif result.Instance.CanCollide == false then
-			table.insert(excludeList, result.Instance)
-			params.FilterDescendantsInstances = excludeList
-		else
-			return result
-		end
-	end
-
-	return nil
+local function performServerRaycast(
+	origin: Vector3,
+	unitDir: Vector3,
+	range: number,
+	attackerCharacter: Model,
+	blockOnSmoke: boolean?
+): (RaycastResult?, boolean, Vector3)
+	return Ballistics.CastHitscan(
+		origin,
+		unitDir,
+		range,
+		buildServerExcludeList(attackerCharacter),
+		blockOnSmoke == true
+	)
 end
 
 local function collectMeleeCandidateModels(attackerCharacter: Model): { Model }
@@ -456,9 +434,17 @@ local function launchServerProjectile(
 				then
 					hitTargets[targetModel] = true
 					didHit = true
-					local multiplier, headshot = resolveDamageMultiplier(weapon, hitResult.Instance, headMult)
-					isHeadshot = headshot
-					local finalDamage = math.max(1, math.floor(baseDamage * multiplier + 0.5))
+					local hitDistance = (hitResult.Position - safeOrigin).Magnitude
+					local finalDamage, hitZone = Ballistics.ComputeFinalDamage(
+						baseDamage,
+						hitResult.Instance,
+						hitDistance,
+						weapon.Range,
+						headMult,
+						weapon.FalloffStartRatio,
+						weapon.MinFalloffMultiplier
+					)
+					isHeadshot = hitZone == "Head"
 					targetModel:SetAttribute("LastAttackerUserId", player.UserId)
 					targetHumanoid:TakeDamage(finalDamage)
 					local targetPlayer = Players:GetPlayerFromCharacter(targetModel)
@@ -576,40 +562,35 @@ local function bindDummiesFolder(folder: Instance)
 	end)
 end
 
-local function onAttackRequest(
-	player: Player,
-	originAny: any,
-	directionAny: any,
-	_targetModelAny: any,
-	_isHeadshotHintAny: any,
-	chargeRatioAny: any
-)
+local function onAttackRequest(player: Player, requestAny: any)
 	if not SecurityService.CheckRateLimit(player, Net.Events.AttackRequest) then
 		return
 	end
-	if not SecurityService.IsValidVector3(originAny) or not SecurityService.IsValidVector3(directionAny) then
-		return
-	end
-
-	local chargeRatio = 1.0
-	if chargeRatioAny ~= nil then
+	if not Types.IsValidShotRequest(requestAny) then
 		if
-			not SecurityService.IsFiniteNumber(chargeRatioAny)
-			or (chargeRatioAny :: number) < 0
-			or (chargeRatioAny :: number) > 1
+			type(requestAny) == "table"
+			and (
+				requestAny.Damage ~= nil
+				or requestAny.Multiplier ~= nil
+				or requestAny.HitboxMultiplier ~= nil
+				or requestAny.HeadshotMultiplier ~= nil
+			)
 		then
-			return
+			SecurityService.LogSuspicious(player, Net.Events.AttackRequest, "TamperedShotPayload")
 		end
-		chargeRatio = chargeRatioAny :: number
-	end
-
-	local origin = originAny :: Vector3
-	local direction = directionAny :: Vector3
-	if not SecurityService.IsFiniteNumber(direction.Magnitude) or direction.Magnitude <= 0.01 then
 		return
 	end
 
-	if DataService.IsTeleporting(player) or SecurityService.IsTransactionLocked(player) then
+	local request = requestAny :: BallisticShotRequest
+	local chargeRatio = if request.ChargeRatio ~= nil then request.ChargeRatio else 1.0
+	local origin = request.Origin
+	local direction = request.Direction
+
+	if
+		DataService.IsTransferLocked(player)
+		or DataService.IsTeleporting(player)
+		or SecurityService.IsTransactionLocked(player)
+	then
 		return
 	end
 	if DataService.GetData(player) == nil then
@@ -622,6 +603,7 @@ local function onAttackRequest(
 	end
 
 	if (origin - hrp.Position).Magnitude > Types.MAX_ATTACK_ORIGIN_OFFSET then
+		SecurityService.LogSuspicious(player, Net.Events.AttackRequest, "OriginTooFar")
 		return
 	end
 
@@ -630,18 +612,23 @@ local function onAttackRequest(
 	local weapon = Weapons.FISTS
 
 	SecurityService.RunLocked(player, "AttackAmmo", function()
-		if DataService.GetData(player) == nil then
+		if DataService.GetData(player) == nil or DataService.IsTransferLocked(player) then
 			return
 		end
 		weaponId, weapon = getWeaponForPlayer(player)
 
+		if request.WeaponId ~= nil and request.WeaponId ~= weaponId then
+			SecurityService.LogSuspicious(player, Net.Events.AttackRequest, "WeaponMismatch")
+			return
+		end
+
 		local now = os.clock()
-		local prevAttack = lastAttackTime[player]
+		local nextAllowed = nextAllowedAttackTime[player] or 0
 		local cooldownRequired = if weapon.DrawMinTime ~= nil
 			then math.max(weapon.DrawMinTime, weapon.Cooldown)
 			else weapon.Cooldown
-		if prevAttack ~= nil and (now - prevAttack) < cooldownRequired then
-			if (now - prevAttack) < cooldownRequired * 0.5 then
+		if (now + FIRE_RATE_JITTER_TOLERANCE) < nextAllowed then
+			if (nextAllowed - now) > cooldownRequired * 0.5 then
 				SecurityService.LogSuspicious(player, Net.Events.AttackRequest, "RapidFire")
 			end
 			return
@@ -666,7 +653,7 @@ local function onAttackRequest(
 			activeProjectilesByPlayer[player] = (activeProjectilesByPlayer[player] or 0) + 1
 		end
 
-		lastAttackTime[player] = now
+		nextAllowedAttackTime[player] = math.max(now, nextAllowed) + cooldownRequired
 		canAttack = true
 	end)
 
@@ -691,22 +678,29 @@ local function onAttackRequest(
 		return
 	end
 
-	local hitResult: RaycastResult?
+	local hitResult: RaycastResult? = nil
+	local blockedBySmoke = false
+	local hitscanStopPos = safeOrigin + unitDir * weapon.Range
 	if weapon.Category == "Melee" then
 		local coneHalf = weapon.MeleeConeHalfAngleDeg or DEFAULT_MELEE_CONE_HALF_ANGLE_DEG
 		hitResult = performServerMeleeSweep(safeOrigin, unitDir, weapon.Range, coneHalf, character)
+		if hitResult ~= nil then
+			hitscanStopPos = hitResult.Position
+		end
 	else
-		hitResult = performServerRaycast(safeOrigin, unitDir, weapon.Range, character)
+		hitResult, blockedBySmoke, hitscanStopPos =
+			performServerRaycast(safeOrigin, unitDir, weapon.Range, character, true)
 	end
 
 	local didHit = false
 	local isHeadshot = false
-	local endPos = safeOrigin + unitDir * weapon.Range
+	local endPos = hitscanStopPos
 	local hitTargets: { [Model]: boolean } = {}
 
-	if hitResult ~= nil then
+	if not blockedBySmoke and hitResult ~= nil then
 		endPos = hitResult.Position
-		if (endPos - safeOrigin).Magnitude <= (weapon.Range + Types.PING_DISTANCE_TOLERANCE) then
+		local hitDistance = (endPos - safeOrigin).Magnitude
+		if hitDistance <= (weapon.Range + Types.PING_DISTANCE_TOLERANCE) then
 			local targetModel, targetHumanoid = findTargetCharacter(hitResult.Instance)
 			if
 				targetModel ~= nil
@@ -717,9 +711,24 @@ local function onAttackRequest(
 			then
 				hitTargets[targetModel] = true
 				didHit = true
-				local multiplier, headshot = resolveDamageMultiplier(weapon, hitResult.Instance, nil)
-				isHeadshot = headshot
-				local finalDamage = math.max(1, math.floor(weapon.Damage * multiplier + 0.5))
+				local finalDamage: number
+				if weapon.Category == "Melee" then
+					local multiplier, headshot = resolveDamageMultiplier(weapon, hitResult.Instance, nil)
+					isHeadshot = headshot
+					finalDamage = math.max(1, math.floor(weapon.Damage * multiplier + 0.5))
+				else
+					local hitZone: Types.HitZone
+					finalDamage, hitZone = Ballistics.ComputeFinalDamage(
+						weapon.Damage,
+						hitResult.Instance,
+						hitDistance,
+						weapon.Range,
+						weapon.HeadshotMultiplier,
+						weapon.FalloffStartRatio,
+						weapon.MinFalloffMultiplier
+					)
+					isHeadshot = hitZone == "Head"
+				end
 				targetModel:SetAttribute("LastAttackerUserId", player.UserId)
 				targetHumanoid:TakeDamage(finalDamage)
 				local targetPlayer = Players:GetPlayerFromCharacter(targetModel)
@@ -768,7 +777,7 @@ function CombatService.Init()
 	Net.GetEvent(Net.Events.AttackRequest).OnServerEvent:Connect(onAttackRequest)
 
 	Players.PlayerRemoving:Connect(function(player: Player)
-		lastAttackTime[player] = nil
+		nextAllowedAttackTime[player] = nil
 		activeProjectilesByPlayer[player] = nil
 	end)
 

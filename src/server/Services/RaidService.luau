@@ -1241,6 +1241,7 @@ local function completeStashExtraction(session: RaidSession)
 	end
 	if
 		teleportInProgress[player]
+		or DataService.IsTransferLocked(player)
 		or SecurityService.IsTeleportLocked(player)
 		or SecurityService.IsTransactionLocked(player)
 	then
@@ -1249,6 +1250,16 @@ local function completeStashExtraction(session: RaidSession)
 	end
 	if DataService.GetData(player) == nil or not session.TcCaptured then
 		cancelStashExtraction(session, nil)
+		return
+	end
+	if not RaidOutpost.IsRaiderInExtractionZone(session, hrp) then
+		cancelStashExtraction(
+			session,
+			"Экстракция прервана: вы покинули зону RaidOutpostZone!"
+		)
+		return
+	end
+	if (os.clock() - session.ExtractionCountdownStart) < (session.ExtractionTotalDuration - 0.05) then
 		return
 	end
 
@@ -1261,7 +1272,16 @@ local function completeStashExtraction(session: RaidSession)
 		if activeSessions[player] ~= session or session.Extracting then
 			return
 		end
-		if DataService.GetData(player) == nil or not session.TcCaptured then
+		if
+			DataService.IsTransferLocked(player)
+			or SecurityService.IsTeleportLocked(player)
+			or DataService.GetData(player) == nil
+			or not session.TcCaptured
+		then
+			return
+		end
+		local _, innerHrp, innerHum = getAliveCharacterParts(player)
+		if innerHrp == nil or innerHum == nil or not RaidOutpost.IsRaiderInExtractionZone(session, innerHrp) then
 			return
 		end
 		if not session.StashExtracted then
@@ -1377,6 +1397,21 @@ local function startStashExtraction(session: RaidSession)
 				cancelStashExtraction(
 					session,
 					"Экстракция прервана: рейдер погиб! Лут остался в ExtractionStash"
+				)
+				break
+			end
+			if
+				teleportInProgress[session.Raider]
+				or DataService.IsTransferLocked(session.Raider)
+				or SecurityService.IsTeleportLocked(session.Raider)
+			then
+				cancelStashExtraction(session, nil)
+				break
+			end
+			if not RaidOutpost.IsRaiderInExtractionZone(session, curHrp) then
+				cancelStashExtraction(
+					session,
+					"Экстракция прервана: вы покинули зону RaidOutpostZone!"
 				)
 				break
 			end
@@ -2191,44 +2226,95 @@ local function onRaidBuildPlaceRequest(
 	end)
 end
 
-local function onPlaceExplosiveRequest(player: Player, targetUidAny: any, hitPositionAny: any)
+local function hasClearPlantLineOfSight(
+	fromPos: Vector3,
+	targetPos: Vector3,
+	character: Model,
+	targetModel: Model
+): boolean
+	local delta = targetPos - fromPos
+	if delta.Magnitude <= 0.1 then
+		return true
+	end
+	local exclude: { Instance } = { character, targetModel }
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.IgnoreWater = true
+	params.FilterDescendantsInstances = exclude
+
+	for _ = 1, 6 do
+		local hit = Workspace:Raycast(fromPos, delta, params)
+		if hit == nil then
+			return true
+		end
+		if hit.Instance:IsDescendantOf(targetModel) then
+			return true
+		end
+		if hit.Instance.CanCollide == false and not hit.Instance:IsA("Terrain") then
+			table.insert(exclude, hit.Instance)
+			params.FilterDescendantsInstances = exclude
+		else
+			return false
+		end
+	end
+	return false
+end
+
+local function onPlaceExplosiveRequest(player: Player, requestAny: any, legacyHitPositionAny: any)
 	if not SecurityService.CheckRateLimit(player, Net.Events.PlaceExplosiveRequest) then
 		return
 	end
 	local session = activeSessions[player]
-	if session == nil or session.Extracting then
+	if session == nil or session.Extracting or os.clock() >= session.EndsAt then
 		return
 	end
-	if DataService.IsTeleporting(player) or SecurityService.IsTransactionLocked(player) then
+	if
+		DataService.IsTransferLocked(player)
+		or DataService.IsTeleporting(player)
+		or SecurityService.IsTransactionLocked(player)
+	then
 		return
 	end
 	if DataService.GetData(player) == nil then
 		return
 	end
-	if not SecurityService.IsValidString(targetUidAny, 1, 64) then
-		return
-	end
-	if not SecurityService.IsValidVector3(hitPositionAny) then
+
+	local targetUid: string
+	local hitPosition: Vector3
+	local requestedExplosiveId: string? = nil
+
+	if Types.IsValidExplosionRequest(requestAny) then
+		local req = requestAny :: Types.ExplosionRequest
+		targetUid = req.TargetUid
+		hitPosition = req.HitPosition
+		requestedExplosiveId = req.ExplosiveId
+	elseif
+		SecurityService.IsValidString(requestAny, 1, 64) and SecurityService.IsValidVector3(legacyHitPositionAny)
+	then
+		targetUid = requestAny :: string
+		hitPosition = legacyHitPositionAny :: Vector3
+	else
 		return
 	end
 
-	local targetUid = targetUidAny :: string
 	local targetRecord = session.Pieces[targetUid]
 	if targetRecord == nil or not targetRecord.Model.Parent then
 		return
 	end
 
-	local _, hrp, _ = getAliveCharacterParts(player)
-	if hrp == nil then
+	local character, hrp, _ = getAliveCharacterParts(player)
+	if character == nil or hrp == nil then
 		return
 	end
 
-	local hitPosition = hitPositionAny :: Vector3
 	local clampedPos = closestPointOnModel(targetRecord.Model, hitPosition)
 	if (hitPosition - clampedPos).Magnitude > MAX_HIT_SURFACE_OFFSET then
 		return
 	end
-	if (hrp.Position - clampedPos).Magnitude > Types.MAX_EXPLOSIVE_PLACE_DISTANCE + Types.PING_DISTANCE_TOLERANCE then
+	if (hrp.Position - clampedPos).Magnitude > Types.MAX_EXPLOSIVE_PLACE_DISTANCE then
+		return
+	end
+	if not hasClearPlantLineOfSight(hrp.Position, clampedPos, character, targetRecord.Model) then
 		return
 	end
 
@@ -2236,6 +2322,8 @@ local function onPlaceExplosiveRequest(player: Player, targetUidAny: any, hitPos
 		if
 			activeSessions[player] ~= session
 			or session.Extracting
+			or os.clock() >= session.EndsAt
+			or DataService.IsTransferLocked(player)
 			or DataService.GetData(player) == nil
 			or session.Pieces[targetUid] ~= targetRecord
 			or not targetRecord.Model.Parent
@@ -2243,14 +2331,14 @@ local function onPlaceExplosiveRequest(player: Player, targetUidAny: any, hitPos
 			return
 		end
 
-		local _, innerHrp, _ = getAliveCharacterParts(player)
-		if innerHrp == nil then
+		local innerChar, innerHrp, _ = getAliveCharacterParts(player)
+		if innerChar == nil or innerHrp == nil then
 			return
 		end
-		if
-			(innerHrp.Position - clampedPos).Magnitude
-			> Types.MAX_EXPLOSIVE_PLACE_DISTANCE + Types.PING_DISTANCE_TOLERANCE
-		then
+		if (innerHrp.Position - clampedPos).Magnitude > Types.MAX_EXPLOSIVE_PLACE_DISTANCE then
+			return
+		end
+		if not hasClearPlantLineOfSight(innerHrp.Position, clampedPos, innerChar, targetRecord.Model) then
 			return
 		end
 
@@ -2263,6 +2351,9 @@ local function onPlaceExplosiveRequest(player: Player, targetUidAny: any, hitPos
 		local equippedSlot = InventoryService.GetEquippedSlot(player)
 		local slotData = InventoryService.GetSlot(player, equippedSlot)
 		if slotData == nil or slotData.Count <= 0 then
+			return
+		end
+		if requestedExplosiveId ~= nil and slotData.Id ~= requestedExplosiveId then
 			return
 		end
 
@@ -2288,15 +2379,16 @@ local function onPlaceExplosiveRequest(player: Player, targetUidAny: any, hitPos
 			explosiveId,
 			getOrCreateFolder(RAID_STRUCTURES_FOLDER_NAME)
 		)
+		local detonateAt = os.clock() + explosiveCfg.FuseTime
 		local explosiveRecord: ActiveExplosiveRecord = {
 			Part = visualPart,
 			Label = timerLabel,
 			CancelFlag = false,
+			DetonateAt = detonateAt,
 		}
 		table.insert(session.ActiveExplosives, explosiveRecord)
 
 		task.spawn(function()
-			local detonateAt = os.clock() + explosiveCfg.FuseTime
 			while not explosiveRecord.CancelFlag and activeSessions[player] == session do
 				local remaining = detonateAt - os.clock()
 				if remaining <= 0 then
@@ -2308,7 +2400,11 @@ local function onPlaceExplosiveRequest(player: Player, targetUidAny: any, hitPos
 				task.wait(0.1)
 			end
 
-			if not explosiveRecord.CancelFlag and activeSessions[player] == session then
+			if
+				not explosiveRecord.CancelFlag
+				and activeSessions[player] == session
+				and os.clock() >= (explosiveRecord.DetonateAt - 0.05)
+			then
 				RaidExplosives.DetonateExplosive(session, explosiveRecord, blastOrigin, explosiveId, getExplosionDeps())
 			elseif explosiveRecord.Part.Parent then
 				explosiveRecord.Part:Destroy()

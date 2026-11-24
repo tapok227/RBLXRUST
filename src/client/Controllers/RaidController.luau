@@ -1176,7 +1176,11 @@ local function tryPlaceExplosive()
 	end
 
 	lastPlaceTime = now
-	Net.GetEvent(Net.Events.PlaceExplosiveRequest):FireServer(targetUid, result.Position)
+	local explosionRequest: Types.ExplosionRequest = {
+		TargetUid = targetUid,
+		HitPosition = result.Position,
+	}
+	Net.GetEvent(Net.Events.PlaceExplosiveRequest):FireServer(explosionRequest)
 end
 
 local function bindPrompt(prompt: ProximityPrompt)

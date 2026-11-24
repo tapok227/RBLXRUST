@@ -1513,10 +1513,12 @@ function BaseService.DamagePiece(
 	end
 
 	local nowClock = os.clock()
+	local nowServer = Workspace:GetServerTimeNow()
 	record.LastDamagedAt = nowClock
 	record.Piece.LastDamagedAt = nowClock
 	record.Model:SetAttribute("LastDamagedAt", nowClock)
-	record.Model:SetAttribute("LastDamagedServerTime", Workspace:GetServerTimeNow())
+	record.Model:SetAttribute("LastDamagedServerTime", nowServer)
+	record.Model:SetAttribute("RaidBlockUntil", nowServer + BuildingConfig.UpgradeRaidBlockSeconds)
 
 	record.Piece.Hp -= finalDamage
 	if record.Piece.Hp <= 0 then
