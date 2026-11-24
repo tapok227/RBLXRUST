@@ -8,12 +8,28 @@ export type ItemConfig = {
 	MaxStack: number,
 }
 
+export type ItemId = string
+
 export type Slot = {
-	Id: string,
+	Id: ItemId,
 	Count: number,
 }
 
+export type InventorySlot = Slot
+
 export type Inventory = { [number]: Slot? }
+
+export type EquipmentMap = { [string]: InventorySlot? }
+
+export type ContainerData = {
+	ContainerId: string,
+	OwnerUserId: number?,
+	OwnerName: string,
+	MaxSlots: number,
+	Slots: Inventory,
+	ExpiresAt: number?,
+	IsPersistent: boolean?,
+}
 
 export type SurvivalStats = {
 	Health: number,
@@ -71,6 +87,10 @@ export type BuildPieceType =
 	| "TriangleStairs"
 
 export type BuildTier = "wood" | "stone" | "metal" | "armored"
+
+export type ModuleType = BuildPieceType
+
+export type BuildingTier = BuildTier
 
 export type BuildPieceCategory = "Foundation" | "Floor" | "Wall" | "Stairs" | "Deployable"
 
@@ -233,6 +253,34 @@ export type BaseData = {
 	LastUpkeepTimestamp: number,
 }
 
+export type BuildingBlockData = SavedBuildPiece
+
+export type QuantizedBlock = {
+	Uid: string,
+	Module: ModuleType,
+	Tier: BuildingTier,
+	QX: number,
+	QY: number,
+	QZ: number,
+	YawStep: number,
+	ParentUid: string?,
+	SocketId: string?,
+	MountSurface: DefenseMountSurface?,
+	Hp: number,
+}
+
+export type BaseSnapshot = {
+	OwnerUserId: number,
+	OwnerName: string?,
+	BaseTier: BaseTier,
+	Pieces: { BuildingBlockData },
+	QuantizedBlocks: { QuantizedBlock }?,
+	SavedAt: number,
+	IsPreset: boolean?,
+}
+
+export type TCState = ToolCupboardState
+
 export type BuildPieceConfig = {
 	Name: string,
 	Category: BuildPieceCategory,
@@ -261,9 +309,11 @@ export type BuildTierConfig = {
 }
 
 export type PlayerData = {
+	SchemaVersion: number,
 	DataVersion: number,
 	Version: number,
 	Inventory: Inventory,
+	Equipment: EquipmentMap,
 	Stats: SurvivalStats,
 	Base: BaseData,
 	UnlockedBlueprints: { [string]: boolean },
@@ -499,6 +549,49 @@ export type RaidTargetInfo = {
 	LootCategory: string?,
 }
 
+export type RaidIntelCard = RaidTargetInfo
+
+export type RaidSessionState = {
+	SessionId: string,
+	AttackerUserId: number,
+	TargetUserId: number,
+	TargetName: string,
+	TargetBaseTier: BaseTier,
+	StartedAt: number,
+	EndsAt: number,
+	TcCaptured: boolean,
+	TcHackProgress: number,
+	TcHackActive: boolean,
+	LivesLeft: number,
+	MaxLives: number,
+	Extracting: boolean,
+	ExtractionEndsAt: number?,
+	IsSelfRaid: boolean?,
+}
+
+export type TransferReason = "Extraction" | "ReturnToMap" | "StartRaid" | "RaidReturn" | "RaidDefense"
+
+export type TransferPayload = {
+	TransferId: string,
+	UserId: number,
+	Reason: TransferReason,
+	SourcePlaceId: number,
+	TargetPlaceId: number,
+	IssuedAt: number,
+	TargetBaseUserId: number?,
+	MapKey: string?,
+	LootItems: { ItemBatchEntry }?,
+}
+
+export type TransferReceipt = {
+	TransferId: string,
+	UserId: number,
+	Success: boolean,
+	ProfileReleased: boolean,
+	ProcessedAt: number,
+	ErrorMessage: string?,
+}
+
 export type RaidIntelPool = {
 	Tier: number,
 	Targets: { RaidTargetInfo },
@@ -576,6 +669,146 @@ export type NPCConfig = {
 	Scale: number,
 }
 
+export type BallisticShotRequest = {
+	Origin: Vector3,
+	Direction: Vector3,
+	ChargeRatio: number?,
+	WeaponId: ItemId?,
+	ClientTime: number?,
+}
+
+export type BallisticHitResult = {
+	Hit: boolean,
+	HitPosition: Vector3?,
+	HitNormal: Vector3?,
+	HitZone: HitZone?,
+	TargetUserId: number?,
+	TargetUid: string?,
+	DamageDealt: number,
+	Distance: number,
+}
+
+export type ExplosionRequest = {
+	TargetUid: string,
+	HitPosition: Vector3,
+	ExplosiveId: ItemId?,
+}
+
+export type NetResult<T> = {
+	Ok: boolean,
+	Data: T?,
+	ErrorCode: string?,
+	Message: string?,
+}
+
+local VALID_MODULE_TYPES: { [string]: boolean } = table.freeze({
+	foundation = true,
+	triangle_foundation = true,
+	wall = true,
+	doorway = true,
+	window_wall = true,
+	roof = true,
+	triangle_floor = true,
+	square_stairs = true,
+	triangle_stairs = true,
+	storage_box = true,
+	tool_cupboard = true,
+	workbench_1 = true,
+	workbench_2 = true,
+	workbench_3 = true,
+	research_table = true,
+	assault_ladder = true,
+	barricade = true,
+	floor_spikes = true,
+	landmine = true,
+	shotgun_trap = true,
+	auto_turret = true,
+	hbhf_sensor = true,
+	smart_door = true,
+	TriangleFoundation = true,
+	WindowWall = true,
+	TriangleFloor = true,
+	SquareStairs = true,
+	TriangleStairs = true,
+})
+
+local VALID_BUILDING_TIERS: { [string]: boolean } = table.freeze({
+	wood = true,
+	stone = true,
+	metal = true,
+	armored = true,
+})
+
+local VALID_TRANSFER_REASONS: { [string]: boolean } = table.freeze({
+	Extraction = true,
+	ReturnToMap = true,
+	StartRaid = true,
+	RaidReturn = true,
+	RaidDefense = true,
+})
+
+local DEFAULT_MAX_VECTOR_COORD = 1e6
+
+local function isFiniteNumber(val: any): boolean
+	return type(val) == "number" and val == val and val ~= math.huge and val ~= -math.huge
+end
+
+local function isValidInteger(val: any, minVal: number?, maxVal: number?): boolean
+	if not isFiniteNumber(val) then
+		return false
+	end
+	local num = val :: number
+	if num % 1 ~= 0 then
+		return false
+	end
+	if minVal ~= nil and num < minVal then
+		return false
+	end
+	if maxVal ~= nil and num > maxVal then
+		return false
+	end
+	return true
+end
+
+local function isValidString(val: any, minLen: number?, maxLen: number?): boolean
+	if type(val) ~= "string" then
+		return false
+	end
+	local len = string.len(val :: string)
+	if minLen ~= nil and len < minLen then
+		return false
+	end
+	if maxLen ~= nil and len > maxLen then
+		return false
+	end
+	return true
+end
+
+local function isValidVector3(val: any, maxAbs: number?): boolean
+	if typeof(val) ~= "Vector3" then
+		return false
+	end
+	local v = val :: Vector3
+	if not (isFiniteNumber(v.X) and isFiniteNumber(v.Y) and isFiniteNumber(v.Z)) then
+		return false
+	end
+	local limit = maxAbs or DEFAULT_MAX_VECTOR_COORD
+	return math.abs(v.X) <= limit and math.abs(v.Y) <= limit and math.abs(v.Z) <= limit
+end
+
+local function isValidInventorySlot(val: any): boolean
+	if type(val) ~= "table" then
+		return false
+	end
+	if not isValidString(val.Id, 1, 64) then
+		return false
+	end
+	if not isValidInteger(val.Count, 1, 1000000) then
+		return false
+	end
+	return true
+end
+
 local Types = {
 	INVENTORY_SIZE = 30,
 	HOTBAR_SIZE = 6,
@@ -596,12 +829,137 @@ local Types = {
 	MAX_ATTACK_ORIGIN_OFFSET = 8,
 	MAX_EXPLOSIVE_PLACE_DISTANCE = 14,
 	RAID_DURATION = 300,
-	CURRENT_DATA_VERSION = 7,
+	CURRENT_SCHEMA_VERSION = 8,
+	CURRENT_DATA_VERSION = 8,
 	PING_DISTANCE_TOLERANCE = 2,
 	MAX_BUILD_DISTANCE = 20,
 	MAX_RAID_TERMINAL_DISTANCE = 24,
 	MAX_PROJECTILE_LIFETIME = 10,
 	MAX_ACTIVE_PROJECTILES_PER_PLAYER = 6,
 }
+
+function Types.IsFiniteNumber(val: any): boolean
+	return isFiniteNumber(val)
+end
+
+function Types.IsValidInteger(val: any, minVal: number?, maxVal: number?): boolean
+	return isValidInteger(val, minVal, maxVal)
+end
+
+function Types.IsValidString(val: any, minLen: number?, maxLen: number?): boolean
+	return isValidString(val, minLen, maxLen)
+end
+
+function Types.IsValidVector3(val: any, maxAbs: number?): boolean
+	return isValidVector3(val, maxAbs)
+end
+
+function Types.IsValidInventorySlot(val: any): boolean
+	return isValidInventorySlot(val)
+end
+
+function Types.IsValidModuleType(val: any): boolean
+	return type(val) == "string" and VALID_MODULE_TYPES[val :: string] == true
+end
+
+function Types.IsValidBuildingTier(val: any): boolean
+	return type(val) == "string" and VALID_BUILDING_TIERS[val :: string] == true
+end
+
+function Types.IsValidShotRequest(val: any): boolean
+	if type(val) ~= "table" then
+		return false
+	end
+	if not isValidVector3(val.Origin) or not isValidVector3(val.Direction) then
+		return false
+	end
+	local dir = val.Direction :: Vector3
+	if not isFiniteNumber(dir.Magnitude) or dir.Magnitude <= 0.01 then
+		return false
+	end
+	if val.ChargeRatio ~= nil then
+		if
+			not isFiniteNumber(val.ChargeRatio)
+			or (val.ChargeRatio :: number) < 0
+			or (val.ChargeRatio :: number) > 1
+		then
+			return false
+		end
+	end
+	if val.WeaponId ~= nil and not isValidString(val.WeaponId, 1, 64) then
+		return false
+	end
+	if val.ClientTime ~= nil and (not isFiniteNumber(val.ClientTime) or (val.ClientTime :: number) < 0) then
+		return false
+	end
+	return true
+end
+
+function Types.IsValidExplosionRequest(val: any): boolean
+	if type(val) ~= "table" then
+		return false
+	end
+	if not isValidString(val.TargetUid, 1, 64) then
+		return false
+	end
+	if not isValidVector3(val.HitPosition) then
+		return false
+	end
+	if val.ExplosiveId ~= nil and not isValidString(val.ExplosiveId, 1, 64) then
+		return false
+	end
+	return true
+end
+
+function Types.IsValidTransferPayload(val: any): boolean
+	if type(val) ~= "table" then
+		return false
+	end
+	if not isValidString(val.TransferId, 1, 64) then
+		return false
+	end
+	if not isValidInteger(val.UserId, 1) then
+		return false
+	end
+	if type(val.Reason) ~= "string" or VALID_TRANSFER_REASONS[val.Reason :: string] ~= true then
+		return false
+	end
+	if not isValidInteger(val.SourcePlaceId, 0) or not isValidInteger(val.TargetPlaceId, 0) then
+		return false
+	end
+	if not isFiniteNumber(val.IssuedAt) or (val.IssuedAt :: number) < 0 then
+		return false
+	end
+	if val.TargetBaseUserId ~= nil and not isValidInteger(val.TargetBaseUserId) then
+		return false
+	end
+	if val.MapKey ~= nil and not isValidString(val.MapKey, 1, 64) then
+		return false
+	end
+	if val.LootItems ~= nil then
+		if type(val.LootItems) ~= "table" then
+			return false
+		end
+		for idx, item in val.LootItems do
+			if not isValidInteger(idx, 1, 256) or not isValidInventorySlot(item) then
+				return false
+			end
+		end
+	end
+	return true
+end
+
+function Types.IsValidBuildPlaceArgs(pieceType: any, position: any, rotY: any): boolean
+	if not Types.IsValidModuleType(pieceType) then
+		return false
+	end
+	if not isValidVector3(position) then
+		return false
+	end
+	if not isFiniteNumber(rotY) then
+		return false
+	end
+	return true
+end
 
 return Types

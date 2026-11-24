@@ -16,6 +16,9 @@ local SecurityService = require(ServerScriptService.Server.Services.SecurityServ
 
 type PlayerData = Types.PlayerData
 type Slot = Types.Slot
+type InventorySlot = Types.InventorySlot
+type EquipmentMap = Types.EquipmentMap
+type NetResult<T> = Types.NetResult<T>
 type SurvivalStats = Types.SurvivalStats
 type BuildPieceType = Types.BuildPieceType
 type BuildTier = Types.BuildTier
@@ -29,6 +32,7 @@ type DefenseLogEntry = Types.DefenseLogEntry
 type BlueprintPieceEntry = Types.BlueprintPieceEntry
 type BaseBlueprintSlot = Types.BaseBlueprintSlot
 
+local CURRENT_SCHEMA_VERSION: number = Types.CURRENT_SCHEMA_VERSION
 local PROFILE_STORE_NAME = "PlayerData_v1"
 local RAIDABLE_BASES_STORE_NAME = "RaidableBases_v1"
 local DEFENSE_REPORTS_STORE_NAME = "RaidDefenseReports_v1"
@@ -95,9 +99,11 @@ local PRESET_RAID_TARGETS: { { UserId: number, DisplayName: string, PieceCount: 
 }
 
 local DATA_TEMPLATE = {
-	DataVersion = Types.CURRENT_DATA_VERSION,
-	Version = Types.CURRENT_DATA_VERSION,
+	SchemaVersion = CURRENT_SCHEMA_VERSION,
+	DataVersion = CURRENT_SCHEMA_VERSION,
+	Version = CURRENT_SCHEMA_VERSION,
 	Inventory = {},
+	Equipment = {},
 	Stats = {
 		Health = Types.MAX_HEALTH,
 		Hunger = Types.MAX_HUNGER,
@@ -121,7 +127,9 @@ local PlayerStore = ProfileStore.New(PROFILE_STORE_NAME, DATA_TEMPLATE)
 local Profiles: { [Player]: any } = {}
 local RuntimeData: { [Player]: PlayerData } = {}
 local unloadedByPlayer: { [Player]: boolean } = {}
-local teleportingPlayers: { [Player]: boolean } = {}
+local transferringPlayers: { [Player]: boolean } = {}
+local releasingPlayers: { [Player]: boolean } = {}
+local inBeforeUnload: { [Player]: boolean } = {}
 local beforeUnloadCallbacks: { (player: Player, data: PlayerData) -> () } = {}
 local nameCache: { [number]: string } = {}
 local nameCacheCount = 0
@@ -134,6 +142,7 @@ local dataLoadedSignal: Signal.Signal<Player, PlayerData> = Signal.new()
 local isInitialized = false
 
 local DataService = {
+	CURRENT_SCHEMA_VERSION = CURRENT_SCHEMA_VERSION,
 	DataLoaded = dataLoadedSignal,
 	MOCK_RAID_TARGET_USER_ID = MOCK_RAID_TARGET_USER_ID,
 }
@@ -143,12 +152,14 @@ local function runBeforeUnload(player: Player, data: PlayerData)
 		return
 	end
 	unloadedByPlayer[player] = true
+	inBeforeUnload[player] = true
 	for _, callback in beforeUnloadCallbacks do
 		local ok, err = pcall(callback, player, data)
 		if not ok then
 			warn(string.format("[DataService] OnBeforeUnload callback error: %s", tostring(err)))
 		end
 	end
+	inBeforeUnload[player] = nil
 end
 
 local function deserializeInventory(rawInv: { [any]: any }): Types.Inventory
@@ -182,6 +193,50 @@ local function serializeInventory(inv: Types.Inventory): { [string]: Slot }
 			raw[tostring(i)] = {
 				Id = slot.Id,
 				Count = slot.Count,
+			}
+		end
+	end
+	return raw
+end
+
+local function deserializeEquipment(rawEquip: any): EquipmentMap
+	local equip: EquipmentMap = {}
+	if type(rawEquip) ~= "table" then
+		return equip
+	end
+	for equipKey, v in rawEquip do
+		if
+			Types.IsValidString(equipKey, 1, 32)
+			and type(v) == "table"
+			and Types.IsValidString(v.Id, 1, 64)
+			and Types.IsFiniteNumber(v.Count)
+			and v.Count > 0
+		then
+			equip[equipKey :: string] = {
+				Id = v.Id,
+				Count = math.floor(v.Count),
+			}
+		end
+	end
+	return equip
+end
+
+local function serializeEquipment(equip: EquipmentMap?): { [string]: InventorySlot }
+	local raw: { [string]: InventorySlot } = {}
+	if type(equip) ~= "table" then
+		return raw
+	end
+	for equipKey, slot in equip do
+		if
+			Types.IsValidString(equipKey, 1, 32)
+			and slot ~= nil
+			and Types.IsValidString(slot.Id, 1, 64)
+			and Types.IsFiniteNumber(slot.Count)
+			and slot.Count > 0
+		then
+			raw[equipKey] = {
+				Id = slot.Id,
+				Count = math.floor(slot.Count),
 			}
 		end
 	end
@@ -715,23 +770,30 @@ local function deepCloneValue(value: any): any
 	return cloned
 end
 
-function DataService.MigrateProfileData(rawData: { [string]: any }): { [string]: any }
-	local data: { [string]: any } = if type(rawData) == "table" then deepCloneValue(rawData) else {}
-
-	local versionNumber = 0
+local function resolveSchemaVersion(data: { [string]: any }): number
+	if
+		type(data.SchemaVersion) == "number"
+		and SecurityService.IsFiniteNumber(data.SchemaVersion)
+		and data.SchemaVersion >= 0
+	then
+		return math.floor(data.SchemaVersion)
+	end
 	if
 		type(data.DataVersion) == "number"
 		and SecurityService.IsFiniteNumber(data.DataVersion)
 		and data.DataVersion >= 0
 	then
-		versionNumber = math.floor(data.DataVersion)
-	elseif type(data.Version) == "number" and SecurityService.IsFiniteNumber(data.Version) and data.Version >= 1 then
-		versionNumber = math.floor(data.Version)
+		return math.floor(data.DataVersion)
 	end
-	data.DataVersion = versionNumber
+	if type(data.Version) == "number" and SecurityService.IsFiniteNumber(data.Version) and data.Version >= 1 then
+		return math.floor(data.Version)
+	end
+	return 0
+end
 
-	-- Step 1: initial schema (DataVersion 0 -> 1)
-	if data.DataVersion < 1 then
+local Migrations: { [number]: (data: { [string]: any }) -> () } = {
+	-- v0 -> v1: initial schema (Inventory, Stats, Base)
+	[1] = function(data: { [string]: any })
 		if type(data.Inventory) ~= "table" then
 			data.Inventory = {}
 		end
@@ -757,11 +819,10 @@ function DataService.MigrateProfileData(rawData: { [string]: any }): { [string]:
 		elseif type(data.Base.Pieces) ~= "table" then
 			data.Base.Pieces = {}
 		end
-		data.DataVersion = 1
-	end
+	end,
 
-	-- Step 2: migrate GridX/GridY/GridZ -> PosX/PosY/PosZ, RotY 30-deg step, ParentUid, canonical piece types (v1 -> v2)
-	if Types.CURRENT_DATA_VERSION >= 2 and data.DataVersion < 2 then
+	-- v1 -> v2: GridX/GridY/GridZ -> PosX/PosY/PosZ, RotY 30-deg step, ParentUid, canonical piece types
+	[2] = function(data: { [string]: any })
 		if type(data.Base) == "table" and type(data.Base.Pieces) == "table" then
 			for _, rawPiece in data.Base.Pieces do
 				if type(rawPiece) == "table" and type(rawPiece.PieceType) == "string" then
@@ -802,11 +863,10 @@ function DataService.MigrateProfileData(rawData: { [string]: any }): { [string]:
 				end
 			end
 		end
-		data.DataVersion = 2
-	end
+	end,
 
-	-- Step 3: add BaseTier and LastUpkeepTimestamp for Tool Cupboard & Decay (v2 -> v3)
-	if Types.CURRENT_DATA_VERSION >= 3 and data.DataVersion < 3 then
+	-- v2 -> v3: BaseTier and LastUpkeepTimestamp for Tool Cupboard & Decay
+	[3] = function(data: { [string]: any })
 		if type(data.Base) ~= "table" then
 			data.Base = { Pieces = {}, BaseTier = 0, LastUpkeepTimestamp = os.time() }
 		else
@@ -825,11 +885,10 @@ function DataService.MigrateProfileData(rawData: { [string]: any }): { [string]:
 				data.Base.LastUpkeepTimestamp = os.time()
 			end
 		end
-		data.DataVersion = 3
-	end
+	end,
 
-	-- Step 4: Defense system support (MountSurface + Defense ammo storage) (v3 -> v4)
-	if Types.CURRENT_DATA_VERSION >= 4 and data.DataVersion < 4 then
+	-- v3 -> v4: Defense system support (MountSurface + Defense ammo storage)
+	[4] = function(data: { [string]: any })
 		if type(data.Base) == "table" and type(data.Base.Pieces) == "table" then
 			for _, rawPiece in data.Base.Pieces do
 				if type(rawPiece) == "table" and type(rawPiece.PieceType) == "string" then
@@ -847,17 +906,15 @@ function DataService.MigrateProfileData(rawData: { [string]: any }): { [string]:
 				end
 			end
 		end
-		data.DataVersion = 4
-	end
+	end,
 
-	-- Step 5: Blueprint system (UnlockedBlueprints) (v4 -> v5)
-	if Types.CURRENT_DATA_VERSION >= 5 and data.DataVersion < 5 then
+	-- v4 -> v5: Blueprint system (UnlockedBlueprints)
+	[5] = function(data: { [string]: any })
 		data.UnlockedBlueprints = deserializeBlueprints(data.UnlockedBlueprints)
-		data.DataVersion = 5
-	end
+	end,
 
-	-- Step 6: WellFed timer stats, DefenseLogs, LastStarterKitAt (v5 -> v6)
-	if Types.CURRENT_DATA_VERSION >= 6 and data.DataVersion < 6 then
+	-- v5 -> v6: WellFed timer stats, DefenseLogs, LastStarterKitAt
+	[6] = function(data: { [string]: any })
 		if type(data.Stats) ~= "table" then
 			data.Stats = {
 				Health = Types.MAX_HEALTH,
@@ -878,23 +935,59 @@ function DataService.MigrateProfileData(rawData: { [string]: any }): { [string]:
 		else
 			data.LastStarterKitAt = math.floor(data.LastStarterKitAt :: number)
 		end
-		data.DataVersion = 6
-	end
+	end,
 
-	-- Step 7: BaseBlueprints (v6 -> v7), preserving existing Base.Pieces without loss
-	if Types.CURRENT_DATA_VERSION >= 7 and data.DataVersion < 7 then
+	-- v6 -> v7: BaseBlueprints, preserving existing Base.Pieces without loss
+	[7] = function(data: { [string]: any })
 		data.BaseBlueprints = deserializeBaseBlueprints(data.BaseBlueprints)
-		data.DataVersion = 7
+	end,
+
+	-- v7 -> v8: Explicit SchemaVersion & Equipment map
+	[8] = function(data: { [string]: any })
+		data.Equipment = deserializeEquipment(data.Equipment)
+	end,
+}
+
+DataService.Migrations = table.freeze(Migrations)
+
+function DataService.MigrateProfileData(rawData: { [string]: any }): { [string]: any }
+	local data: { [string]: any } = if type(rawData) == "table" then deepCloneValue(rawData) else {}
+
+	local currentVersion = resolveSchemaVersion(data)
+	if currentVersion > CURRENT_SCHEMA_VERSION then
+		warn(
+			string.format(
+				"[DataService] Profile schema version %d is newer than CURRENT_SCHEMA_VERSION %d; skipping downgrade",
+				currentVersion,
+				CURRENT_SCHEMA_VERSION
+			)
+		)
+		data.SchemaVersion = currentVersion
+		data.DataVersion = currentVersion
+		data.Version = currentVersion
+		return data
 	end
 
-	data.Version = data.DataVersion
+	for targetVersion = currentVersion + 1, CURRENT_SCHEMA_VERSION do
+		local migrateFn = Migrations[targetVersion]
+		if migrateFn ~= nil then
+			migrateFn(data)
+		end
+		currentVersion = targetVersion
+	end
+
+	data.SchemaVersion = currentVersion
+	data.DataVersion = currentVersion
+	data.Version = currentVersion
 	return data
 end
 
 local function syncRuntimeToProfile(profile: any, runtimePlayerData: PlayerData)
-	profile.Data.DataVersion = runtimePlayerData.DataVersion
-	profile.Data.Version = runtimePlayerData.DataVersion
+	profile.Data.SchemaVersion = runtimePlayerData.SchemaVersion
+	profile.Data.DataVersion = runtimePlayerData.SchemaVersion
+	profile.Data.Version = runtimePlayerData.SchemaVersion
 	profile.Data.Inventory = serializeInventory(runtimePlayerData.Inventory)
+	profile.Data.Equipment = serializeEquipment(runtimePlayerData.Equipment)
 	profile.Data.Stats = serializeStats(runtimePlayerData.Stats)
 	profile.Data.Base = serializeBase(runtimePlayerData.Base)
 	profile.Data.UnlockedBlueprints = serializeBlueprints(runtimePlayerData.UnlockedBlueprints)
@@ -993,19 +1086,25 @@ local function loadPlayerProfile(player: Player)
 
 	if profile ~= nil then
 		profile:AddUserId(player.UserId)
-		profile:Reconcile()
 		profile.Data = DataService.MigrateProfileData(profile.Data)
+		profile:Reconcile()
 
-		local currentVersion = if type(profile.Data.DataVersion) == "number"
-			then profile.Data.DataVersion
-			else Types.CURRENT_DATA_VERSION
+		local currentVersion = resolveSchemaVersion(profile.Data)
+		if currentVersion <= 0 then
+			currentVersion = CURRENT_SCHEMA_VERSION
+		end
+		profile.Data.SchemaVersion = currentVersion
+		profile.Data.DataVersion = currentVersion
+		profile.Data.Version = currentVersion
 
 		local runtimePlayerData: PlayerData = {
+			SchemaVersion = currentVersion,
 			DataVersion = currentVersion,
 			Version = currentVersion,
 			Inventory = deserializeInventory(
 				if type(profile.Data.Inventory) == "table" then profile.Data.Inventory else {}
 			),
+			Equipment = deserializeEquipment(profile.Data.Equipment),
 			Stats = deserializeStats(profile.Data.Stats),
 			Base = deserializeBase(profile.Data.Base),
 			UnlockedBlueprints = deserializeBlueprints(profile.Data.UnlockedBlueprints),
@@ -1036,7 +1135,7 @@ local function loadPlayerProfile(player: Player)
 			Profiles[player] = nil
 			RuntimeData[player] = nil
 			unloadedByPlayer[player] = nil
-			if player.Parent == Players and not teleportingPlayers[player] then
+			if player.Parent == Players and not transferringPlayers[player] then
 				SecurityService.SetTeleportLock(player, true)
 				warn(
 					string.format(
@@ -1077,25 +1176,43 @@ local function onPlayerRemoving(player: Player)
 	Profiles[player] = nil
 	RuntimeData[player] = nil
 	unloadedByPlayer[player] = nil
-	teleportingPlayers[player] = nil
+	transferringPlayers[player] = nil
+	releasingPlayers[player] = nil
+	inBeforeUnload[player] = nil
 	SecurityService.SetTeleportLock(player, false)
 	if not registerInFlight[player.UserId] then
 		lastRegisteredPieceCount[player.UserId] = nil
 	end
 end
 
+function DataService.IsTransferring(player: Player): boolean
+	return transferringPlayers[player] == true
+end
+
+function DataService.SetTransferring(player: Player, locked: boolean)
+	if locked then
+		transferringPlayers[player] = true
+	else
+		transferringPlayers[player] = nil
+	end
+	SecurityService.SetTeleportLock(player, locked)
+end
+
 function DataService.IsTeleporting(player: Player): boolean
-	return teleportingPlayers[player] == true
+	return DataService.IsTransferring(player)
 end
 
 function DataService.ReleaseForTeleport(player: Player): boolean
+	if releasingPlayers[player] then
+		return false
+	end
 	local profile = Profiles[player]
 	if profile == nil or not profile:IsActive() then
 		return false
 	end
 
-	SecurityService.SetTeleportLock(player, true)
-	teleportingPlayers[player] = true
+	releasingPlayers[player] = true
+	DataService.SetTransferring(player, true)
 
 	local runtimePlayerData = RuntimeData[player]
 	if runtimePlayerData ~= nil then
@@ -1123,6 +1240,7 @@ function DataService.ReleaseForTeleport(player: Player): boolean
 
 	lastSaveConn:Disconnect()
 	afterSaveConn:Disconnect()
+	releasingPlayers[player] = nil
 
 	if not profile:IsActive() then
 		Profiles[player] = nil
@@ -1144,22 +1262,24 @@ function DataService.ReleaseForTeleport(player: Player): boolean
 end
 
 function DataService.RestoreAfterFailedTeleport(player: Player): boolean
-	teleportingPlayers[player] = nil
+	releasingPlayers[player] = nil
+	inBeforeUnload[player] = nil
 
 	if player.Parent ~= Players then
-		SecurityService.SetTeleportLock(player, false)
+		DataService.SetTransferring(player, false)
 		return false
 	end
 
 	local existingProfile = Profiles[player]
 	if existingProfile ~= nil and existingProfile:IsActive() then
-		SecurityService.SetTeleportLock(player, false)
+		DataService.SetTransferring(player, false)
 		return true
 	end
 
+	transferringPlayers[player] = nil
 	loadPlayerProfile(player)
 	if DataService.GetData(player) ~= nil then
-		SecurityService.SetTeleportLock(player, false)
+		DataService.SetTransferring(player, false)
 		return true
 	end
 
@@ -1167,11 +1287,237 @@ function DataService.RestoreAfterFailedTeleport(player: Player): boolean
 end
 
 function DataService.GetData(player: Player): PlayerData?
+	if transferringPlayers[player] and not inBeforeUnload[player] then
+		return nil
+	end
 	local profile = Profiles[player]
 	if profile ~= nil and profile:IsActive() then
 		return RuntimeData[player]
 	end
 	return nil
+end
+
+function DataService.GetProfileSnapshot(player: Player): PlayerData?
+	local profile = Profiles[player]
+	if profile ~= nil and profile:IsActive() then
+		local runtime = RuntimeData[player]
+		if runtime ~= nil then
+			return deepCloneValue(runtime) :: PlayerData
+		end
+	end
+	return nil
+end
+
+function DataService.GetInventorySlot(player: Player, slotIndex: number): InventorySlot?
+	if not Types.IsValidInteger(slotIndex, 1, Types.INVENTORY_SIZE) then
+		return nil
+	end
+	local profile = Profiles[player]
+	if profile == nil or not profile:IsActive() then
+		return nil
+	end
+	local runtime = RuntimeData[player]
+	if runtime == nil then
+		return nil
+	end
+	local slot = runtime.Inventory[slotIndex]
+	if slot == nil then
+		return nil
+	end
+	return {
+		Id = slot.Id,
+		Count = slot.Count,
+	}
+end
+
+function DataService.SetInventorySlot(
+	player: Player,
+	slotIndex: number,
+	slot: InventorySlot?
+): NetResult<InventorySlot?>
+	if DataService.IsTransferring(player) and not inBeforeUnload[player] then
+		return {
+			Ok = false,
+			ErrorCode = "TRANSFER_LOCKED",
+			Message = "Cannot modify inventory while player transfer is in progress.",
+		}
+	end
+	local data = DataService.GetData(player)
+	if data == nil then
+		return {
+			Ok = false,
+			ErrorCode = "PROFILE_NOT_LOADED",
+			Message = "Player profile is not active.",
+		}
+	end
+	if not Types.IsValidInteger(slotIndex, 1, Types.INVENTORY_SIZE) then
+		return {
+			Ok = false,
+			ErrorCode = "INVALID_SLOT_INDEX",
+			Message = string.format("Slot index must be between 1 and %d.", Types.INVENTORY_SIZE),
+		}
+	end
+	if slot ~= nil and not Types.IsValidInventorySlot(slot) then
+		return {
+			Ok = false,
+			ErrorCode = "INVALID_SLOT",
+			Message = "Invalid inventory slot payload.",
+		}
+	end
+
+	if slot == nil then
+		data.Inventory[slotIndex] = nil
+		return {
+			Ok = true,
+			Data = nil,
+		}
+	end
+
+	local copy: InventorySlot = {
+		Id = slot.Id,
+		Count = math.floor(slot.Count),
+	}
+	data.Inventory[slotIndex] = copy
+	return {
+		Ok = true,
+		Data = {
+			Id = copy.Id,
+			Count = copy.Count,
+		},
+	}
+end
+
+local READABLE_PROFILE_FIELDS: { [string]: boolean } = table.freeze({
+	SchemaVersion = true,
+	DataVersion = true,
+	Version = true,
+	Inventory = true,
+	Equipment = true,
+	Stats = true,
+	Base = true,
+	UnlockedBlueprints = true,
+	DefenseLogs = true,
+	BaseBlueprints = true,
+	LastStarterKitAt = true,
+})
+
+local READONLY_PROFILE_FIELDS: { [string]: boolean } = table.freeze({
+	SchemaVersion = true,
+	DataVersion = true,
+	Version = true,
+})
+
+local WRITABLE_PROFILE_FIELDS: { [string]: boolean } = table.freeze({
+	Inventory = true,
+	Equipment = true,
+	Stats = true,
+	Base = true,
+	UnlockedBlueprints = true,
+	DefenseLogs = true,
+	BaseBlueprints = true,
+	LastStarterKitAt = true,
+})
+
+function DataService.GetField(player: Player, fieldName: string): any
+	if not READABLE_PROFILE_FIELDS[fieldName] then
+		return nil
+	end
+	local profile = Profiles[player]
+	if profile == nil or not profile:IsActive() then
+		return nil
+	end
+	local runtime = RuntimeData[player]
+	if runtime == nil then
+		return nil
+	end
+	return deepCloneValue((runtime :: { [string]: any })[fieldName])
+end
+
+function DataService.SetField(player: Player, fieldName: string, value: any): NetResult<boolean>
+	if DataService.IsTransferring(player) and not inBeforeUnload[player] then
+		return {
+			Ok = false,
+			ErrorCode = "TRANSFER_LOCKED",
+			Message = "Cannot modify profile while player transfer is in progress.",
+		}
+	end
+	if READONLY_PROFILE_FIELDS[fieldName] then
+		return {
+			Ok = false,
+			ErrorCode = "READONLY_FIELD",
+			Message = string.format("Field '%s' is read-only.", fieldName),
+		}
+	end
+	if not WRITABLE_PROFILE_FIELDS[fieldName] then
+		return {
+			Ok = false,
+			ErrorCode = "INVALID_FIELD",
+			Message = string.format("Unknown profile field '%s'.", tostring(fieldName)),
+		}
+	end
+	local data = DataService.GetData(player)
+	if data == nil then
+		return {
+			Ok = false,
+			ErrorCode = "PROFILE_NOT_LOADED",
+			Message = "Player profile is not active.",
+		}
+	end
+
+	if fieldName == "LastStarterKitAt" then
+		if value ~= nil and (not Types.IsFiniteNumber(value) or (value :: number) < 0) then
+			return {
+				Ok = false,
+				ErrorCode = "INVALID_VALUE",
+				Message = "LastStarterKitAt must be a non-negative finite number.",
+			}
+		end
+		data.LastStarterKitAt = if value ~= nil then math.floor(value :: number) else 0
+	else
+		if type(value) ~= "table" then
+			return {
+				Ok = false,
+				ErrorCode = "INVALID_VALUE",
+				Message = string.format("Field '%s' must be a table.", fieldName),
+			}
+		end
+		(data :: { [string]: any })[fieldName] = deepCloneValue(value)
+	end
+
+	return {
+		Ok = true,
+		Data = true,
+	}
+end
+
+function DataService.UpdateProfile(player: Player, mutator: (data: PlayerData) -> ()): NetResult<boolean>
+	if DataService.IsTransferring(player) and not inBeforeUnload[player] then
+		return {
+			Ok = false,
+			ErrorCode = "TRANSFER_LOCKED",
+			Message = "Cannot mutate profile while player transfer is in progress.",
+		}
+	end
+	local data = DataService.GetData(player)
+	if data == nil then
+		return {
+			Ok = false,
+			ErrorCode = "PROFILE_NOT_LOADED",
+			Message = "Player profile is not active.",
+		}
+	end
+	local ok, err = pcall(mutator, data)
+	if not ok then
+		return {
+			Ok = false,
+			ErrorCode = "MUTATOR_ERROR",
+			Message = tostring(err),
+		}
+	end
+	return {
+		Ok = true,
+		Data = true,
+	}
 end
 
 function DataService.OnDataLoaded(callback: (player: Player, data: PlayerData) -> ()): Signal.Connection
@@ -1418,7 +1764,8 @@ function DataService.LoadBaseSnapshot(targetUserId: number): BaseData?
 		return nil
 	end
 
-	return deserializeBase(rawData.Base)
+	local migrated = DataService.MigrateProfileData(rawData)
+	return deserializeBase(migrated.Base)
 end
 
 function DataService.Init()
