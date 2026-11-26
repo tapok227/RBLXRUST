@@ -44,3 +44,8 @@
 - В конце каждого этапа обновлять `docs/ARCHITECTURE.md` (в компактном формате `Сигнатура -> Краткое назначение`, удерживая размер файла `< 25 КБ`; результаты бенчмарков хранить в `docs/BENCHMARKS.md`).
 - После завершения каждого этапа обязательно фиксировать и отправлять изменения в удалённый репозиторий: `git add .`, `git commit -m "..."` и `git push`.
 - Обязательные правила оптимизации токенов и контекста см. в `.agent/rules/token-optimization.md` (grep только по сигнатурам `^(local )?function ` / точным именам, сжатый Handoff до 1500 слов, без повторного чтения неизменённых диапазонов).
+- **Синтаксис Windows PowerShell:** не используй `&&` в терминале (в PowerShell 5.1 это синтаксическая ошибка). Запускай проверки так: `stylua src/; if ($LASTEXITCODE -eq 0) { selene src/ }` и пуш так: `git add .; if ($LASTEXITCODE -eq 0) { git commit -m "..." }; if ($LASTEXITCODE -eq 0) { git push }`.
+- **Экономия токенов в Studio MCP:** не вызывай `search_game_tree` с `max_depth > 2` (возвращает мегабайты JSON). Для проверки координат, размеров и атрибутов сцены или `QA_TestArena` используй `execute_luau` (`datamodel_type = "Edit"`) с компактным Lua-сниппетом.
+- **Вынос подмодулей:** новую крупную механику не дописывай в конец `BaseService.luau` или `RaidService.luau`, а сразу выноси в `src/server/Services/Base/<Feature>.luau` или `src/server/Services/Raid/<Feature>.luau` (зависимости передавай через таблицу `deps`).
+- **Миграции данных (`DataService`):** при изменении структуры `PlayerData` обязательно поднимай `Types.CURRENT_DATA_VERSION` и добавляй шаг миграции `vN -> v(N+1)` в `DataService.MigrateProfileData` с обратной совместимостью.
+- **Чистота логов:** перед коммитом удаляй временные отладочные `print`, оставляя только осмысленные `warn`/`error`.

@@ -19,8 +19,11 @@
 8. База: строительство, хранилища, сохранение (готово)
 9. Рейд (готово)
 10. Нагрузочный тест 20-50 игроков, сетевой стресс-тест и финальная полировка (готово)
+11. Пострелизные механики, ребаланс и QA-стенды (в работе)
 
 ## Правила выполнения этапа
-- Читать `.agent/rules/roblox-luau.md`.
-- Код только в файлах `src/`. Studio через MCP: карта, модели, playtest, чтение Output.
+- Читать `.agent/rules/roblox-luau.md` и `.agent/rules/token-optimization.md`.
+- Код только в файлах `src/` (без бэктиков `` ` ``, с `--!strict`, размер модулей `< 600` строк; крупную логику выносить в подмодули). Studio через MCP (`Roblox_Studio`): карта, модели (Greybox), playtest, чтение Output.
+- В конце этапа: обновить `docs/ARCHITECTURE.md` (индекс `Сигнатура -> Назначение`, строго `< 25 КБ`; балансы и бенчмарки выносить в `docs/BALANCE.md` и `docs/BENCHMARKS.md`).
+- Проверка и фиксация в PowerShell (без `&&`): `stylua src/; if ($LASTEXITCODE -eq 0) { selene src/ }` (0 ошибок/предупреждений), затем `git add .; if ($LASTEXITCODE -eq 0) { git commit -m "..." }; if ($LASTEXITCODE -eq 0) { git push }`.
 - После этапа: playtest через MCP, проверить Output на ошибки, отчитаться по чеклисту этапа.
